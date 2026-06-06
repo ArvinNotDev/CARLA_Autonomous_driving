@@ -211,7 +211,7 @@ class CarlaLaneDrivingApp:
 
                     else:
                         cv2.imshow("sem", semantic_frame)
-                        result = self.vision_processor.detect(semantic_frame)
+                        result = self.vision_processor.detect(semantic_frame, rgb_frame)
                         error = float(result.get("error", 0.0))
                         debug = result.get("debug", {})
 
