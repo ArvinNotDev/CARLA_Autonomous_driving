@@ -746,7 +746,7 @@ class CarlaSpawnTool(QMainWindow):
     def pick_spawn_from_map(self, scene_pos: QPointF):
         if self.carla_map is None or carla is None:
             return
-        loc = carla.Location(x=float(scene_pos.x()), y=float(scene_pos.y()), z=0.0)
+        loc = carla.Location(x=float(scene_pos.x()), y=float(scene_pos.y()), z=1.0)
         waypoint = self.carla_map.get_waypoint(loc, project_to_road=True, lane_type=carla.LaneType.Driving)
         if waypoint is None:
             if self.scene.recommended_spawn_items:
