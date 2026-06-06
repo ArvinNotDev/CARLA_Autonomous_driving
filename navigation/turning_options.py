@@ -50,3 +50,45 @@ def classify_junction(junction_wp):
         return "straight"
 
     return "unknown"
+
+def get_intersection_options(start_wp, search_distance=10, step=2):
+
+    wp = start_wp
+    distance = 0
+
+    # find first junction ahead
+    while distance < search_distance:
+
+        if wp.is_junction:
+            break
+
+        nxt = wp.next(step)
+
+        if not nxt:
+            return []
+
+        wp = nxt[0]
+        distance += step
+
+    if not wp.is_junction:
+        return []
+
+    options = []
+
+    for candidate in wp.next(8):
+
+        delta = normalize_angle(
+            candidate.transform.rotation.yaw
+            - wp.transform.rotation.yaw
+        )
+
+        if delta < -35:
+            options.append(("LEFT", candidate))
+
+        elif delta > 35:
+            options.append(("RIGHT", candidate))
+
+        else:
+            options.append(("STRAIGHT", candidate))
+
+    return options
