@@ -11,7 +11,7 @@ from vision.color_extractor import HSVColorThresholdExtractor
 class VisionProcessor:
     def __init__(
         self,
-        mode: str = "onnx",  # "segmentation" or "onnx"
+        mode: str = "segmentation",  # "segmentation" or "onnx"
         color_extractor: HSVColorThresholdExtractor | None = None,
     ):
         self.mode = mode.lower().strip()
@@ -72,7 +72,45 @@ class VisionProcessor:
 
     def _lane_offset_px(self):
         return 0.0
+    
+    def detect_crosswalk(self, binary_frame):
 
+        contours, _ = cv2.findContours(
+            binary_frame,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        stripes = []
+
+        for cnt in contours:
+
+            area = cv2.contourArea(cnt)
+
+            if area < 200:
+                continue
+
+            x, y, w, h = cv2.boundingRect(cnt)
+
+            if w < 20 or h < 5:
+                continue
+
+            aspect_ratio = w / h
+
+            if aspect_ratio > 2:
+                stripes.append((x, y, w, h))
+
+        if len(stripes) >= 3:
+
+            stripes = sorted(
+                stripes,
+                key=lambda r: r[1]
+            )
+
+            return True, stripes
+
+        return False, []
+    
     def _draw_debug(self, frame, line_mask, left_x, right_x, lane_center, lane_type):
         vis = frame.copy()
         overlay = vis.copy()
@@ -461,10 +499,13 @@ class VisionProcessor:
             conf.debug_frame_buffer = combined
         except Exception:
             pass
+        
+        is_crosswalk = self.detect_crosswalk(green_mask)
 
         return {
             "error": error,
             "lane_type": lane_type,
+            "is_crosswalk": is_crosswalk,
             "debug": {
                 "combined": combined,
                 "lane_mask": line_mask,
