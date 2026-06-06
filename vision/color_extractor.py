@@ -8,8 +8,8 @@ class HSVColorThresholdExtractor:
 
         self.ranges = {
             "green": {
-                "lower": np.array([35, 50, 50], dtype=np.uint8),
-                "upper": np.array([85, 255, 255], dtype=np.uint8),
+                "lower": np.array([40, 120, 150], dtype=np.uint8),
+                "upper": np.array([45, 255, 255], dtype=np.uint8),
             },
             "dark_purple": {
                 "lower": np.array([130, 50, 10], dtype=np.uint8),
