@@ -1,3 +1,4 @@
 .vscode
 YOLOPv2.onnx
 **/__pycache__/
+**/dataset/
