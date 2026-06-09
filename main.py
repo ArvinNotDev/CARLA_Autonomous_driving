@@ -14,10 +14,10 @@ from sensors.camera_manager import CameraManager
 from stream import start_stream
 from vision.city_vision_processing import VisionProcessor
 from vision.color_extractor import HSVColorThresholdExtractor
-from navigation.intersection_detector import is_four_way_intersection_ahead, is_intersection_ahead
+from navigation.intersection_detector import IntersectionModel
 from navigation.turning_options import get_turn_options, get_intersection_options
 from navigation.global_planner import RoutePlanner
-from navigation.navigate import move_toward_target
+from navigation.navigate import move_vehicle_for_distance
 import time
 # ---------------------------------------------------------------------------
 # Configuration helpers
@@ -97,6 +97,7 @@ class CarlaLaneDrivingApp:
         self.auto_mode = bool(cfg("AUTO_MODE_DEFAULT", True))
         self.running = True
         self.turning_intersection = False
+        self.intersection_model = IntersectionModel("models_and_datasets/models/junction_model_resnet18.pt")
 
     def setup(self) -> None:
         self.world = self.carla_manager.connect()
@@ -116,7 +117,7 @@ class CarlaLaneDrivingApp:
 
 
 
-        self.vision_processor = VisionProcessor(color_extractor=color_extractor)
+        self.vision_processor = VisionProcessor()
 
         self.controller = FixedSpeedPIDController(
             fixed_throttle=conf.FIXED_THROTTLE,
@@ -186,7 +187,8 @@ class CarlaLaneDrivingApp:
 
                 rgb_frame = self.camera_manager.get_latest_rgb() if self.camera_manager is not None else None
                 semantic_frame = self.camera_manager.get_latest_semantic() if self.camera_manager is not None else None
-
+                self.is_intersection = self.intersection_model.is_intersection_ahead(rgb_frame)
+                print(self.is_intersection)
                 if rgb_frame is None and semantic_frame is None:
                     blank = np.zeros(
                         (
@@ -221,14 +223,6 @@ class CarlaLaneDrivingApp:
                             self.vehicle.apply_control(make_stop_control())
 
                     else:
-
-
-
-
-
-                        
-
-                        cv2.imshow("sem", semantic_frame)
                         result = self.vision_processor.detect(semantic_frame, rgb_frame)
                         error = float(result.get("error", 0.0))
                         debug = result.get("debug", {})
@@ -246,43 +240,19 @@ class CarlaLaneDrivingApp:
                         self.current_location = self.vehicle.get_location()
                         self.vehicle_wp = self.world.get_map().get_waypoint(self.vehicle.get_location())
                         
-                        if is_intersection_ahead(self.vehicle_wp, distance=30):
+                        if self.is_intersection:
                             dist_next_maneuver = self.planner.distance_to_next_maneuver(self.current_location, self.goal_location)
                             if dist_next_maneuver is not None:
-                                if dist_next_maneuver <= 20:
+                                if dist_next_maneuver <= 5:
                                     self.next_maneuver = self.planner.get_next_maneuver_text(self.current_location, self.goal_location)
-                                    route = self.planner.get_route(self.current_location,self.goal_location)
-                                    target_wp = route[min(10, len(route)-1)][0]
-                                    target_location = target_wp.transform.location # after implementing the readin
+                                    print(self.next_maneuver)
                             else:
                                 self.next_maneuver = None
-                        else:
-                            self.options = []
                         
-                        crosswalk_info = result["is_crosswalk"]
-                        if self.crosswalk_timeout == False:
-                            if crosswalk_info[0] == True:
-                                # target_location = None
-                                self.turning_intersection = True
-                                self.vehicle.apply_control(
-                                    carla.VehicleControl(
-                                        throttle=0.0,
-                                        steer=0.0,
-                                        brake=1.0
-                                    )
-                                )
-                                time.sleep(5)
+                        
 
                         if self.turning_intersection == True:
-                            self.turning_intersection = False
-                            self.crosswalk_timeout = True
-                            self.vehicle.apply_control(
-                                carla.VehicleControl(
-                                    throttle=0.2,
-                                    steer=0.0,
-                                    brake=0.0
-                                )
-                            )
+                            pass
 
                         
                         #####################################
