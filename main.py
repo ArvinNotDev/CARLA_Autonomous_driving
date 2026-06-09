@@ -243,9 +243,11 @@ class CarlaLaneDrivingApp:
                         if self.is_intersection:
                             dist_next_maneuver = self.planner.distance_to_next_maneuver(self.current_location, self.goal_location)
                             if dist_next_maneuver is not None:
-                                if dist_next_maneuver <= 5:
+                                if dist_next_maneuver <= 6:
                                     self.next_maneuver = self.planner.get_next_maneuver_text(self.current_location, self.goal_location)
-                                    print(self.next_maneuver)
+                                    move_vehicle_for_distance(self.vehicle, 6, 0.05, True, 0.2)
+                                    move_vehicle_for_distance(self.vehicle, 7, 0.1, True, 0.2)
+                                    move_vehicle_for_distance(self.vehicle, 6, 0.4, True, 0.2)
                             else:
                                 self.next_maneuver = None
                         
