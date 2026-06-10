@@ -1,5 +1,6 @@
 import math
 import carla
+import threading
 import time
 
 def move_toward_target(vehicle, target_location, throttle=0.35, stop_distance=3.0):
@@ -34,7 +35,7 @@ def move_toward_target(vehicle, target_location, throttle=0.35, stop_distance=3.
         manual_gear_shift=False,
     )
 
-def move_vehicle_for_distance(
+def _move_vehicle_for_distance_blocking(
     vehicle: carla.Vehicle,
     distance_m: float,
     steer: float = 0.0,
@@ -42,17 +43,6 @@ def move_vehicle_for_distance(
     throttle: float = 0.35,
     timeout: float = 20.0,
 ):
-    """
-    Move the vehicle for a specific distance with a fixed steer.
-
-    Args:
-        vehicle: CARLA vehicle actor
-        distance_m: target distance in meters
-        steer: steering value in [-1.0, 1.0]
-        forward: True = move forward, False = move backward
-        throttle: throttle in [0.0, 1.0]
-        timeout: safety timeout in seconds
-    """
     distance_m = abs(float(distance_m))
     steer = max(-1.0, min(1.0, float(steer)))
     throttle = max(0.0, min(1.0, float(throttle)))
@@ -76,14 +66,61 @@ def move_vehicle_for_distance(
         if time.time() - start_time > timeout:
             break
 
-        # In synchronous mode, this is enough.
-        # In asynchronous mode, this small sleep prevents busy waiting.
         time.sleep(0.02)
 
-    # # Stop the vehicle
     # stop = carla.VehicleControl()
     # stop.throttle = 0.0
     # stop.steer = 0.0
     # stop.brake = 1.0
     # stop.reverse = False
+    # stop.hand_brake = False
+    # stop.manual_gear_shift = False
     # vehicle.apply_control(stop)
+
+
+def move_vehicle_for_distance(
+    vehicle: carla.Vehicle,
+    distance_m: float,
+    steer: float = 0.0,
+    forward: bool = True,
+    throttle: float = 0.35,
+    timeout: float = 20.0,
+    *,
+    blocking: bool = False,
+):
+    """
+    Move the vehicle for a specific distance with a fixed steer.
+
+    Args:
+        vehicle: CARLA vehicle actor
+        distance_m: target distance in meters
+        steer: steering value in [-1.0, 1.0]
+        forward: True = move forward, False = move backward
+        throttle: throttle in [0.0, 1.0]
+        timeout: safety timeout in seconds
+    """
+    if blocking:
+        _move_vehicle_for_distance_blocking(
+            vehicle=vehicle,
+            distance_m=distance_m,
+            steer=steer,
+            forward=forward,
+            throttle=throttle,
+            timeout=timeout,
+        )
+        return None
+
+    thread = threading.Thread(
+        target=_move_vehicle_for_distance_blocking,
+        kwargs={
+            "vehicle": vehicle,
+            "distance_m": distance_m,
+            "steer": steer,
+            "forward": forward,
+            "throttle": throttle,
+            "timeout": timeout,
+        },
+        daemon=True,
+    )
+    thread.start()
+    return thread
