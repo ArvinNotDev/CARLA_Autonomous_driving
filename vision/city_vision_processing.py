@@ -5,6 +5,7 @@ import numpy as np
 import onnxruntime as ort
 
 import config_city as conf
+from utils import utils_onnx
 
 
 class VisionProcessor:
@@ -154,26 +155,19 @@ class VisionProcessor:
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
         return mask
-
+    
     def _extract_masks_from_onnx(self, rgb_frame):
         outputs = self.session.run(None, {self.input_name: self._preprocess_onnx(rgb_frame)})
 
-        drivable_idx = getattr(conf, "DRIVABLE_OUTPUT_INDEX", 4)
-        lane_idx = getattr(conf, "LANE_OUTPUT_INDEX", 5)
+        # YOLOPv2 standard indices:
+        # 4 = driving area
+        # 5 = lane line
+        lane_prob = self._extract_prob_map(outputs, 5)
+        drivable = utils_onnx.driving_area_mask(outputs[4])
+        
+        lane_mask_small = self._predict_mask(lane_prob, getattr(conf, "LANE_PROB_THRESHOLD", 0.50), )
 
-        drivable_prob = self._extract_prob_map(outputs, drivable_idx)
-        lane_prob = self._extract_prob_map(outputs, lane_idx)
-
-        drivable_mask_small = self._predict_mask(
-            drivable_prob,
-            getattr(conf, "DRIVABLE_PROB_THRESHOLD", 0.50),
-        )
-        lane_mask_small = self._predict_mask(
-            lane_prob,
-            getattr(conf, "LANE_PROB_THRESHOLD", 0.50),
-        )
-
-        return drivable_mask_small, lane_mask_small
+        return drivable, lane_mask_small
 
     def _pick_sticky_lane(self, left_x, right_x, frame_center, lane_offset_px):
         """
