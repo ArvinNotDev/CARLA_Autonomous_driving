@@ -18,7 +18,8 @@ from navigation.intersection_detector import IntersectionModel
 from navigation.turning_options import get_turn_options, get_intersection_options
 from navigation.global_planner import RoutePlanner
 from navigation.navigate import move_vehicle_for_distance
-import time
+
+
 # ---------------------------------------------------------------------------
 # Configuration helpers
 # ---------------------------------------------------------------------------
@@ -100,6 +101,41 @@ class CarlaLaneDrivingApp:
         self.intersection_model = IntersectionModel("models_and_datasets/models/junction_model_resnet18.pt")
         self.lane_change_debounce_seconds = float(cfg("LANE_CHANGE_DEBOUNCE_SECONDS", 1.5))
         self.lane_change_debounce_until = 0.0
+
+        self.movement_thread: Optional[threading.Thread] = None
+        self.next_maneuver: Optional[str] = None
+        self.is_intersection = False
+
+    def _movement_active(self) -> bool:
+        return self.movement_thread is not None and self.movement_thread.is_alive()
+
+    def _start_movement_sequence(self, segments) -> None:
+        if self.vehicle is None or self._movement_active():
+            return
+
+        def worker() -> None:
+            try:
+                for distance_m, steer, forward, throttle, timeout in segments:
+                    move_vehicle_for_distance(
+                        self.vehicle,
+                        distance_m,
+                        steer,
+                        forward,
+                        throttle,
+                        timeout,
+                        blocking=True,
+                    )
+            finally:
+                try:
+                    if self.vehicle is not None:
+                        self.vehicle.apply_control(make_stop_control())
+                except Exception:
+                    pass
+                self.turning_intersection = False
+
+        self.turning_intersection = True
+        self.movement_thread = threading.Thread(target=worker, daemon=True)
+        self.movement_thread.start()
 
     def setup(self) -> None:
         self.world = self.carla_manager.connect()
@@ -189,7 +225,13 @@ class CarlaLaneDrivingApp:
 
                 rgb_frame = self.camera_manager.get_latest_rgb() if self.camera_manager is not None else None
                 semantic_frame = self.camera_manager.get_latest_semantic() if self.camera_manager is not None else None
-                self.is_intersection = self.intersection_model.is_intersection_ahead(rgb_frame)
+
+                if self.movement_thread is not None and not self.movement_thread.is_alive():
+                    self.movement_thread = None
+
+                movement_active = self._movement_active()
+                self.turning_intersection = movement_active
+
                 if rgb_frame is None and semantic_frame is None:
                     blank = np.zeros(
                         (
@@ -208,7 +250,27 @@ class CarlaLaneDrivingApp:
                     time.sleep(0.01)
                     continue
 
+                if movement_active:
+                    screen = rgb_frame.copy() if rgb_frame is not None else np.zeros(
+                        (
+                            cfg("CAMERA_IMAGE_HEIGHT", 720),
+                            cfg("CAMERA_IMAGE_WIDTH", 1280),
+                            3,
+                        ),
+                        dtype=np.uint8,
+                    )
+                    conf.debug_frame_buffer = screen
+
+                    if cfg("SHOW_OPENCV_WINDOW", False):
+                        cv2.imshow("CARLA", cv2.resize(screen, (1280, 720)))
+                        cv2.waitKey(1)
+
+                    time.sleep(0.01)
+                    continue
+
                 if self.auto_mode:
+                    self.is_intersection = self.intersection_model.is_intersection_ahead(rgb_frame)
+
                     if semantic_frame is None:
                         screen = rgb_frame.copy() if rgb_frame is not None else np.zeros(
                             (
@@ -244,12 +306,18 @@ class CarlaLaneDrivingApp:
 
 
                         if time.time() >= self.lane_change_debounce_until:
-                            if self.planner.get_next_maneuver_text(self.current_location, self.goal_location) == "CHANGE_LANE_LEFT":
-                                move_vehicle_for_distance(self.vehicle, 3.5, -0.2, True, 0.1)
+                            next_maneuver_text = self.planner.get_next_maneuver_text(self.current_location, self.goal_location)
+
+                            if next_maneuver_text == "CHANGE_LANE_LEFT":
+                                self._start_movement_sequence([
+                                    (3.5, -0.2, True, 0.1, 20.0),
+                                ])
                                 self.lane_change_debounce_until = time.time() + self.lane_change_debounce_seconds
 
-                            if self.planner.get_next_maneuver_text(self.current_location, self.goal_location) == "CHANGE_LANE_RIGHT":
-                                move_vehicle_for_distance(self.vehicle, 3.5, 0.2, True, 0.1)
+                            if next_maneuver_text == "CHANGE_LANE_RIGHT":
+                                self._start_movement_sequence([
+                                    (3.5, 0.2, True, 0.1, 20.0),
+                                ])
                                 self.lane_change_debounce_until = time.time() + self.lane_change_debounce_seconds
 
 
@@ -262,17 +330,23 @@ class CarlaLaneDrivingApp:
                                 if dist_next_maneuver <= 6:
                                     self.next_maneuver = self.planner.get_next_maneuver_text(self.current_location, self.goal_location)
                                     if self.next_maneuver == "RIGHT":
-                                        move_vehicle_for_distance(self.vehicle, 8, 0.05, True, 0.2)
-                                        move_vehicle_for_distance(self.vehicle, 7, 0.1, True, 0.2)
-                                        move_vehicle_for_distance(self.vehicle, 6.9, 0.4, True, 0.2)
+                                        self._start_movement_sequence([
+                                            (8, 0.05, True, 0.2, 20.0),
+                                            (7, 0.1, True, 0.2, 20.0),
+                                            (6.9, 0.4, True, 0.2, 20.0),
+                                        ])
 
                                     if self.next_maneuver == "LEFT":
-                                        move_vehicle_for_distance(self.vehicle, 20, 0, True, 0.2)
-                                        move_vehicle_for_distance(self.vehicle, 17, -0.23, True, 0.2)
-                                        move_vehicle_for_distance(self.vehicle, 5, 0, True, 0.2)
+                                        self._start_movement_sequence([
+                                            (20, 0, True, 0.2, 20.0),
+                                            (17, -0.23, True, 0.2, 20.0),
+                                            (5, 0, True, 0.2, 20.0),
+                                        ])
                                     
                                     if self.next_maneuver == "STRAIGHT":
-                                        move_vehicle_for_distance(self.vehicle, 30, 0.0, True, 0.2)
+                                        self._start_movement_sequence([
+                                            (30, 0.0, True, 0.2, 20.0),
+                                        ])
                                         
                             else:
                                 self.next_maneuver = None
@@ -284,6 +358,7 @@ class CarlaLaneDrivingApp:
 
                         
                         #####################################
+
 
                     conf.debug_frame_buffer = screen
 

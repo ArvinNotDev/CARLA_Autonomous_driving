@@ -103,36 +103,36 @@ class VisionProcessor:
         if right_x is not None:
             cv2.circle(vis, (int(right_x), int(h * 0.90)), 6, (0, 255, 255), -1)
 
-        cv2.putText(
-            vis,
-            "mode: onnx",
-            (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            vis,
-            f"lane_type: {lane_type}",
-            (10, 60),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            vis,
-            f"error: {lane_center - frame_center:.1f}",
-            (10, 90),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
+        # cv2.putText(
+        #     vis,
+        #     "mode: onnx",
+        #     (10, 30),
+        #     cv2.FONT_HERSHEY_SIMPLEX,
+        #     0.7,
+        #     (255, 255, 255),
+        #     2,
+        #     cv2.LINE_AA,
+        # )
+        # cv2.putText(
+        #     vis,
+        #     f"lane_type: {lane_type}",
+        #     (10, 60),
+        #     cv2.FONT_HERSHEY_SIMPLEX,
+        #     0.7,
+        #     (255, 255, 255),
+        #     2,
+        #     cv2.LINE_AA,
+        # )
+        # cv2.putText(
+        #     vis,
+        #     f"error: {lane_center - frame_center:.1f}",
+        #     (10, 90),
+        #     cv2.FONT_HERSHEY_SIMPLEX,
+        #     0.7,
+        #     (255, 255, 255),
+        #     2,
+        #     cv2.LINE_AA,
+        # )
 
         return vis
 
