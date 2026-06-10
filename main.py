@@ -289,19 +289,19 @@ class CarlaLaneDrivingApp:
                         result = self.vision_processor.detect(semantic_frame, rgb_frame)
                         error = float(result.get("error", 0.0))
                         debug = result.get("debug", {})
-                        da_debug = debug.get("drivable_mask", None)
+                        # da_debug = debug.get("drivable_mask", None)
                         
-                        if da_debug is None:
-                            da_debug = np.zeros(
-                                (
-                                    cfg("CAMERA_IMAGE_HEIGHT", 720),
-                                    cfg("CAMERA_IMAGE_WIDTH", 1280),
-                                    3,
-                                ),
-                                dtype=np.uint8,
-                            )
+                        # if da_debug is None:
+                        #     da_debug = np.zeros(
+                        #         (
+                        #             cfg("CAMERA_IMAGE_HEIGHT", 720),
+                        #             cfg("CAMERA_IMAGE_WIDTH", 1280),
+                        #             3,
+                        #         ),
+                        #         dtype=np.uint8,
+                        #     )
 
-                        cv2.imshow("drivable area", da_debug)
+                        # cv2.imshow("drivable area", da_debug)
 
                         screen = debug.get("combined", semantic_frame).copy()
                         # self._render_mode_overlay(screen, "AUTO", error)
