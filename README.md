@@ -24,7 +24,7 @@ Autonomous driving project built with CARLA, Python, OpenCV, ONNX Runtime, and Y
 
 ```bash
 python main.py
-
+```
 
 Third-party code notice
 
