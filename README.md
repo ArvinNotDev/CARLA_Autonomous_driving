@@ -26,7 +26,10 @@ Autonomous driving project built with CARLA, Python, OpenCV, ONNX Runtime, and Y
 python main.py
 ```
 
-Third-party code notice
+
+
+
+# Third-party code notice
 
 This project includes code adapted from:
 YOLOPv2-ONNX-Sample by Kazuhito00
