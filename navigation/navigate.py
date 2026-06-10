@@ -80,10 +80,10 @@ def move_vehicle_for_distance(
         # In asynchronous mode, this small sleep prevents busy waiting.
         time.sleep(0.02)
 
-    # Stop the vehicle
-    stop = carla.VehicleControl()
-    stop.throttle = 0.0
-    stop.steer = 0.0
-    stop.brake = 1.0
-    stop.reverse = False
-    vehicle.apply_control(stop)
+    # # Stop the vehicle
+    # stop = carla.VehicleControl()
+    # stop.throttle = 0.0
+    # stop.steer = 0.0
+    # stop.brake = 1.0
+    # stop.reverse = False
+    # vehicle.apply_control(stop)

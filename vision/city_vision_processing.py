@@ -11,6 +11,8 @@ class VisionProcessor:
     def __init__(self, mode: str = "onnx"):
         self.mode = "onnx"
 
+        self.debug = True  # True = draw debug overlays, False = faster
+
         self.last_lane_center = None
         self.lane_center_alpha = getattr(conf, "LANE_CENTER_SMOOTH_ALPHA", 0.35)
         self.fallback_lane_offset_ratio = getattr(conf, "FALLBACK_LANE_OFFSET_RATIO", 0.18)
@@ -28,14 +30,16 @@ class VisionProcessor:
             raise FileNotFoundError(f"ONNX model not found: {model_path}")
 
         opts = ort.SessionOptions()
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         opts.intra_op_num_threads = 4
         opts.inter_op_num_threads = 1
 
         self.session = ort.InferenceSession(
             model_path,
             sess_options=opts,
-            providers=["CPUExecutionProvider"],
+            providers=['CUDAExecutionProvider', 'CPUExecutionProvider'],
         )
+        print(self.session.get_providers())
         self.input_name = self.session.get_inputs()[0].name
 
     def _boundary_from_roi(self, full_mask, top, bottom, left, right):
@@ -216,32 +220,32 @@ class VisionProcessor:
 
         if self.active_side == "right":
             if right_x is not None:
-                return "only_right", right_x - lane_offset_px - 30
+                return "only_right", right_x - lane_offset_px - 25
 
             if left_x is not None:
                 self.active_side = "left"
-                return "only_left", left_x + lane_offset_px + 30
+                return "only_left", left_x + lane_offset_px + 25
 
             return lane_type, self.last_lane_center if self.last_lane_center is not None else frame_center
 
         if self.active_side == "left":
             if left_x is not None:
-                return "only_left", left_x + lane_offset_px + 30
+                return "only_left", left_x + lane_offset_px + 25
 
             if right_x is not None:
                 self.active_side = "right"
-                return "only_right", right_x - lane_offset_px - 30
+                return "only_right", right_x - lane_offset_px - 25
 
             return lane_type, self.last_lane_center if self.last_lane_center is not None else frame_center
 
         # No active side yet: prefer right first, then left
         if right_x is not None:
             self.active_side = "right"
-            return "only_right", right_x - lane_offset_px - 30
+            return "only_right", right_x - lane_offset_px - 25
 
         if left_x is not None:
             self.active_side = "left"
-            return "only_left", left_x + lane_offset_px + 30
+            return "only_left", left_x + lane_offset_px + 25
 
         return lane_type, self.last_lane_center if self.last_lane_center is not None else frame_center
 
@@ -315,14 +319,17 @@ class VisionProcessor:
         smoothed_lane_center = self._smooth_lane_center(lane_center)
         error = smoothed_lane_center - frame_center
 
-        combined = self._draw_debug(
-            frame=base_frame,   # always RGB debug
-            line_mask=line_mask,
-            left_x=left_x,
-            right_x=right_x,
-            lane_center=smoothed_lane_center,
-            lane_type=lane_type,
-        )
+        if self.debug:
+            combined = self._draw_debug(
+                frame=base_frame,   # always RGB debug
+                line_mask=line_mask,
+                left_x=left_x,
+                right_x=right_x,
+                lane_center=smoothed_lane_center,
+                lane_type=lane_type,
+            )
+        else:
+            combined = base_frame
 
         try:
             conf.debug_frame_buffer = combined

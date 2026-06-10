@@ -2,16 +2,16 @@
   "version": 1,
   "map_name": "CARLA Map",
   "spawn_point": {
-    "x": -8.461,
-    "y": 66.238,
+    "x": -7.318,
+    "y": 66.239,
     "z": 0.5,
     "roll": 0.0,
     "pitch": 0.0,
     "yaw": -179.927
   },
   "traffic": {
-    "vehicles": 0,
-    "walkers": 0,
+    "vehicles": 25,
+    "walkers": 60,
     "traffic_manager_port": 8000,
     "seed": 12345,
     "auto_spawn": false

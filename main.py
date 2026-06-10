@@ -98,6 +98,8 @@ class CarlaLaneDrivingApp:
         self.running = True
         self.turning_intersection = False
         self.intersection_model = IntersectionModel("models_and_datasets/models/junction_model_resnet18.pt")
+        self.lane_change_debounce_seconds = float(cfg("LANE_CHANGE_DEBOUNCE_SECONDS", 1.5))
+        self.lane_change_debounce_until = 0.0
 
     def setup(self) -> None:
         self.world = self.carla_manager.connect()
@@ -188,7 +190,6 @@ class CarlaLaneDrivingApp:
                 rgb_frame = self.camera_manager.get_latest_rgb() if self.camera_manager is not None else None
                 semantic_frame = self.camera_manager.get_latest_semantic() if self.camera_manager is not None else None
                 self.is_intersection = self.intersection_model.is_intersection_ahead(rgb_frame)
-                print(self.is_intersection)
                 if rgb_frame is None and semantic_frame is None:
                     blank = np.zeros(
                         (
@@ -240,14 +241,39 @@ class CarlaLaneDrivingApp:
                         self.current_location = self.vehicle.get_location()
                         self.vehicle_wp = self.world.get_map().get_waypoint(self.vehicle.get_location())
                         
+
+
+                        if time.time() >= self.lane_change_debounce_until:
+                            if self.planner.get_next_maneuver_text(self.current_location, self.goal_location) == "CHANGE_LANE_LEFT":
+                                move_vehicle_for_distance(self.vehicle, 3.5, -0.2, True, 0.1)
+                                self.lane_change_debounce_until = time.time() + self.lane_change_debounce_seconds
+
+                            if self.planner.get_next_maneuver_text(self.current_location, self.goal_location) == "CHANGE_LANE_RIGHT":
+                                move_vehicle_for_distance(self.vehicle, 3.5, 0.2, True, 0.1)
+                                self.lane_change_debounce_until = time.time() + self.lane_change_debounce_seconds
+
+
+
+
+
                         if self.is_intersection:
                             dist_next_maneuver = self.planner.distance_to_next_maneuver(self.current_location, self.goal_location)
                             if dist_next_maneuver is not None:
                                 if dist_next_maneuver <= 6:
                                     self.next_maneuver = self.planner.get_next_maneuver_text(self.current_location, self.goal_location)
-                                    move_vehicle_for_distance(self.vehicle, 6, 0.05, True, 0.2)
-                                    move_vehicle_for_distance(self.vehicle, 7, 0.1, True, 0.2)
-                                    move_vehicle_for_distance(self.vehicle, 6, 0.4, True, 0.2)
+                                    if self.next_maneuver == "RIGHT":
+                                        move_vehicle_for_distance(self.vehicle, 8, 0.05, True, 0.2)
+                                        move_vehicle_for_distance(self.vehicle, 7, 0.1, True, 0.2)
+                                        move_vehicle_for_distance(self.vehicle, 6.9, 0.4, True, 0.2)
+
+                                    if self.next_maneuver == "LEFT":
+                                        move_vehicle_for_distance(self.vehicle, 20, 0, True, 0.2)
+                                        move_vehicle_for_distance(self.vehicle, 17, -0.23, True, 0.2)
+                                        move_vehicle_for_distance(self.vehicle, 5, 0, True, 0.2)
+                                    
+                                    if self.next_maneuver == "STRAIGHT":
+                                        move_vehicle_for_distance(self.vehicle, 30, 0.0, True, 0.2)
+                                        
                             else:
                                 self.next_maneuver = None
                         

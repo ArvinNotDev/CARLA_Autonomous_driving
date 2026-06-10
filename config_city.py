@@ -47,7 +47,7 @@ VEHICLE_BLUEPRINT = "vehicle.tesla.model3"
 # Camera
 # -------------------------------------------------
 CAMERA_IMAGE_WIDTH = 320
-CAMERA_IMAGE_HEIGHT = 240
+CAMERA_IMAGE_HEIGHT = 192
 CAMERA_FOV = 90
 CAMERA_SENSOR_TICK = 0.02
 
@@ -71,7 +71,7 @@ debug_frame_buffer = None
 # -------------------------------------------------
 # PID controller
 # -------------------------------------------------
-FIXED_THROTTLE = 0.15
+FIXED_THROTTLE = 0.2
 KP = 0.008
 KI = 0.0000
 KD = 0.002
@@ -121,7 +121,7 @@ CROSSWALK_THRESHOLD = 180
 CROSSWALK_SLEEP = 3.0
 CROSSWALK_THRESH_SPEND = 8.0
 RUN_LVL = "MOVE"
-
+LANE_CHANGE_DEBOUNCE_SECONDS = 2
 
 
 apply_json_override()
