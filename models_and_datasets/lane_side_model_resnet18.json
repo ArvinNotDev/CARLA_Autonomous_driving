@@ -1,0 +1,16 @@
+{
+  "best_val_acc": 0.972972972972973,
+  "test_loss": 0.20297959537873433,
+  "test_acc": 0.9302325581395349,
+  "train_size": 309,
+  "val_size": 37,
+  "test_size": 43,
+  "image_size": 224,
+  "num_classes": 4,
+  "class_names": {
+    "0": "left_lane",
+    "1": "right_lane",
+    "2": "out_from_right",
+    "3": "out_from_left"
+  }
+}
