@@ -1,340 +1,308 @@
-import os
+# Adapted from:
+# https://github.com/Kazuhito00/YOLOPv2-ONNX-Sample
+# Author: Kazuhito00 (高橋かずひと)
+# Licensed under the MIT License.
+# See LICENSES/YOLOPv2-ONNX-Sample-MIT.txt
+# Copyright (c) 2023 Kazuhito00
+
+import copy
+import time
 
 import cv2
 import numpy as np
-import onnxruntime as ort
-
-from utils import utils_onnx
-import config_city as conf
 
 
-class VisionProcessor:
-    def __init__(self, mode: str = "onnx"):
-        self.mode = "onnx"
+def letterbox(
+    img,
+    new_shape=(640, 640),
+    color=(114, 114, 114),
+    auto=True,
+    scaleFill=False,
+    scaleup=True,
+    stride=32,
+):
+    # Resize and pad image while meeting stride-multiple constraints
+    shape = img.shape[:2]  # current shape [height, width]
+    if isinstance(new_shape, int):
+        new_shape = (new_shape, new_shape)
 
-        self.debug = True  # True = draw debug overlays, False = faster
+    # Scale ratio (new / old)
+    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
 
-        self.last_lane_center = None
-        self.lane_center_alpha = getattr(conf, "LANE_CENTER_SMOOTH_ALPHA", 0.35)
-        self.fallback_lane_offset_ratio = getattr(conf, "FALLBACK_LANE_OFFSET_RATIO", 0.18)
-        self.min_side_pixels = getattr(conf, "MIN_SIDE_PIXELS", 80)
+    if not scaleup:  # only scale down, do not scale up (for better test mAP)
+        r = min(r, 1.0)
 
-        self.active_side = None
+    # Compute padding
+    ratio = r, r  # width, height ratios
+    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[
+        1]  # wh padding
+    if auto:  # minimum rectangle
+        dw, dh = np.mod(dw, stride), np.mod(dh, stride)  # wh padding
+    elif scaleFill:  # stretch
+        dw, dh = 0.0, 0.0
+        new_unpad = (new_shape[1], new_shape[0])
+        ratio = new_shape[1] / shape[1], new_shape[0] / shape[
+            0]  # width, height ratios
 
-        self.session = None
-        self.input_name = None
-        self.input_width = getattr(conf, "INPUT_WIDTH", 416)
-        self.input_height = getattr(conf, "INPUT_HEIGHT", 416)
+    # divide padding into 2 sides
+    dw /= 2
+    dh /= 2
 
-        model_path = conf.MODEL_PATH
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"ONNX model not found: {model_path}")
+    if shape[::-1] != new_unpad:  # resize
+        img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
 
-        opts = ort.SessionOptions()
-        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        opts.intra_op_num_threads = 4
-        opts.inter_op_num_threads = 1
+    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
 
-        self.session = ort.InferenceSession(
-            model_path,
-            sess_options=opts,
-            providers=['CUDAExecutionProvider', 'CPUExecutionProvider'],
-        )
-        print(self.session.get_providers())
-        self.input_name = self.session.get_inputs()[0].name
+    img = cv2.copyMakeBorder(
+        img,
+        top,
+        bottom,
+        left,
+        right,
+        cv2.BORDER_CONSTANT,
+        value=color,
+    )  # add border
 
-    def _boundary_from_roi(self, full_mask, top, bottom, left, right):
-        h, w = full_mask.shape[:2]
+    return img, ratio, (dw, dh)
 
-        top = max(0, min(h, top))
-        bottom = max(0, min(h, bottom))
-        left = max(0, min(w, left))
-        right = max(0, min(w, right))
 
-        if bottom <= top or right <= left:
-            return None
+def _make_grid(nx=20, ny=20):
+    xv, yv = np.meshgrid(np.arange(0, nx), np.arange(0, ny))
+    return np.stack((xv, yv), 2).reshape((1, 1, ny, nx, 2)).astype('float32')
 
-        roi = full_mask[top:bottom, left:right]
-        ys, xs = np.where(roi > 0)
 
-        if len(xs) < self.min_side_pixels:
-            return None
+def _sigmoid(arr):
+    arr = np.array(arr, dtype=np.float32)
+    return 1.0 / (1.0 + np.exp(-1.0 * arr))
 
-        return left + int(np.median(xs))
 
-    def _draw_debug(self, frame, line_mask, left_x, right_x, lane_center, lane_type):
-        vis = frame.copy()
-        overlay = vis.copy()
+def split_for_trace_model(pred=None, anchor_grid=None):
+    z = []
+    st = [8, 16, 32]
 
-        if line_mask is not None:
-            overlay[line_mask > 0] = (0, 255, 0)
-            vis = cv2.addWeighted(vis, 0.75, overlay, 0.25, 0)
+    for i in range(3):
+        bs, _, ny, nx = pred[i].shape
+        pred[i] = pred[i].reshape(bs, 3, 85, ny, nx).transpose(0, 1, 3, 4, 2)
+        y = _sigmoid(pred[i])
+        gr = _make_grid(nx, ny)
+        y[..., 0:2] = (y[..., 0:2] * 2. - 0.5 + gr) * st[i]  # xy
+        y[..., 2:4] = (y[..., 2:4] * 2)**2 * anchor_grid[i]  # wh
+        z.append(y.reshape(bs, -1, 85))
 
-        h, w = vis.shape[:2]
-        frame_center = w / 2.0
+    pred = np.concatenate(z, 1)
 
-        ll_top_roi = getattr(conf, "LL_TOP_ROI", 0.55)
-        ll_bottom_roi = getattr(conf, "LL_BOTTOM_ROI", 0.98)
-        ll_left_roi = getattr(conf, "LL_LEFT_ROI", 0.05)
-        ll_right_roi = getattr(conf, "LL_RIGHT_ROI", 0.50)
+    return pred
 
-        rl_top_roi = getattr(conf, "RL_TOP_ROI", 0.55)
-        rl_bottom_roi = getattr(conf, "RL_BOTTOM_ROI", 0.98)
-        rl_left_roi = getattr(conf, "RL_LEFT_ROI", 0.50)
-        rl_right_roi = getattr(conf, "RL_RIGHT_ROI", 0.95)
 
-        ll_top = int(ll_top_roi * h)
-        ll_bottom = int(ll_bottom_roi * h)
-        ll_left = int(ll_left_roi * w)
-        ll_right = int(ll_right_roi * w)
+def _xywh2xyxy(x):
+    # Convert nx4 boxes from [x, y, w, h] to [x1, y1, x2, y2]
+    # where xy1=top-left, xy2=bottom-right
+    y = np.copy(x)
 
-        rl_top = int(rl_top_roi * h)
-        rl_bottom = int(rl_bottom_roi * h)
-        rl_left = int(rl_left_roi * w)
-        rl_right = int(rl_right_roi * w)
+    y[:, 0] = x[:, 0] - x[:, 2] / 2  # top left x
+    y[:, 1] = x[:, 1] - x[:, 3] / 2  # top left y
+    y[:, 2] = x[:, 0] + x[:, 2] / 2  # bottom right x
+    y[:, 3] = x[:, 1] + x[:, 3] / 2  # bottom right y
 
-        cv2.rectangle(vis, (ll_left, ll_top), (ll_right, ll_bottom), (0, 255, 0), 2)
-        cv2.rectangle(vis, (rl_left, rl_top), (rl_right, rl_bottom), (0, 255, 0), 2)
+    return y
 
-        cv2.line(vis, (int(frame_center), 0), (int(frame_center), h), (0, 0, 255), 2)
-        cv2.line(vis, (int(lane_center), 0), (int(lane_center), h), (255, 0, 255), 2)
 
-        if left_x is not None:
-            cv2.circle(vis, (int(left_x), int(h * 0.90)), 6, (255, 0, 0), -1)
-        if right_x is not None:
-            cv2.circle(vis, (int(right_x), int(h * 0.90)), 6, (0, 255, 255), -1)
+def _box_iou(box1, box2):
+    # https://github.com/pytorch/vision/blob/master/torchvision/ops/boxes.py
+    """
+    Return intersection-over-union (Jaccard index) of boxes.
+    Both sets of boxes are expected to be in (x1, y1, x2, y2) format.
+    Arguments:
+        box1 (Tensor[N, 4])
+        box2 (Tensor[M, 4])
+    Returns:
+        iou (Tensor[N, M]): the NxM matrix containing the pairwise
+            IoU values for every element in boxes1 and boxes2
+    """
+    def box_area(box):
+        # box = 4xn
+        return (box[2] - box[0]) * (box[3] - box[1])
 
-        return vis
+    area1 = box_area(box1.T)
+    area2 = box_area(box2.T)
 
-    def _smooth_lane_center(self, lane_center):
-        if self.last_lane_center is None:
-            smoothed_lane_center = lane_center
-        else:
-            smoothed_lane_center = (
-                self.lane_center_alpha * lane_center
-                + (1.0 - self.lane_center_alpha) * self.last_lane_center
-            )
-        self.last_lane_center = smoothed_lane_center
-        return smoothed_lane_center
+    # inter(N,M) = (rb(N,M,2) - lt(N,M,2)).clamp(0).prod(2)
+    inter = (np.minimum(box1[:, None, 2:], box2[:, 2:]) -
+             np.maximum(box1[:, None, :2], box2[:, :2])).clamp(0).prod(2)
+    return inter / (area1[:, None] + area2 - inter
+                    )  # iou = inter / (area1 + area2 - inter)
 
-    def _preprocess_onnx(self, frame):
-        input_image = frame.copy()
-        input_image, _, (pad_w, pad_h) = utils_onnx.letterbox(
-            input_image,
-            new_shape=(self.input_width, self.input_height),
-        )
 
-        input_image = input_image[:, :, ::-1].transpose(2, 0, 1)
-        input_image = np.ascontiguousarray(input_image)
-        input_image = input_image.astype("float32")
-        input_image /= 255.0
-        input_image = np.expand_dims(input_image, axis=0)
+def _nms(boxes, scores, iou_threshold):
+    x1, y1 = boxes[:, 0], boxes[:, 1]
+    x2, y2 = boxes[:, 2], boxes[:, 3]
 
-        return input_image, (pad_w, pad_h)
+    areas = (x2 - x1 + 1) * (y2 - y1 + 1)
+    order = scores.argsort()[::-1]
 
-    def _sigmoid(self, x):
-        x = np.clip(np.asarray(x, dtype=np.float32), -50.0, 50.0)
-        return 1.0 / (1.0 + np.exp(-x))
+    keep = []
+    while order.size > 0:
+        i = order[0]
+        keep.append(i)
 
-    def _extract_prob_map(self, outputs):
-        if not outputs:
-            raise RuntimeError("Model returned no outputs")
+        xx1 = np.maximum(x1[i], x1[order[1:]])
+        yy1 = np.maximum(y1[i], y1[order[1:]])
+        xx2 = np.minimum(x2[i], x2[order[1:]])
+        yy2 = np.minimum(y2[i], y2[order[1:]])
 
-        idx = getattr(conf, "DRIVABLE_OUTPUT_INDEX", -1)
-        if idx < 0 or idx >= len(outputs):
-            idx = len(outputs) - 1
+        w = np.maximum(0.0, xx2 - xx1 + 1)
+        h = np.maximum(0.0, yy2 - yy1 + 1)
+        inter = w * h
+        ovr = inter / (areas[i] + areas[order[1:]] - inter)
 
-        out = np.squeeze(np.asarray(outputs[idx])).astype(np.float32)
-        if out.ndim == 3:
-            out = out[0]
+        inds = np.where(ovr <= iou_threshold)[0]
+        order = order[inds + 1]
 
-        if out.min() < 0.0 or out.max() > 1.0:
-            out = self._sigmoid(out)
+    result = np.stack(keep)
+    return result
 
-        return out
 
-    def _predict_lane_mask(self, outputs):
-        lane_prob = self._extract_prob_map(outputs)
+def non_max_suppression(
+        prediction,
+        conf_thres=0.25,
+        iou_thres=0.45,
+        multi_label=False,
+        labels=(),
+):
+    """Runs Non-Maximum Suppression (NMS) on inference results
 
-        lane_mask = None
-        for threshold in (
-            getattr(conf, "LANE_PROB_THRESHOLD", 0.50),
-            getattr(conf, "LANE_PROB_THRESHOLD_FALLBACK", 0.35),
-            max(
-                getattr(conf, "LANE_PROB_THRESHOLD_MIN", 0.20),
-                float(np.percentile(lane_prob, 80)),
-            ),
-        ):
-            candidate = (lane_prob > threshold).astype(np.uint8) * 255
-            if cv2.countNonZero(candidate) >= 200:
-                lane_mask = candidate
-                break
+    Returns:
+         list of detections, on (n,6) tensor per image [xyxy, conf, cls]
+    """
 
-        if lane_mask is None:
-            lane_mask = (lane_prob > getattr(conf, "LANE_PROB_THRESHOLD_MIN", 0.20)).astype(np.uint8) * 255
+    nc = prediction.shape[2] - 5  # number of classes
+    xc = prediction[..., 4] > conf_thres  # candidates
 
-        kernel = np.ones((3, 3), np.uint8)
-        lane_mask = cv2.morphologyEx(lane_mask, cv2.MORPH_OPEN, kernel, iterations=1)
-        lane_mask = cv2.morphologyEx(lane_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-        return lane_mask
+    # Settings
+    max_det = 300  # maximum number of detections per image
+    max_nms = 30000  # maximum number of boxes into torchvision.ops.nms()
+    time_limit = 10.0  # seconds to quit after
+    multi_label &= nc > 1  # multiple labels per box (adds 0.5ms/img)
 
-    def _extract_masks_from_onnx(self, rgb_frame):
-        input_image, pad_wh = self._preprocess_onnx(rgb_frame)
-        outputs = self.session.run(None, {self.input_name: input_image})
+    t = time.time()
+    output = [np.zeros((0, 6))] * prediction.shape[0]
+    for xi, x in enumerate(prediction):  # image index, image inference
+        # Apply constraints
+        x = x[xc[xi]]  # confidence
 
-        drivable_seg = utils_onnx.driving_area_mask(outputs[4], pad_wh)
-        lane_seg = utils_onnx.lane_line_mask(outputs[5], pad_wh)
+        # Cat apriori labels if autolabelling
+        if labels and len(labels[xi]):
+            l = labels[xi]
+            v = np.zeros((len(l), nc + 5), device=x.device)
+            v[:, :4] = l[:, 1:5]  # box
+            v[:, 4] = 1.0  # conf
+            v[range(len(l)), l[:, 0].long() + 5] = 1.0  # cls
+            x = np.concatenate((x, v), 0)
 
-        drivable_mask_small = (np.asarray(drivable_seg, dtype=np.float32) > 0.5).astype(np.uint8) * 255
-        lane_mask_small = (np.asarray(lane_seg, dtype=np.float32) > 0.5).astype(np.uint8) * 255
+        # If none remain process next image
+        if not x.shape[0]:
+            continue
 
-        return drivable_mask_small, lane_mask_small
+        # Compute conf
+        x[:, 5:] *= x[:, 4:5]  # conf = obj_conf * cls_conf
 
-    def _pick_sticky_lane(self, left_x, right_x, frame_center, lane_offset_px):
-        """
-        Sticky-side logic:
-        - First visible side becomes active.
-        - Keep using that side as long as it exists.
-        - If it disappears, switch to the other side if available.
-        """
-        lane_type = "none"
+        # Box (center x, center y, width, height) to (x1, y1, x2, y2)
+        box = _xywh2xyxy(x[:, :4])
 
-        if self.active_side == "right":
-            if right_x is not None:
-                return "only_right", right_x - lane_offset_px - 25
+        # Detections matrix nx6 (xyxy, conf, cls)
+        if multi_label:
+            i, j = (x[:, 5:] > conf_thres).nonzero(as_tuple=False).T
+            x = np.concatenate((box[i], x[i, j + 5, None], j[:, None].float()),
+                               1)
+        else:  # best class only
+            conf = np.max(x[:, 5:], axis=1, keepdims=True)
+            j = np.argmax(x[:, 5:], axis=1)
+            j = j.reshape((j.shape[0], 1))
+            x = np.concatenate((box, conf, j.astype('float32')),
+                               1)[conf.reshape(-1) > conf_thres]
 
-            if left_x is not None:
-                self.active_side = "left"
-                return "only_left", left_x + lane_offset_px + 25
+        # Check shape
+        n = x.shape[0]  # number of boxes
+        if not n:  # no boxes
+            continue
+        elif n > max_nms:  # excess boxes
+            x = x[x[:, 4].argsort(
+                descending=True)[:max_nms]]  # sort by confidence
 
-            return lane_type, self.last_lane_center if self.last_lane_center is not None else frame_center
-
-        if self.active_side == "left":
-            if left_x is not None:
-                return "only_left", left_x + lane_offset_px + 25
-
-            if right_x is not None:
-                self.active_side = "right"
-                return "only_right", right_x - lane_offset_px - 25
-
-            return lane_type, self.last_lane_center if self.last_lane_center is not None else frame_center
-
-        if right_x is not None:
-            self.active_side = "right"
-            return "only_right", right_x - lane_offset_px - 25
-
-        if left_x is not None:
-            self.active_side = "left"
-            return "only_left", left_x + lane_offset_px + 25
-
-        return lane_type, self.last_lane_center if self.last_lane_center is not None else frame_center
-
-    def detect(self, semantic_frame, rgb_frame=None):
-        """
-        ONNX-only processing.
-        - rgb_frame is used for inference and debug display when available
-        - semantic_frame is kept only as a fallback if rgb_frame is not provided
-        """
-        base_frame = rgb_frame if rgb_frame is not None else semantic_frame
-
-        if base_frame is None or base_frame.size == 0:
-            return {
-                "error": 0.0,
-                "lane_type": "none",
-                "debug": {
-                    "combined": None,
-                    "lane_mask": None,
-                    "drivable_mask": None,
-                    "green_mask": None,
-                    "dark_purple_mask": None,
-                    "left_x": None,
-                    "right_x": None,
-                    "lane_center": None,
-                },
-            }
-
-        if rgb_frame is None or rgb_frame.size == 0:
-            rgb_frame = base_frame
-
-        height, width = base_frame.shape[:2]
-        frame_center = width / 2.0
-        lane_offset_px = width * self.fallback_lane_offset_ratio
-
-        drivable_mask_small, line_mask_small = self._extract_masks_from_onnx(rgb_frame)
-
-        drivable_mask = cv2.resize(
-            drivable_mask_small,
-            (width, height),
-            interpolation=cv2.INTER_NEAREST,
+        # NMS
+        boxes, scores = x[:, :4], x[:, 4]  # boxes (offset by class), scores
+        i = _nms(
+            boxes,
+            scores,
+            iou_thres,
         )
 
-        line_mask = cv2.resize(
-            line_mask_small,
-            (width, height),
-            interpolation=cv2.INTER_NEAREST,
-        )
+        if i.shape[0] > max_det:  # limit detections
+            i = i[:max_det]
 
-        ll_top_roi = getattr(conf, "LL_TOP_ROI", 0.55)
-        ll_bottom_roi = getattr(conf, "LL_BOTTOM_ROI", 0.98)
-        ll_left_roi = getattr(conf, "LL_LEFT_ROI", 0.05)
-        ll_right_roi = getattr(conf, "LL_RIGHT_ROI", 0.50)
+        output[xi] = x[i]
+        if (time.time() - t) > time_limit:
+            print(f'WARNING: NMS time limit {time_limit}s exceeded')
+            break  # time limit exceeded
 
-        rl_top_roi = getattr(conf, "RL_TOP_ROI", 0.55)
-        rl_bottom_roi = getattr(conf, "RL_BOTTOM_ROI", 0.98)
-        rl_left_roi = getattr(conf, "RL_LEFT_ROI", 0.50)
-        rl_right_roi = getattr(conf, "RL_RIGHT_ROI", 0.95)
+    return output
 
-        ll_top = int(ll_top_roi * height)
-        ll_bottom = int(ll_bottom_roi * height)
-        ll_left = int(ll_left_roi * width)
-        ll_right = int(ll_right_roi * width)
 
-        rl_top = int(rl_top_roi * height)
-        rl_bottom = int(rl_bottom_roi * height)
-        rl_left = int(rl_left_roi * width)
-        rl_right = int(rl_right_roi * width)
+def scale_coords(img1_shape, coords, img0_shape, ratio_pad=None):
+    # Rescale coords (xyxy) from img1_shape to img0_shape
+    if ratio_pad is None:  # calculate from img0_shape
+        gain = min(img1_shape[0] / img0_shape[0],
+                   img1_shape[1] / img0_shape[1])  # gain  = old / new
+        pad = (img1_shape[1] - img0_shape[1] * gain) / 2, (
+            img1_shape[0] - img0_shape[0] * gain) / 2  # wh padding
+    else:
+        gain = ratio_pad[0][0]
+        pad = ratio_pad[1]
 
-        left_x = self._boundary_from_roi(line_mask, ll_top, ll_bottom, ll_left, ll_right)
-        right_x = self._boundary_from_roi(line_mask, rl_top, rl_bottom, rl_left, rl_right)
+    coords[:, [0, 2]] -= pad[0]  # x padding
+    coords[:, [1, 3]] -= pad[1]  # y padding
+    coords[:, :4] /= gain
+    _clip_coords(coords, img0_shape)
+    return coords
 
-        lane_type, lane_center = self._pick_sticky_lane(
-            left_x=left_x,
-            right_x=right_x,
-            frame_center=frame_center,
-            lane_offset_px=lane_offset_px,
-        )
 
-        smoothed_lane_center = self._smooth_lane_center(lane_center)
-        error = smoothed_lane_center - frame_center
+def _clip_coords(boxes, img_shape):
+    # Clip bounding xyxy bounding boxes to image shape (height, width)
+    boxes[:, 0] = np.clip(boxes[:, 0], 0, img_shape[1])  # x1
+    boxes[:, 1] = np.clip(boxes[:, 1], 0, img_shape[0])  # y1
+    boxes[:, 2] = np.clip(boxes[:, 2], 0, img_shape[1])  # x2
+    boxes[:, 3] = np.clip(boxes[:, 3], 0, img_shape[0])  # y1
 
-        if self.debug:
-            combined = self._draw_debug(
-                frame=base_frame,   # always RGB debug
-                line_mask=line_mask,
-                left_x=left_x,
-                right_x=right_x,
-                lane_center=smoothed_lane_center,
-                lane_type=lane_type,
-            )
-        else:
-            combined = base_frame
 
-        try:
-            conf.debug_frame_buffer = combined
-        except Exception:
-            pass
+def driving_area_mask(seg, pad_wh=None):
+    if pad_wh is None:
+        return 1.0 - seg[0][0]
+    else:
+        temp_seg = copy.deepcopy(seg[0][0])
 
-        return {
-            "error": error,
-            "lane_type": lane_type,
-            "debug": {
-                "combined": combined,
-                "lane_mask": line_mask,
-                "drivable_mask": drivable_mask,
-                "green_mask": None,
-                "dark_purple_mask": None,
-                "left_x": left_x,
-                "right_x": right_x,
-                "lane_center": smoothed_lane_center,
-            },
-        }
+        pad_w = int(pad_wh[0])
+        pad_h = int(pad_wh[1])
+        seg_width = int(temp_seg.shape[1])
+        seg_height = int(temp_seg.shape[0])
+
+        temp_seg = temp_seg[pad_h:seg_height - pad_h, pad_w:seg_width - pad_w]
+
+        return 1.0 - temp_seg
+
+
+def lane_line_mask(ll, pad_wh=None):
+    if pad_wh is None:
+        return ll[0][0]
+    else:
+        temp_ll = copy.deepcopy(ll[0][0])
+
+        pad_w = int(pad_wh[0])
+        pad_h = int(pad_wh[1])
+        seg_width = int(temp_ll.shape[1])
+        seg_height = int(temp_ll.shape[0])
+
+        temp_ll = temp_ll[pad_h:seg_height - pad_h, pad_w:seg_width - pad_w]
+
+        return temp_ll
