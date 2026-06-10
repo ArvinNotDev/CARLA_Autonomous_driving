@@ -1,5 +1,3 @@
-# intersection_model_infer.py
-
 from pathlib import Path
 from typing import Tuple, Union
 
