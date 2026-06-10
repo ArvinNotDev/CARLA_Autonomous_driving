@@ -2,3 +2,4 @@
 YOLOPv2.onnx
 **/__pycache__/
 **/dataset/
+**/dataset_**/
