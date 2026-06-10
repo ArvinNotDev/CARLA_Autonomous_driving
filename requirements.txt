@@ -6,4 +6,4 @@ torchvision
 onnxruntime-gpu
 onnxruntime
 carla
-pygame>=2.5
+pygame
