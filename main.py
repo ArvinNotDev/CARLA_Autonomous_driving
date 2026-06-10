@@ -150,7 +150,7 @@ class CarlaLaneDrivingApp:
 
 
         self.planner = RoutePlanner(self.world)
-        self.goal_location = carla.Location(x=89.91, y= -56.27, z=0)
+        self.goal_location = carla.Location(x=-114.91, y= -44.27, z=0)
         self.current_location = self.vehicle.get_location()
 
 
