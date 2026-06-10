@@ -66,8 +66,9 @@ class VisionProcessor:
         overlay = vis.copy()
 
         if line_mask is not None:
+            overlay = vis.copy()
             overlay[line_mask > 0] = (0, 255, 0)
-            vis = cv2.addWeighted(vis, 0.75, overlay, 0.25, 0)
+            vis = cv2.addWeighted(vis, 0.85, overlay, 0.15, 0)
 
         h, w = vis.shape[:2]
         frame_center = w / 2.0
@@ -103,39 +104,8 @@ class VisionProcessor:
         if right_x is not None:
             cv2.circle(vis, (int(right_x), int(h * 0.90)), 6, (0, 255, 255), -1)
 
-        # cv2.putText(
-        #     vis,
-        #     "mode: onnx",
-        #     (10, 30),
-        #     cv2.FONT_HERSHEY_SIMPLEX,
-        #     0.7,
-        #     (255, 255, 255),
-        #     2,
-        #     cv2.LINE_AA,
-        # )
-        # cv2.putText(
-        #     vis,
-        #     f"lane_type: {lane_type}",
-        #     (10, 60),
-        #     cv2.FONT_HERSHEY_SIMPLEX,
-        #     0.7,
-        #     (255, 255, 255),
-        #     2,
-        #     cv2.LINE_AA,
-        # )
-        # cv2.putText(
-        #     vis,
-        #     f"error: {lane_center - frame_center:.1f}",
-        #     (10, 90),
-        #     cv2.FONT_HERSHEY_SIMPLEX,
-        #     0.7,
-        #     (255, 255, 255),
-        #     2,
-        #     cv2.LINE_AA,
-        # )
-
         return vis
-
+    
     def _smooth_lane_center(self, lane_center):
         if self.last_lane_center is None:
             smoothed_lane_center = lane_center
@@ -162,15 +132,14 @@ class VisionProcessor:
         x = np.clip(np.asarray(x, dtype=np.float32), -50.0, 50.0)
         return 1.0 / (1.0 + np.exp(-x))
 
-    def _extract_prob_map(self, outputs):
+    def _extract_prob_map(self, outputs, output_index):
         if not outputs:
             raise RuntimeError("Model returned no outputs")
 
-        idx = getattr(conf, "DRIVABLE_OUTPUT_INDEX", -1)
-        if idx < 0 or idx >= len(outputs):
-            idx = len(outputs) - 1
+        if output_index < 0 or output_index >= len(outputs):
+            raise IndexError(f"Invalid output index: {output_index}")
 
-        out = np.squeeze(np.asarray(outputs[idx])).astype(np.float32)
+        out = np.squeeze(np.asarray(outputs[output_index])).astype(np.float32)
         if out.ndim == 3:
             out = out[0]
 
@@ -179,35 +148,32 @@ class VisionProcessor:
 
         return out
 
-    def _predict_lane_mask(self, outputs):
-        lane_prob = self._extract_prob_map(outputs)
-
-        lane_mask = None
-        for threshold in (
-            getattr(conf, "LANE_PROB_THRESHOLD", 0.50),
-            getattr(conf, "LANE_PROB_THRESHOLD_FALLBACK", 0.35),
-            max(
-                getattr(conf, "LANE_PROB_THRESHOLD_MIN", 0.20),
-                float(np.percentile(lane_prob, 80)),
-            ),
-        ):
-            candidate = (lane_prob > threshold).astype(np.uint8) * 255
-            if cv2.countNonZero(candidate) >= 200:
-                lane_mask = candidate
-                break
-
-        if lane_mask is None:
-            lane_mask = (lane_prob > getattr(conf, "LANE_PROB_THRESHOLD_MIN", 0.20)).astype(np.uint8) * 255
-
+    def _predict_mask(self, prob_map, threshold):
+        mask = (prob_map > threshold).astype(np.uint8) * 255
         kernel = np.ones((3, 3), np.uint8)
-        lane_mask = cv2.morphologyEx(lane_mask, cv2.MORPH_OPEN, kernel, iterations=1)
-        lane_mask = cv2.morphologyEx(lane_mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-        return lane_mask
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+        return mask
 
     def _extract_masks_from_onnx(self, rgb_frame):
         outputs = self.session.run(None, {self.input_name: self._preprocess_onnx(rgb_frame)})
-        lane_mask_small = self._predict_lane_mask(outputs)
-        return lane_mask_small
+
+        drivable_idx = getattr(conf, "DRIVABLE_OUTPUT_INDEX", 4)
+        lane_idx = getattr(conf, "LANE_OUTPUT_INDEX", 5)
+
+        drivable_prob = self._extract_prob_map(outputs, drivable_idx)
+        lane_prob = self._extract_prob_map(outputs, lane_idx)
+
+        drivable_mask_small = self._predict_mask(
+            drivable_prob,
+            getattr(conf, "DRIVABLE_PROB_THRESHOLD", 0.50),
+        )
+        lane_mask_small = self._predict_mask(
+            lane_prob,
+            getattr(conf, "LANE_PROB_THRESHOLD", 0.50),
+        )
+
+        return drivable_mask_small, lane_mask_small
 
     def _pick_sticky_lane(self, left_x, right_x, frame_center, lane_offset_px):
         """
@@ -263,6 +229,7 @@ class VisionProcessor:
                 "lane_type": "none",
                 "debug": {
                     "combined": None,
+                    "drivable_mask": None,
                     "lane_mask": None,
                     "green_mask": None,
                     "dark_purple_mask": None,
@@ -279,7 +246,14 @@ class VisionProcessor:
         frame_center = width / 2.0
         lane_offset_px = width * self.fallback_lane_offset_ratio
 
-        line_mask_small = self._extract_masks_from_onnx(rgb_frame)
+        drivable_mask_small, line_mask_small = self._extract_masks_from_onnx(rgb_frame)
+
+        drivable_mask = cv2.resize(
+            drivable_mask_small,
+            (width, height),
+            interpolation=cv2.INTER_NEAREST,
+        )
+
         line_mask = cv2.resize(
             line_mask_small,
             (width, height),
@@ -341,6 +315,7 @@ class VisionProcessor:
             "lane_type": lane_type,
             "debug": {
                 "combined": combined,
+                "drivable_mask": drivable_mask,
                 "lane_mask": line_mask,
                 "green_mask": None,
                 "dark_purple_mask": None,
