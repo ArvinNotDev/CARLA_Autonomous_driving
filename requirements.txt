@@ -1,0 +1,9 @@
+numpy
+opencv-python
+pillow
+torch
+torchvision
+onnxruntime-gpu
+onnxruntime
+carla
+pygame>=2.5
