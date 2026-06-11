@@ -180,32 +180,32 @@ class VisionProcessor:
 
         if self.active_side == "right":
             if right_x is not None:
-                return "only_right", right_x - lane_offset_px - 25
+                return "only_right", right_x - lane_offset_px - 0
 
             if left_x is not None:
                 self.active_side = "left"
-                return "only_left", left_x + lane_offset_px + 25
+                return "only_left", left_x + lane_offset_px + 0
 
             return lane_type, self.last_lane_center if self.last_lane_center is not None else frame_center
 
         if self.active_side == "left":
             if left_x is not None:
-                return "only_left", left_x + lane_offset_px + 25
+                return "only_left", left_x + lane_offset_px + 0
 
             if right_x is not None:
                 self.active_side = "right"
-                return "only_right", right_x - lane_offset_px - 25
+                return "only_right", right_x - lane_offset_px - 0
 
             return lane_type, self.last_lane_center if self.last_lane_center is not None else frame_center
 
         # No active side yet: prefer right first, then left
         if right_x is not None:
             self.active_side = "right"
-            return "only_right", right_x - lane_offset_px - 25
+            return "only_right", right_x - lane_offset_px - 0
 
         if left_x is not None:
             self.active_side = "left"
-            return "only_left", left_x + lane_offset_px + 25
+            return "only_left", left_x + lane_offset_px + 0
 
         return lane_type, self.last_lane_center if self.last_lane_center is not None else frame_center
 
