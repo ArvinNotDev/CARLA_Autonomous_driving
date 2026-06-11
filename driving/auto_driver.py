@@ -67,7 +67,7 @@ class AutoDriver:
                     make_stop_control()
                 )
 
-            return screen
+            return False, screen
 
         error = float(
             vision_result.get("error", 0.0)
@@ -100,4 +100,4 @@ class AutoDriver:
                 goal_location,
             )
 
-        return screen
+        return True, screen

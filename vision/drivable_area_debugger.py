@@ -29,9 +29,9 @@ class DrivableAreaDebugger:
         return x1, y1, x2, y2
 
     def show(
-            self,
-            vision_result: Optional[Dict[str, Any]],
-        ) -> Dict[str, Any]:
+        self,
+        vision_result: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
         """
         Displays the drivable-area debug view and returns the computed values.
 
@@ -124,14 +124,6 @@ class DrivableAreaDebugger:
             cv2.putText(vis, f"error={error}", (10, 100),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-            # print(
-            #     f"max={max_val:.2f} "
-            #     f"roi=({x1},{y1})-({x2},{y2}) "
-            #     f"left={left_x} right={right_x} "
-            #     f"center={center_x} img_center={image_center_x} "
-            #     f"error={error}"
-            # )
-
             cv2.imshow(self.window_name, vis)
             cv2.waitKey(1)
 
@@ -144,8 +136,14 @@ class DrivableAreaDebugger:
                 "roi": (x1, y1, x2, y2),
             }
 
-        except Exception as e:
-            # print("Drivable-area debug error:", e)
+        except Exception:
             cv2.imshow(self.window_name, blank_frame())
             cv2.waitKey(1)
             return empty_result
+
+    def get_error(self, vision_result: Optional[Dict[str, Any]]) -> Optional[int]:
+        """
+        Runs the debugger and returns only the computed error.
+        """
+        result = self.show(vision_result)
+        return result["error"]

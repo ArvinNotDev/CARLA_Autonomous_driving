@@ -72,6 +72,11 @@ class CarlaLaneDrivingApp:
         self.current_location = None
         self.vehicle_wp = None
 
+        self.out_checker = False
+        self.out_checker_started_at: Optional[float] = None
+        self.out_checker_window_seconds = float(cfg("OUT_CHECKER_WINDOW_SECONDS", 10.0))
+        self.out_checker_error_threshold = float(cfg("OUT_CHECKER_ERROR_THRESHOLD", 20.0))
+
     def _get_latest_rgb_frame(self) -> Optional[np.ndarray]:
         if self.camera_manager is None:
             return None
@@ -85,12 +90,64 @@ class CarlaLaneDrivingApp:
     def _show_frame(self, screen: np.ndarray) -> None:
         self.renderer.show_frame(screen)
 
-    def _show_drivable_area(self, vision_result: Optional[dict]) -> None:
-        if self.drivable_debugger is None:
+    def _render_mode_overlay(self, screen: np.ndarray, mode: str, error: float) -> None:
+        self.renderer.render_mode_overlay(screen, mode, error)
+
+    def _movement_active(self) -> bool:
+        if self.auto_driver is None:
+            return False
+        return self.auto_driver.movement_active()
+
+    def _force_left_correction(self) -> None:
+        if self.vehicle is None:
             return
-        if vision_result is None:
+
+        steer_limit = float(cfg("STEER_LIMIT", 0.35))
+        fixed_throttle = float(cfg("FIXED_THROTTLE", 0.3))
+
+        control = carla.VehicleControl(
+            throttle=fixed_throttle,
+            steer=-abs(steer_limit),
+            brake=0.0,
+        )
+        self.vehicle.apply_control(control)
+
+    def _extract_error(self, drivable_area_result: Any) -> float:
+        if isinstance(drivable_area_result, dict):
+            try:
+                return float(drivable_area_result.get("error", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+        return 0.0
+
+    def _update_out_checker_logic(
+        self,
+        candidate_out_checker: bool,
+        drivable_area_result: Any,
+    ) -> None:
+        """
+        Start a 10-second checking window when AutoDriver requests it.
+        During that window, if error > threshold, steer left.
+        """
+        error = self._extract_error(drivable_area_result)
+        now = time.monotonic()
+
+        if self.out_checker_started_at is None:
+            if candidate_out_checker:
+                self.out_checker_started_at = now
+                self.out_checker = True
+            else:
+                self.out_checker = False
             return
-        self.drivable_debugger.show(vision_result)
+
+        self.out_checker = True
+
+        if error > self.out_checker_error_threshold:
+            self._force_left_correction()
+
+        if now - self.out_checker_started_at >= self.out_checker_window_seconds:
+            self.out_checker = False
+            self.out_checker_started_at = None
 
     def setup(self) -> None:
         self.world = self.carla_manager.connect()
@@ -104,7 +161,7 @@ class CarlaLaneDrivingApp:
         )
 
         self.planner = RoutePlanner(self.world)
-        self.goal_location = carla.Location(x=20, y=24.74, z=0)
+        self.goal_location = carla.Location(x=-113, y=-24.45, z=0)
         self.current_location = self.vehicle.get_location()
         self.vehicle_wp = self.world.get_map().get_waypoint(self.current_location)
 
@@ -127,7 +184,7 @@ class CarlaLaneDrivingApp:
             planner=self.planner,
             get_latest_rgb=self._get_latest_rgb_frame,
             lane_change_debounce_seconds=float(
-                cfg("LANE_CHANGE_DEBOUNCE_SECONDS", 1.5)
+                cfg("LANE_CHANGE_DEBOUNCE_SECONDS", 4)
             ),
         )
 
@@ -183,14 +240,6 @@ class CarlaLaneDrivingApp:
         if cfg("SHOW_OPENCV_WINDOW", False):
             cv2.destroyAllWindows()
 
-    def _render_mode_overlay(self, screen: np.ndarray, mode: str, error: float) -> None:
-        self.renderer.render_mode_overlay(screen, mode, error)
-
-    def _movement_active(self) -> bool:
-        if self.auto_driver is None:
-            return False
-        return self.auto_driver.movement_active()
-
     def run(self) -> None:
         self.setup()
         try:
@@ -200,6 +249,7 @@ class CarlaLaneDrivingApp:
                     or self.controller is None
                     or self.vision_processor is None
                     or self.auto_driver is None
+                    or self.drivable_debugger is None
                 ):
                     break
 
@@ -235,7 +285,7 @@ class CarlaLaneDrivingApp:
                         rgb_frame,
                     )
 
-                self._show_drivable_area(vision_result)
+                drivable_area_result = self.drivable_debugger.show(vision_result)
 
                 movement_active = self._movement_active()
                 if movement_active:
@@ -249,11 +299,16 @@ class CarlaLaneDrivingApp:
                         self.vehicle.get_location() if self.vehicle is not None else None
                     )
 
-                    screen = self.auto_driver.update(
+                    candidate_out_checker, screen = self.auto_driver.update(
                         rgb_frame=rgb_frame,
                         vision_result=vision_result,
                         current_location=self.current_location,
                         goal_location=self.goal_location,
+                    )
+
+                    self._update_out_checker_logic(
+                        candidate_out_checker=candidate_out_checker,
+                        drivable_area_result=drivable_area_result,
                     )
 
                     self._show_frame(screen)
