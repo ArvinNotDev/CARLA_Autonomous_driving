@@ -71,10 +71,10 @@ debug_frame_buffer = None
 # -------------------------------------------------
 # PID controller
 # -------------------------------------------------
-FIXED_THROTTLE = 0.15
-KP = 0.010
+FIXED_THROTTLE = 0.2
+KP = 0.015
 KI = 0.0000
-KD = 0.0018
+KD = 0.001
 STEER_LIMIT = 0.75
 MAX_STEER_STEP = 0.10
 
