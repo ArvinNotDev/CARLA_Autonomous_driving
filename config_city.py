@@ -48,13 +48,13 @@ VEHICLE_BLUEPRINT = "vehicle.tesla.model3"
 # -------------------------------------------------
 CAMERA_IMAGE_WIDTH = 320
 CAMERA_IMAGE_HEIGHT = 192
-CAMERA_FOV = 90
-CAMERA_SENSOR_TICK = 0.02
+CAMERA_FOV = 120
+CAMERA_SENSOR_TICK = 0.03
 
 CAMERA_X = 1.4
 CAMERA_Y = 0.0
-CAMERA_Z = 1.8
-CAMERA_PITCH_DEG = -20.0
+CAMERA_Z = 2.2
+CAMERA_PITCH_DEG = -25.0
 CAMERA_YAW_DEG = 0.0
 CAMERA_ROLL_DEG = 0.0
 
@@ -71,10 +71,10 @@ debug_frame_buffer = None
 # -------------------------------------------------
 # PID controller
 # -------------------------------------------------
-FIXED_THROTTLE = 0.2
-KP = 0.008
+FIXED_THROTTLE = 0.15
+KP = 0.010
 KI = 0.0000
-KD = 0.002
+KD = 0.0018
 STEER_LIMIT = 0.75
 MAX_STEER_STEP = 0.10
 
