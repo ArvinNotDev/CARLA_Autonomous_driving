@@ -55,33 +55,43 @@ class CarlaManager:
 
         return self.world
 
-    def spawn_vehicle(self, config_path: Path = MAP_CONFIG_PATH) -> carla.Vehicle:
-        """
-        Spawn the ego vehicle at the transform defined in map_config.json.
-
-        The JSON must contain a ``spawn_point`` object with keys:
-        x, y, z, roll, pitch, yaw.
-        """
+    def spawn_vehicle(self, spawn_transform=None, config_path: Path = MAP_CONFIG_PATH) -> carla.Vehicle:
         if self.world is None:
             raise RuntimeError("World is not connected. Call connect() first.")
 
-        cfg = _load_map_config(config_path)
-        spawn_tf = _spawn_transform_from_config(cfg)
+        if spawn_transform is None:
+            cfg = _load_map_config(config_path)
+            spawn_transform = _spawn_transform_from_config(cfg)
+
+        carla_map = self.world.get_map()
+        if carla_map is not None:
+            wp = carla_map.get_waypoint(
+                spawn_transform.location,
+                project_to_road=True,
+                lane_type=carla.LaneType.Driving,
+            )
+            if wp is not None:
+                spawn_transform = wp.transform
+                spawn_transform.location.z += 0.8
 
         bp_lib = self.world.get_blueprint_library()
-        vehicle_bp = bp_lib.find(conf.VEHICLE_BLUEPRINT)
 
-        vehicle = self.world.try_spawn_actor(vehicle_bp, spawn_tf)
+        try:
+            vehicle_bp = bp_lib.find(conf.VEHICLE_BLUEPRINT)
+        except Exception:
+            vehicle_bp = bp_lib.filter("vehicle.*")[0]
+
+        vehicle = self.world.try_spawn_actor(vehicle_bp, spawn_transform)
         if vehicle is None:
             raise RuntimeError(
-                f"Failed to spawn ego vehicle at {spawn_tf.location} "
-                f"(spawn point may be occupied or invalid)."
+                f"Failed to spawn ego vehicle at x={spawn_transform.location.x:.2f}, "
+                f"y={spawn_transform.location.y:.2f}, z={spawn_transform.location.z:.2f}, "
+                f"yaw={spawn_transform.rotation.yaw:.2f}"
             )
 
         self.vehicle = vehicle
         self.vehicle.set_autopilot(False)
         self.vehicle.set_simulate_physics(True)
-
         return self.vehicle
 
     def cleanup(self):

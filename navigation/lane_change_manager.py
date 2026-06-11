@@ -92,10 +92,10 @@ class LaneChangeManager:
         if direction == "left":
             move_vehicle_for_distance(
                 self.vehicle,
-                3.5,
+                2.0,
                 -0.2,
                 True,
-                0.08,
+                0.1,
                 20.0,
                 blocking=True,
             )
@@ -103,10 +103,10 @@ class LaneChangeManager:
         elif direction == "right":
             move_vehicle_for_distance(
                 self.vehicle,
-                3.5,
+                2.0,
                 0.2,
                 True,
-                0.08,
+                0.1,
                 20.0,
                 blocking=True,
             )

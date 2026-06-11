@@ -7,6 +7,7 @@ from typing import Any, Optional
 import carla
 import cv2
 import numpy as np
+from PySide6.QtWidgets import QApplication, QDialog
 
 import config_city as conf
 from carla_manager import CarlaManager
@@ -21,6 +22,7 @@ from navigation.lane_side import LaneSideModel
 from sensors.camera_manager import CameraManager
 from stream import start_stream
 from ui.renderer import Renderer
+from ui.spawn_goal_picker import SpawnGoalPicker
 from utils.vehicle_utils import blank_frame, make_stop_control
 from vision.city_vision_processing import VisionProcessor
 from vision.color_extractor import HSVColorThresholdExtractor
@@ -149,9 +151,46 @@ class CarlaLaneDrivingApp:
             self.out_checker = False
             self.out_checker_started_at = None
 
+    def _apply_goal_to_planner(self) -> None:
+        """
+        Best-effort integration point for planners that support an explicit goal setter.
+        This keeps the code working even if your RoutePlanner API differs.
+        """
+        if self.planner is None or self.goal_location is None:
+            return
+
+        for method_name in (
+            "set_goal_location",
+            "set_goal",
+            "set_destination",
+            "set_target_location",
+        ):
+            method = getattr(self.planner, method_name, None)
+            if callable(method):
+                try:
+                    method(self.goal_location)
+                    return
+                except TypeError:
+                    try:
+                        method(goal_location=self.goal_location)
+                        return
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
     def setup(self) -> None:
         self.world = self.carla_manager.connect()
-        self.vehicle = self.carla_manager.spawn_vehicle()
+
+        picker = SpawnGoalPicker(self.world)
+        if picker.exec() != QDialog.DialogCode.Accepted:
+            self.running = False
+            return
+
+        spawn_tf = picker.get_spawn_transform()
+        self.goal_location = picker.get_goal_location()
+
+        self.vehicle = self.carla_manager.spawn_vehicle(spawn_transform=spawn_tf)
 
         self.camera_manager = CameraManager(self.world, self.vehicle)
         self.camera_manager.start()
@@ -161,7 +200,8 @@ class CarlaLaneDrivingApp:
         )
 
         self.planner = RoutePlanner(self.world)
-        self.goal_location = carla.Location(x=-113, y=-24.45, z=0)
+        self._apply_goal_to_planner()
+
         self.current_location = self.vehicle.get_location()
         self.vehicle_wp = self.world.get_map().get_waypoint(self.current_location)
 
@@ -332,6 +372,10 @@ class CarlaLaneDrivingApp:
 
 
 def main() -> None:
+    qt_app = QApplication.instance()
+    if qt_app is None:
+        qt_app = QApplication([])
+
     app = CarlaLaneDrivingApp()
     app.run()
 
