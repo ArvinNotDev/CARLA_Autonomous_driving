@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict
 
 import cv2
 import numpy as np
@@ -9,13 +9,8 @@ import config_city as conf
 from utils.vehicle_utils import blank_frame
 
 
-def cfg(name: str, default: Any) -> Any:
-    return getattr(conf, name, default)
-
-
 class DrivableAreaDebugger:
-    def __init__(self, vision_processor, window_name: str = "drivable area") -> None:
-        self.vision_processor = vision_processor
+    def __init__(self, window_name: str = "drivable area") -> None:
         self.window_name = window_name
 
     def apply_center_roi(self, mask: np.ndarray) -> Tuple[int, int, int, int]:
@@ -34,10 +29,9 @@ class DrivableAreaDebugger:
         return x1, y1, x2, y2
 
     def show(
-        self,
-        rgb_frame: Optional[np.ndarray],
-        semantic_frame: Optional[np.ndarray],
-    ) -> Dict[str, Any]:
+            self,
+            vision_result: Optional[Dict[str, Any]],
+        ) -> Dict[str, Any]:
         """
         Displays the drivable-area debug view and returns the computed values.
 
@@ -58,14 +52,13 @@ class DrivableAreaDebugger:
             "roi": None,
         }
 
-        if self.vision_processor is None or semantic_frame is None:
+        if vision_result is None:
             cv2.imshow(self.window_name, blank_frame())
             cv2.waitKey(1)
             return empty_result
 
         try:
-            result = self.vision_processor.detect(semantic_frame, rgb_frame)
-            debug = result.get("debug", {})
+            debug = vision_result.get("debug", {})
             drivable_mask = debug.get("drivable_mask", None)
 
             if drivable_mask is None:
@@ -93,7 +86,7 @@ class DrivableAreaDebugger:
 
             x1, y1, x2, y2 = self.apply_center_roi(binary)
             roi_binary = binary[y1:y2, x1:x2]
-            ys, xs = np.where(roi_binary > 0)
+            _, xs = np.where(roi_binary > 0)
 
             if len(xs) == 0:
                 center_x = image_center_x

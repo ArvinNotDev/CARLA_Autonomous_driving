@@ -34,6 +34,11 @@ def cfg(name: str, default: Any) -> Any:
 class CarlaLaneDrivingApp:
     """
     Main CARLA app for lane following and manual/auto mode switching.
+
+    Perception is owned by main:
+        main -> vision_processor.detect()
+        main -> auto_driver.update(..., vision_result, ...)
+        main -> drivable_debugger.show(vision_result)
     """
 
     def __init__(self) -> None:
@@ -80,17 +85,12 @@ class CarlaLaneDrivingApp:
     def _show_frame(self, screen: np.ndarray) -> None:
         self.renderer.show_frame(screen)
 
-    def _show_drivable_area(
-        self,
-        rgb_frame: Optional[np.ndarray],
-        semantic_frame: Optional[np.ndarray],
-    ) -> None:
+    def _show_drivable_area(self, vision_result: Optional[dict]) -> None:
         if self.drivable_debugger is None:
-            cv2.imshow("drivable area", blank_frame())
-            cv2.waitKey(1)
             return
-
-        self.drivable_debugger.show(rgb_frame, semantic_frame)
+        if vision_result is None:
+            return
+        self.drivable_debugger.show(vision_result)
 
     def setup(self) -> None:
         self.world = self.carla_manager.connect()
@@ -126,7 +126,9 @@ class CarlaLaneDrivingApp:
             lane_side_model=self.lane_side,
             planner=self.planner,
             get_latest_rgb=self._get_latest_rgb_frame,
-            lane_change_debounce_seconds=float(cfg("LANE_CHANGE_DEBOUNCE_SECONDS", 1.5)),
+            lane_change_debounce_seconds=float(
+                cfg("LANE_CHANGE_DEBOUNCE_SECONDS", 1.5)
+            ),
         )
 
         self.intersection_manager = IntersectionManager(
@@ -137,14 +139,13 @@ class CarlaLaneDrivingApp:
         self.auto_driver = AutoDriver(
             vehicle=self.vehicle,
             world=self.world,
-            vision_processor=self.vision_processor,
             controller=self.controller,
             intersection_model=self.intersection_model,
             lane_change_manager=self.lane_change_manager,
             intersection_manager=self.intersection_manager,
         )
 
-        self.drivable_debugger = DrivableAreaDebugger(self.vision_processor)
+        self.drivable_debugger = DrivableAreaDebugger()
 
         stream_thread = threading.Thread(
             target=start_stream,
@@ -224,11 +225,17 @@ class CarlaLaneDrivingApp:
                 if rgb_frame is None and semantic_frame is None:
                     screen = blank_frame()
                     self._show_frame(screen)
-                    self._show_drivable_area(rgb_frame, semantic_frame)
                     time.sleep(0.01)
                     continue
 
-                self._show_drivable_area(rgb_frame, semantic_frame)
+                vision_result = None
+                if semantic_frame is not None:
+                    vision_result = self.vision_processor.detect(
+                        semantic_frame,
+                        rgb_frame,
+                    )
+
+                self._show_drivable_area(vision_result)
 
                 movement_active = self._movement_active()
                 if movement_active:
@@ -238,13 +245,17 @@ class CarlaLaneDrivingApp:
                     continue
 
                 if self.auto_mode:
-                    self.current_location = self.vehicle.get_location() if self.vehicle is not None else None
-                    screen = self.auto_driver.update(
-                        rgb_frame,
-                        semantic_frame,
-                        self.current_location,
-                        self.goal_location,
+                    self.current_location = (
+                        self.vehicle.get_location() if self.vehicle is not None else None
                     )
+
+                    screen = self.auto_driver.update(
+                        rgb_frame=rgb_frame,
+                        vision_result=vision_result,
+                        current_location=self.current_location,
+                        goal_location=self.goal_location,
+                    )
+
                     self._show_frame(screen)
 
                 else:
