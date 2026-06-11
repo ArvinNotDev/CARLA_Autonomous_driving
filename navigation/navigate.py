@@ -1,7 +1,9 @@
 import math
-import carla
 import threading
 import time
+
+import carla
+
 
 def move_toward_target(vehicle, target_location, throttle=0.35, stop_distance=3.0):
     vehicle_tf = vehicle.get_transform()
@@ -35,6 +37,7 @@ def move_toward_target(vehicle, target_location, throttle=0.35, stop_distance=3.
         manual_gear_shift=False,
     )
 
+
 def _move_vehicle_for_distance_blocking(
     vehicle: carla.Vehicle,
     distance_m: float,
@@ -47,7 +50,6 @@ def _move_vehicle_for_distance_blocking(
     steer = max(-1.0, min(1.0, float(steer)))
     throttle = max(0.0, min(1.0, float(throttle)))
 
-    world = vehicle.get_world()
     start_location = vehicle.get_location()
     start_time = time.time()
 
@@ -67,15 +69,6 @@ def _move_vehicle_for_distance_blocking(
             break
 
         time.sleep(0.02)
-
-    # stop = carla.VehicleControl()
-    # stop.throttle = 0.0
-    # stop.steer = 0.0
-    # stop.brake = 1.0
-    # stop.reverse = False
-    # stop.hand_brake = False
-    # stop.manual_gear_shift = False
-    # vehicle.apply_control(stop)
 
 
 def move_vehicle_for_distance(

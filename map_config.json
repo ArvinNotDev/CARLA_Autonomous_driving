@@ -2,8 +2,8 @@
   "version": 1,
   "map_name": "CARLA Map",
   "spawn_point": {
-    "x": -8.937,
-    "y": 66.237,
+    "x": 6.024,
+    "y": 66.256,
     "z": 0.5,
     "roll": 0.0,
     "pitch": 0.0,
