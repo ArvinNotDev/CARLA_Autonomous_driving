@@ -13,12 +13,17 @@ class CameraManager:
 
         self.rgb_camera = None
         self.semantic_camera = None
+        self.alt_camera = None
 
         self.latest_rgb = None
         self.latest_semantic = None
+        self.latest_drivable = None
+        self.latest_drivable_mask = None
+        self.latest_alt = None
 
         self.rgb_lock = threading.Lock()
         self.semantic_lock = threading.Lock()
+        self.alt_lock = threading.Lock()
 
     # =====================================================
     # START CAMERAS
@@ -74,6 +79,35 @@ class CameraManager:
         )
         self.semantic_camera.listen(self._semantic_callback)
 
+        # =====================================================
+        # ALT CAMERA
+        # =====================================================
+        alt_transform = carla.Transform(
+            carla.Location(
+                x=conf.ALT_CAMERA_X,
+                y=conf.ALT_CAMERA_Y,
+                z=conf.ALT_CAMERA_Z,
+            ),
+            carla.Rotation(
+                pitch=conf.ALT_CAMERA_PITCH_DEG,
+                yaw=0.0,
+                roll=0.0,
+            ),
+        )
+
+        alt_bp = bp_lib.find("sensor.camera.rgb")
+        alt_bp.set_attribute("image_size_x", str(conf.model_image_size[0]))
+        alt_bp.set_attribute("image_size_y", str(conf.model_image_size[1]))
+        alt_bp.set_attribute("fov", str(conf.CAMERA_FOV))
+        alt_bp.set_attribute("sensor_tick", str(conf.CAMERA_SENSOR_TICK))
+
+        self.alt_camera = self.world.spawn_actor(
+            alt_bp,
+            alt_transform,
+            attach_to=self.vehicle,
+        )
+        self.alt_camera.listen(self._alt_callback)
+
     # =====================================================
     # RGB CALLBACK
     # =====================================================
@@ -89,39 +123,23 @@ class CameraManager:
     # SEMANTIC CALLBACK
     # =====================================================
     def _semantic_callback(self, image):
-        img = np.frombuffer(image.raw_data, dtype=np.uint8)
-        img = img.reshape((image.height, image.width, 4))
+        # Keep raw data for mask extraction before any visualization conversion
+        raw = np.frombuffer(image.raw_data, dtype=np.uint8)
+        raw = raw.reshape((image.height, image.width, 4))
 
-        # Extract class ID (THIS is the important part)
-        class_map = img[:, :, 2]  # sometimes R or B depending CARLA version
+        # CARLA semantic class id is usually in channel 2
+        class_map = raw[:, :, 2]
 
-        drivable = (class_map == 1).astype(np.uint8) * 255
-
-        with self.semantic_lock:
-            self.latest_semantic = drivable.copy()
-
-    def _semantic_callback(self, image):
-        # Convert for visualization ONLY (in-place)
-        image.convert(carla.ColorConverter.CityScapesPalette)
-
-        # RGB visualization
-        img = np.frombuffer(image.raw_data, dtype=np.uint8)
-        img = img.reshape((image.height, image.width, 4))
-        visual = img[:, :, :3].copy()
-
-        # =====================================================
-        # DRIVABLE AREA MASK (RAW CLASS EXTRACTION)
-        # =====================================================
-        # IMPORTANT: use original image, NOT converted one
-        raw = image  # still valid object (already converted visually above NOT affecting raw_data)
-
-        class_map = np.frombuffer(raw.raw_data, dtype=np.uint8)
-        class_map = class_map.reshape((image.height, image.width, 4))[:, :, 2]
-
-        # CARLA road class is usually 1
+        # Road/drivable class is usually 1
         drivable_mask = (class_map == 1).astype(np.uint8) * 255
 
-        # green overlay
+        # Convert only for visualization
+        image.convert(carla.ColorConverter.CityScapesPalette)
+        vis = np.frombuffer(image.raw_data, dtype=np.uint8)
+        vis = vis.reshape((image.height, image.width, 4))
+        visual = vis[:, :, :3].copy()
+
+        # Green overlay for drivable area
         drivable_view = np.zeros_like(visual)
         drivable_view[:, :, 1] = drivable_mask
 
@@ -129,7 +147,18 @@ class CameraManager:
             self.latest_semantic = visual
             self.latest_drivable = drivable_view
             self.latest_drivable_mask = drivable_mask
-            
+
+    # =====================================================
+    # ALT CALLBACK
+    # =====================================================
+    def _alt_callback(self, image):
+        img = np.frombuffer(image.raw_data, dtype=np.uint8)
+        img = img.reshape((image.height, image.width, 4))
+        frame = img[:, :, :3].copy()
+
+        with self.alt_lock:
+            self.latest_alt = frame
+
     # =====================================================
     # GETTERS
     # =====================================================
@@ -144,6 +173,24 @@ class CameraManager:
             if self.latest_semantic is None:
                 return None
             return self.latest_semantic.copy()
+
+    def get_latest_drivable(self):
+        with self.semantic_lock:
+            if self.latest_drivable is None:
+                return None
+            return self.latest_drivable.copy()
+
+    def get_latest_drivable_mask(self):
+        with self.semantic_lock:
+            if self.latest_drivable_mask is None:
+                return None
+            return self.latest_drivable_mask.copy()
+
+    def get_latest_alt(self):
+        with self.alt_lock:
+            if self.latest_alt is None:
+                return None
+            return self.latest_alt.copy()
 
     # =====================================================
     # CLEANUP
@@ -164,3 +211,11 @@ class CameraManager:
             except Exception:
                 pass
             self.semantic_camera = None
+
+        if self.alt_camera is not None:
+            try:
+                self.alt_camera.stop()
+                self.alt_camera.destroy()
+            except Exception:
+                pass
+            self.alt_camera = None
