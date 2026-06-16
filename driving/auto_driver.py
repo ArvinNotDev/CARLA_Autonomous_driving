@@ -51,9 +51,11 @@ class AutoDriver:
         self.current_location = current_location
         self.goal_location = goal_location
 
-        self.is_intersection = self.intersection_model.is_intersection_ahead(
-            rgb_frame
-        )
+
+        # self.is_intersection = is_intersection
+        # self.is_intersection = self.intersection_model.is_intersection_ahead(
+        #     rgb_frame
+        # )
 
         if vision_result is None:
             screen = (
@@ -93,11 +95,11 @@ class AutoDriver:
                 goal_location,
             )
 
-        if self.intersection_manager is not None:
-            self.intersection_manager.update(
-                self.is_intersection,
-                current_location,
-                goal_location,
-            )
+        # if self.intersection_manager is not None:
+        #     self.intersection_manager.update(
+        #         self.is_intersection,
+        #         current_location,
+        #         goal_location,
+        #     )
 
         return True, screen

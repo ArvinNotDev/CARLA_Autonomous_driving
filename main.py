@@ -339,6 +339,13 @@ class CarlaLaneDrivingApp:
                         self.vehicle.get_location() if self.vehicle is not None else None
                     )
 
+
+                    self.is_intersection = self.intersection_model.is_intersection_ahead(rgb_frame)
+                    if self.is_intecsection == True:
+                        pass
+                    else:
+                        pass
+                    
                     candidate_out_checker, screen = self.auto_driver.update(
                         rgb_frame=rgb_frame,
                         vision_result=vision_result,
