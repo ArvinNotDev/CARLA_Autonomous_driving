@@ -59,6 +59,16 @@ CAMERA_YAW_DEG = 0.0
 CAMERA_ROLL_DEG = 0.0
 
 # -------------------------------------------------
+# Trajectory
+# -------------------------------------------------
+ALT_CAMERA_X = -5.5
+ALT_CAMERA_Y = 0.0
+ALT_CAMERA_Z = 3.3
+ALT_CAMERA_PITCH_DEG = -14.0
+model_image_size = (224, 224)
+n_waypoints: int = 5
+
+# -------------------------------------------------
 # UI / stream
 # -------------------------------------------------
 AUTO_MODE_DEFAULT = True
