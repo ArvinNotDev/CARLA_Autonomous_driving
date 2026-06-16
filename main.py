@@ -311,6 +311,11 @@ class CarlaLaneDrivingApp:
                     if self.camera_manager is not None
                     else None
                 )
+                alt_frame = (
+                    self.camera_manager.get_latest_alt()
+                    if self.camera_manager is not None
+                    else None
+                )
 
                 if rgb_frame is None and semantic_frame is None:
                     screen = blank_frame()
