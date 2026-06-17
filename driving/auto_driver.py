@@ -47,6 +47,7 @@ class AutoDriver:
         vision_result: Optional[dict],
         current_location,
         goal_location,
+        intersection_sequence,
     ) -> np.ndarray:
         self.current_location = current_location
         self.goal_location = goal_location
@@ -77,23 +78,20 @@ class AutoDriver:
 
         debug = vision_result.get("debug", {})
 
-        screen = debug.get(
-            "combined",
-            rgb_frame if rgb_frame is not None else blank_frame(),
-        ).copy()
+        screen = debug.get("combined", rgb_frame if rgb_frame is not None else blank_frame(),).copy()
 
-        control = self.controller.update(
-            error=error
-        )
+        if not intersection_sequence:
 
-        if self.vehicle is not None:
-            self.vehicle.apply_control(control)
+            control = self.controller.update(error=error)
 
-        if self.lane_change_manager is not None:
-            self.lane_change_manager.update(
-                current_location,
-                goal_location,
-            )
+            if self.vehicle is not None:
+                self.vehicle.apply_control(control)
+
+            if self.lane_change_manager is not None:
+                self.lane_change_manager.update(
+                    current_location,
+                    goal_location,
+                )
 
         # if self.intersection_manager is not None:
         #     self.intersection_manager.update(

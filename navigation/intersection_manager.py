@@ -73,21 +73,17 @@ class IntersectionManager:
 
         if self.next_maneuver == "RIGHT":
             self._start_movement_sequence([
-                (3, 0.04, True, 0.17, 20.0),
-                (4, 0.08, True, 0.17, 20.0),
-                (11, 0.16, True, 0.17, 20.0),
-                (3, 0.6, True, 0.17, 20.0),
+                (11, 0.0, True, 0.2, 20.0),
+                (6, 0.6, True, 0.2, 20.0),
             ])
 
         elif self.next_maneuver == "LEFT":
             self._start_movement_sequence([
                 (10, 0, True, 0.2, 20.0),
-                (11, -0.08, True, 0.2, 20.0),
-                (10, -0.19, True, 0.2, 20.0),
-                (6.5, -0.23, True, 0.2, 20.0),
+                (4, -0.5, True, 0.2, 20.0),
             ])
 
         elif self.next_maneuver == "STRAIGHT":
             self._start_movement_sequence([
-                (30, 0.0, True, 0.2, 20.0),
+                (3, 0.0, True, 0.2, 20.0),
             ])

@@ -124,8 +124,8 @@ class DrivableAreaDebugger:
             cv2.putText(vis, f"error={error}", (10, 100),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-            cv2.imshow(self.window_name, vis)
-            cv2.waitKey(1)
+            # cv2.imshow(self.window_name, vis)
+            # cv2.waitKey(1)
 
             return {
                 "error": error,
@@ -137,8 +137,8 @@ class DrivableAreaDebugger:
             }
 
         except Exception:
-            cv2.imshow(self.window_name, blank_frame())
-            cv2.waitKey(1)
+            # cv2.imshow(self.window_name, blank_frame())
+            # cv2.waitKey(1)
             return empty_result
 
     def get_error(self, vision_result: Optional[Dict[str, Any]]) -> Optional[int]:
