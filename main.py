@@ -252,7 +252,7 @@ class CarlaLaneDrivingApp:
         self.current_location = self.vehicle.get_location()
         self.vehicle_wp = self.world.get_map().get_waypoint(self.current_location)
 
-        self.vision_processor = VisionProcessor()
+        self.vision_processor = VisionProcessor("onnx")
 
         self.controller = FixedSpeedPIDController(
             fixed_throttle=float(cfg("FIXED_THROTTLE", 0.3)),

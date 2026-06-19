@@ -6,13 +6,24 @@ import onnxruntime as ort
 
 import config_city as conf
 from utils import utils_onnx
+from vision.color_extractor import HSVColorThresholdExtractor
 
 
 class VisionProcessor:
-    def __init__(self, mode: str = "onnx"):
-        self.mode = "onnx"
+    def __init__(
+        self,
+        mode: str = "onnx",
+        color_extractor: HSVColorThresholdExtractor | None = None,
+    ):
+        self.mode = mode.lower().strip()
+        if self.mode not in {"segmentation", "onnx"}:
+            raise ValueError("mode must be either 'segmentation' or 'onnx'")
 
         self.debug = True  # True = draw debug overlays, False = faster
+
+        self.extractor = color_extractor or HSVColorThresholdExtractor(
+            morph_kernel_size=getattr(conf, "MORPH_KERNEL_SIZE", 1)
+        )
 
         self.last_lane_center = None
         self.lane_center_alpha = getattr(conf, "LANE_CENTER_SMOOTH_ALPHA", 0.35)
@@ -26,22 +37,23 @@ class VisionProcessor:
         self.input_width = getattr(conf, "INPUT_WIDTH", 416)
         self.input_height = getattr(conf, "INPUT_HEIGHT", 416)
 
-        model_path = conf.MODEL_PATH
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"ONNX model not found: {model_path}")
+        if self.mode == "onnx":
+            model_path = conf.MODEL_PATH
+            if not os.path.exists(model_path):
+                raise FileNotFoundError(f"ONNX model not found: {model_path}")
 
-        opts = ort.SessionOptions()
-        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        opts.intra_op_num_threads = 4
-        opts.inter_op_num_threads = 1
+            opts = ort.SessionOptions()
+            opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            opts.intra_op_num_threads = 4
+            opts.inter_op_num_threads = 1
 
-        self.session = ort.InferenceSession(
-            model_path,
-            sess_options=opts,
-            providers=['CUDAExecutionProvider', 'CPUExecutionProvider'],
-        )
-        print(self.session.get_providers())
-        self.input_name = self.session.get_inputs()[0].name
+            self.session = ort.InferenceSession(
+                model_path,
+                sess_options=opts,
+                providers=['CUDAExecutionProvider', 'CPUExecutionProvider'],
+            )
+            print(self.session.get_providers())
+            self.input_name = self.session.get_inputs()[0].name
 
     def _boundary_from_roi(self, full_mask, top, bottom, left, right):
         h, w = full_mask.shape[:2]
@@ -169,6 +181,13 @@ class VisionProcessor:
 
         return drivable, lane_mask_small
 
+    def _extract_masks_from_segmentation(self, semantic_frame):
+        masks = self.extractor.extract(semantic_frame)
+        green_mask = masks["green"]
+        dark_purple_mask = masks["dark_purple"]
+        line_mask = green_mask
+        return line_mask, green_mask, dark_purple_mask
+
     def _pick_sticky_lane(self, left_x, right_x, frame_center, lane_offset_px):
         """
         Sticky-side logic:
@@ -211,9 +230,13 @@ class VisionProcessor:
 
     def detect(self, semantic_frame, rgb_frame=None):
         """
-        ONNX-only processing.
-        - rgb_frame is used for inference and debug display when available
-        - semantic_frame is kept only as a fallback if rgb_frame is not provided
+        mode == 'segmentation':
+            - semantic_frame is used for mask extraction
+            - rgb_frame is used for debug display
+
+        mode == 'onnx':
+            - rgb_frame is used for inference and debug display when available
+            - semantic_frame is kept only as a fallback if rgb_frame is not provided
         """
         base_frame = rgb_frame if rgb_frame is not None else semantic_frame
 
@@ -233,26 +256,49 @@ class VisionProcessor:
                 },
             }
 
-        if rgb_frame is None or rgb_frame.size == 0:
-            rgb_frame = base_frame
+        if self.mode == "segmentation":
+            if semantic_frame is None or semantic_frame.size == 0:
+                return {
+                    "error": 0.0,
+                    "lane_type": "none",
+                    "debug": {
+                        "combined": None,
+                        "drivable_mask": None,
+                        "lane_mask": None,
+                        "green_mask": None,
+                        "dark_purple_mask": None,
+                        "left_x": None,
+                        "right_x": None,
+                        "lane_center": None,
+                    },
+                }
+        else:
+            if rgb_frame is None or rgb_frame.size == 0:
+                rgb_frame = base_frame
 
         height, width = base_frame.shape[:2]
         frame_center = width / 2.0
         lane_offset_px = width * self.fallback_lane_offset_ratio
 
-        drivable_mask_small, line_mask_small = self._extract_masks_from_onnx(rgb_frame)
+        if self.mode == "onnx":
+            drivable_mask_small, line_mask_small = self._extract_masks_from_onnx(rgb_frame)
 
-        drivable_mask = cv2.resize(
-            drivable_mask_small,
-            (width, height),
-            interpolation=cv2.INTER_NEAREST,
-        )
+            drivable_mask = cv2.resize(
+                drivable_mask_small,
+                (width, height),
+                interpolation=cv2.INTER_NEAREST,
+            )
 
-        line_mask = cv2.resize(
-            line_mask_small,
-            (width, height),
-            interpolation=cv2.INTER_NEAREST,
-        )
+            line_mask = cv2.resize(
+                line_mask_small,
+                (width, height),
+                interpolation=cv2.INTER_NEAREST,
+            )
+            green_mask = None
+            dark_purple_mask = None
+        else:
+            line_mask, green_mask, dark_purple_mask = self._extract_masks_from_segmentation(semantic_frame)
+            drivable_mask = None
 
         ll_top_roi = getattr(conf, "LL_TOP_ROI", 0.55)
         ll_bottom_roi = getattr(conf, "LL_BOTTOM_ROI", 0.98)
@@ -311,8 +357,8 @@ class VisionProcessor:
                 "combined": combined,
                 "drivable_mask": drivable_mask,
                 "lane_mask": line_mask,
-                "green_mask": None,
-                "dark_purple_mask": None,
+                "green_mask": green_mask,
+                "dark_purple_mask": dark_purple_mask,
                 "left_x": left_x,
                 "right_x": right_x,
                 "lane_center": smoothed_lane_center,

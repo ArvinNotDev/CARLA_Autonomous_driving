@@ -79,7 +79,7 @@ class IntersectionManager:
 
         elif self.next_maneuver == "LEFT":
             self._start_movement_sequence([
-                (10, 0, True, 0.2, 20.0),
+                (20, 0, True, 0.2, 20.0),
                 (4, -0.5, True, 0.2, 20.0),
             ])
 
