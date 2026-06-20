@@ -51,8 +51,8 @@ VEHICLE_BLUEPRINT = "vehicle.tesla.model3"
 # -------------------------------------------------
 # Camera
 # -------------------------------------------------
-CAMERA_IMAGE_WIDTH = 320
-CAMERA_IMAGE_HEIGHT = 192
+CAMERA_IMAGE_WIDTH = 350
+CAMERA_IMAGE_HEIGHT = 210
 CAMERA_FOV = 120
 CAMERA_SENSOR_TICK = 0.03
 
