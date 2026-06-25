@@ -113,6 +113,7 @@ class CarlaLaneDrivingApp:
             brake=0.0,
         )
         self.vehicle.apply_control(control)
+        time.sleep(1)
 
     def _extract_error(self, drivable_area_result: Any) -> float:
         if isinstance(drivable_area_result, dict):
