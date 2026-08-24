@@ -91,6 +91,10 @@ class AutoDriver:
                 self.lane_change_manager.update(
                     current_location,
                     goal_location,
+                    line_angles={
+                        "left": debug.get("left_line_angle_deg"),
+                        "right": debug.get("right_line_angle_deg"),
+                    },
                 )
 
         # if self.intersection_manager is not None:

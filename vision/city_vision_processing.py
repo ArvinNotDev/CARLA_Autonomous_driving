@@ -74,6 +74,33 @@ class VisionProcessor:
 
         return left + int(np.median(xs))
 
+    def _line_angle_from_roi(self, full_mask, top, bottom, left, right):
+        """Return the absolute line angle from vertical in degrees."""
+        h, w = full_mask.shape[:2]
+
+        top = max(0, min(h, top))
+        bottom = max(0, min(h, bottom))
+        left = max(0, min(w, left))
+        right = max(0, min(w, right))
+
+        if bottom <= top or right <= left:
+            return None
+
+        roi = full_mask[top:bottom, left:right]
+        ys, xs = np.where(roi > 0)
+        if len(xs) < self.min_side_pixels:
+            return None
+
+        # Fit x as a function of y because lane lines are predominantly
+        # vertical in the camera image. The angle is measured from vertical.
+        ys = ys.astype(np.float32) + float(top)
+        xs = xs.astype(np.float32) + float(left)
+        if np.ptp(ys) < 1.0:
+            return None
+
+        slope, _ = np.polyfit(ys, xs, 1)
+        return float(np.degrees(np.arctan(slope)))
+
     def _draw_debug(self, frame, line_mask, left_x, right_x, lane_center, lane_type):
         vis = frame.copy()
         overlay = vis.copy()
@@ -322,6 +349,12 @@ class VisionProcessor:
 
         left_x = self._boundary_from_roi(line_mask, ll_top, ll_bottom, ll_left, ll_right)
         right_x = self._boundary_from_roi(line_mask, rl_top, rl_bottom, rl_left, rl_right)
+        left_line_angle_deg = self._line_angle_from_roi(
+            line_mask, ll_top, ll_bottom, ll_left, ll_right
+        )
+        right_line_angle_deg = self._line_angle_from_roi(
+            line_mask, rl_top, rl_bottom, rl_left, rl_right
+        )
 
         lane_type, lane_center = self._pick_sticky_lane(
             left_x=left_x,
@@ -362,5 +395,7 @@ class VisionProcessor:
                 "left_x": left_x,
                 "right_x": right_x,
                 "lane_center": smoothed_lane_center,
+                "left_line_angle_deg": left_line_angle_deg,
+                "right_line_angle_deg": right_line_angle_deg,
             },
         }
