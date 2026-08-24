@@ -19,7 +19,7 @@ class VisionProcessor:
         if self.mode not in {"segmentation", "onnx"}:
             raise ValueError("mode must be either 'segmentation' or 'onnx'")
 
-        self.debug = True  # True = draw debug overlays, False = faster
+        self.debug = bool(getattr(conf, "VISION_DEBUG", False))
 
         self.extractor = color_extractor or HSVColorThresholdExtractor(
             morph_kernel_size=getattr(conf, "MORPH_KERNEL_SIZE", 1)

@@ -70,7 +70,7 @@ class LaneSideModel:
 
         return Image.fromarray(frame)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def predict(self, frame: Union[np.ndarray, Image.Image]) -> Tuple[int, float]:
         """
         Returns:

@@ -88,6 +88,11 @@ class CarlaLaneDrivingApp:
         self.out_checker_window_seconds = float(cfg("OUT_CHECKER_WINDOW_SECONDS", 10.0))
         self.out_checker_error_threshold = float(cfg("OUT_CHECKER_ERROR_THRESHOLD", 20.0))
 
+        self._last_trajectory_inference_at = 0.0
+        self._cached_trajectory_steer = 0.0
+        self._cached_trajectory_pred = None
+        self._last_intersection_check_at = 0.0
+
     def _get_latest_rgb_frame(self) -> Optional[np.ndarray]:
         if self.camera_manager is None:
             return None
@@ -391,21 +396,36 @@ class CarlaLaneDrivingApp:
                 except Exception:
                     drivable_area_result = None
 
-                if rgb_frame is not None:
-                    try:
-                        steer, pred = self.trajectory_steering_agent.get_steering_and_pred(
-                            rgb_frame
-                        )
-                    except Exception:
-                        steer, pred = 0.0, None
-                else:
-                    steer, pred = 0.0, None
-
                 if self._movement_active():
                     screen = rgb_frame.copy() if rgb_frame is not None else blank_frame()
                     self._show_frame(screen)
                     time.sleep(0.01)
                     continue
+
+                now = time.perf_counter()
+                trajectory_interval = float(
+                    cfg("TRAJECTORY_INFERENCE_INTERVAL_SECONDS", 0.05)
+                )
+                if (
+                    rgb_frame is not None
+                    and (
+                        self._cached_trajectory_pred is None
+                        or now - self._last_trajectory_inference_at
+                        >= trajectory_interval
+                    )
+                ):
+                    try:
+                        self._cached_trajectory_steer, self._cached_trajectory_pred = (
+                            self.trajectory_steering_agent.get_steering_and_pred(
+                                rgb_frame
+                            )
+                        )
+                        self._last_trajectory_inference_at = now
+                    except Exception:
+                        self._cached_trajectory_steer = 0.0
+                        self._cached_trajectory_pred = None
+                steer = self._cached_trajectory_steer
+                pred = self._cached_trajectory_pred
 
                 if self.auto_mode:
                     if self.vehicle is not None:
@@ -446,7 +466,16 @@ class CarlaLaneDrivingApp:
                         semantic_frame,
                     )
                     self.is_intersection = False
-                    if intersection_input is not None:
+                    intersection_interval = float(
+                        cfg("INTERSECTION_CHECK_INTERVAL_SECONDS", 0.25)
+                    )
+                    now = time.perf_counter()
+                    if (
+                        not self.intersection_sequence
+                        and intersection_input is not None
+                        and now - self._last_intersection_check_at
+                        >= intersection_interval
+                    ):
                         try:
                             self.is_intersection = bool(
                                 self.intersection_model.is_intersection_ahead(
@@ -455,6 +484,7 @@ class CarlaLaneDrivingApp:
                             )
                         except Exception:
                             self.is_intersection = False
+                        self._last_intersection_check_at = now
 
                     if self.is_intersection:
                         self.intersection_sequence = True
