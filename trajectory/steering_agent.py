@@ -61,7 +61,7 @@ class TrajectorySteeringAgent:
     def preprocess_for_model(self, rgb: np.ndarray) -> torch.Tensor:
         return self._tf(rgb)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def predict_waypoints(self, rgb: np.ndarray, command_name: Optional[str] = None) -> np.ndarray:
         if command_name is None:
             command_name = self.command_name
