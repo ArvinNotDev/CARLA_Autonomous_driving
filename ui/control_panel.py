@@ -164,15 +164,36 @@ class ControlPanel(QMainWindow):
     def _set_frame(self, frame) -> None:
         try:
             # CameraManager/renderer use BGR for OpenCV; Qt expects RGB.
-            rgb = frame[:, :, ::-1]
-            h, w = rgb.shape[:2]
-            image = QImage(
-                rgb.data,
-                w,
-                h,
-                3 * w,
-                QImage.Format.Format_RGB888,
-            ).copy()
+            # Make the result contiguous: ``frame[:, :, ::-1]`` is a
+            # negative-stride view that QImage cannot reliably consume.
+            import numpy as np
+
+            array = np.asarray(frame)
+            if array.ndim == 2:
+                rgb = np.ascontiguousarray(array)
+                h, w = rgb.shape
+                image = QImage(
+                    rgb.data,
+                    w,
+                    h,
+                    rgb.strides[0],
+                    QImage.Format.Format_Grayscale8,
+                ).copy()
+            else:
+                if array.shape[2] == 4:
+                    rgb = np.ascontiguousarray(array[:, :, [2, 1, 0]])
+                elif array.shape[2] >= 3:
+                    rgb = np.ascontiguousarray(array[:, :, :3][:, :, ::-1])
+                else:
+                    raise ValueError(f"unsupported frame shape: {array.shape}")
+                h, w = rgb.shape[:2]
+                image = QImage(
+                    rgb.data,
+                    w,
+                    h,
+                    rgb.strides[0],
+                    QImage.Format.Format_RGB888,
+                ).copy()
             self._last_qimage = image
             self._apply_scaled_pixmap(new_frame=True)
         except Exception as exc:
