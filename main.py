@@ -107,6 +107,8 @@ class CarlaLaneDrivingApp:
 
         self._startup_drive_until = 0.0
         self._last_recovery_notice_at = 0.0
+        self._drivable_recovery_started_at: Optional[float] = None
+        self._last_drivable_info: dict[str, Any] = {}
 
         self.settings = RuntimeSettings()
         self.control_panel: Optional[ControlPanel] = None
@@ -251,6 +253,60 @@ class CarlaLaneDrivingApp:
 
         return trajectory, self._vision_result
 
+    def _drivable_recovery_control(
+        self,
+        drive_info: Any,
+        phase: str,
+    ) -> Optional[carla.VehicleControl]:
+        """Recover toward the drivable-area center during normal lane follow.
+
+        Junction static/crosswalk phases and trajectory takeover retain
+        priority, so recovery cannot fight those state machines.
+        """
+        if (
+            not bool(cfg("DRIVABLE_RECOVERY_ENABLED", True))
+            or phase != "IDLE"
+            or self.intersection_sequence
+            or not isinstance(drive_info, dict)
+        ):
+            self._drivable_recovery_started_at = None
+            return None
+
+        try:
+            error = float(drive_info.get("error"))
+            if drive_info.get("center_x") is None:
+                raise ValueError
+        except (TypeError, ValueError):
+            self._drivable_recovery_started_at = None
+            return None
+
+        threshold = abs(float(cfg("DRIVABLE_RECOVERY_ERROR_THRESHOLD", 20.0)))
+        now = time.monotonic()
+        if self._drivable_recovery_started_at is None:
+            if abs(error) < threshold:
+                return None
+            self._drivable_recovery_started_at = now
+
+        window = max(0.1, float(cfg("DRIVABLE_RECOVERY_WINDOW_SECONDS", 10.0)))
+        if now - self._drivable_recovery_started_at >= window:
+            self._drivable_recovery_started_at = None
+            return None
+
+        magnitude = abs(float(cfg("DRIVABLE_RECOVERY_STEER", 0.45)))
+        steer = -magnitude if error > 0.0 else magnitude
+        throttle = max(
+            0.0,
+            min(1.0, float(cfg("DRIVABLE_RECOVERY_THROTTLE", 0.20))),
+        )
+        return carla.VehicleControl(
+            throttle=throttle,
+            steer=steer,
+            brake=0.0,
+            hand_brake=False,
+            reverse=False,
+            manual_gear_shift=False,
+        )
+
     def _trajectory_for_control(self, current_command: str):
         if self.inference_worker is None:
             return None
@@ -305,14 +361,9 @@ class CarlaLaneDrivingApp:
             except Exception:
                 pass
 
-        # Restore drivable-area processing as part of the same debug pipeline.
-        # The debugger is pure OpenCV and never opens its own GUI window.
-        try:
-            drive_info = self.drivable_debugger.show(self._vision_result)
-            if isinstance(self._vision_result, dict):
-                self._vision_result.setdefault("debug", {})["drivable_info"] = drive_info
-        except Exception:
-            pass
+        drive_info = self._last_drivable_info
+        if drive_info.get("error") is not None:
+            lines.append(f"Drivable recovery error: {float(drive_info['error']):.1f}px")
 
         if self.intersection_manager is not None:
             phase = self.intersection_manager.phase_name()
@@ -547,6 +598,13 @@ class CarlaLaneDrivingApp:
 
         self._submit_inference(rgb_packet, semantic_packet, now)
         _, vision_result = self._accept_inference_results()
+        try:
+            drive_info = self.drivable_debugger.show(vision_result)
+        except Exception:
+            drive_info = {}
+        self._last_drivable_info = drive_info if isinstance(drive_info, dict) else {}
+        if isinstance(vision_result, dict):
+            vision_result.setdefault("debug", {})["drivable_info"] = self._last_drivable_info
 
         try:
             self.current_location = self.vehicle.get_location()
@@ -615,6 +673,10 @@ class CarlaLaneDrivingApp:
             if self.intersection_manager is not None
             else "IDLE"
         )
+        recovery_control = self._drivable_recovery_control(
+            self._last_drivable_info,
+            phase,
+        )
 
         if auto_mode:
             # Static junction lead-in always owns the control command.
@@ -624,7 +686,10 @@ class CarlaLaneDrivingApp:
                 and phase in {"CROSSWALK", "STATIC"}
                 else None
             )
-            if static_control is not None:
+            if recovery_control is not None:
+                control = recovery_control
+                self._last_recovery_notice_at = time.monotonic()
+            elif static_control is not None:
                 control = static_control
                 self.intersection_sequence = False
             elif (
