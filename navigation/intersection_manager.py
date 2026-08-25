@@ -35,10 +35,10 @@ class IntersectionManager:
     vehicle.apply_control. The control loop owns all vehicle commands.
 
     State:
-        IDLE -> PLANNING -> STATIC -> IDLE
+        IDLE -> PLANNING -> CROSSWALK -> STATIC -> IDLE
 
-    The main control loop owns the separate configurable trajectory takeover
-    window after STATIC.
+    CROSSWALK is an explicit nonblocking brake/pause phase. The main control loop
+    owns the configurable trajectory takeover after STATIC.
     """
 
     def __init__(self, vehicle, planner) -> None:
@@ -57,6 +57,7 @@ class IntersectionManager:
         self._segment_index = 0
         self._segment_start_location = None
         self._segment_started_at = 0.0
+        self._crosswalk_started_at = 0.0
 
     @staticmethod
     def _segments_for_maneuver(
@@ -86,7 +87,11 @@ class IntersectionManager:
 
     def movement_active(self) -> bool:
         with self._state_lock:
-            return self.phase in {"PLANNING", "STATIC"}
+            return self.phase in {"PLANNING", "CROSSWALK", "STATIC"}
+
+    def maneuver_active(self) -> bool:
+        with self._state_lock:
+            return self.phase in {"CROSSWALK", "STATIC"}
 
     def start_for_intersection(self, current_location, goal_location) -> bool:
         if self.vehicle is None or self.planner is None:
@@ -162,15 +167,33 @@ class IntersectionManager:
                 return
             self._latest_plan = None
             self._active_plan = plan
-            self.phase = "STATIC"
+            self.phase = "CROSSWALK"
             self._segment_index = 0
-            self._segment_start_location = current_location
-            self._segment_started_at = time.monotonic()
+            self._segment_start_location = None
+            self._segment_started_at = 0.0
+            self._crosswalk_started_at = time.monotonic()
             self.next_maneuver = plan.maneuver
 
     def update(self, current_location) -> None:
         """Advance the state machine without sleeping or blocking."""
         self._activate_plan_if_ready(current_location)
+
+        with self._state_lock:
+            phase = self.phase
+            plan = self._active_plan
+            crosswalk_started_at = self._crosswalk_started_at
+
+        if phase == "CROSSWALK":
+            pause = max(0.0, float(getattr(conf, "CROSSWALK_SLEEP", 3.0)))
+            if time.monotonic() - crosswalk_started_at >= pause:
+                with self._state_lock:
+                    if self.phase != "CROSSWALK":
+                        return
+                    self.phase = "STATIC"
+                    self._segment_index = 0
+                    self._segment_start_location = current_location
+                    self._segment_started_at = time.monotonic()
+            return
 
         with self._state_lock:
             if self.phase != "STATIC":
@@ -202,27 +225,27 @@ class IntersectionManager:
                 self._segment_started_at = time.monotonic()
 
     def static_control(self, current_location):
-        """
-        Return the current static-segment VehicleControl, or None.
-
-        This method performs no CARLA RPC. The caller owns apply_control().
-        """
+        """Return current crosswalk brake or static lead-in control."""
         with self._state_lock:
-            if self.phase != "STATIC" or self._active_plan is None:
-                return None
+            phase = self.phase
+            active = self._active_plan
             idx = self._segment_index
-            segment = self._active_plan.segments[idx]
+            segment = active.segments[idx] if active is not None and idx < len(active.segments) else None
 
-        _, steer, forward, throttle, _ = segment
-
-        values = dict(
-            throttle=max(0.0, min(1.0, float(throttle))),
-            steer=max(-1.0, min(1.0, float(steer))),
-            brake=0.0,
-            reverse=not bool(forward),
-            hand_brake=False,
-            manual_gear_shift=False,
-        )
+        if phase == "CROSSWALK":
+            values = dict(throttle=0.0, steer=0.0, brake=1.0, reverse=False, hand_brake=False, manual_gear_shift=False)
+        elif phase == "STATIC" and segment is not None:
+            _, steer, forward, throttle, _ = segment
+            values = dict(
+                throttle=max(0.0, min(1.0, float(throttle))),
+                steer=max(-1.0, min(1.0, float(steer))),
+                brake=0.0,
+                reverse=not bool(forward),
+                hand_brake=False,
+                manual_gear_shift=False,
+            )
+        else:
+            return None
         try:
             import carla
             return carla.VehicleControl(**values)

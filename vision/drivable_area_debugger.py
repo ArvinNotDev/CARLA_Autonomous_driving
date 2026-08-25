@@ -22,9 +22,9 @@ class DrivableAreaDebugger:
         y2 = int(conf.CW_BOTTOM_ROI * h)
 
         x1 = max(0, min(w - 1, x1))
-        x2 = max(0, min(w, x2))
+        x2 = max(0, min(w - 1, x2))
         y1 = max(0, min(h - 1, y1))
-        y2 = max(0, min(h, y2))
+        y2 = max(0, min(h - 1, y2))
 
         return x1, y1, x2, y2
 

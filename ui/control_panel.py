@@ -100,16 +100,19 @@ class ControlPanel(QMainWindow):
             },
             "Vision / debug": {
                 "VISION_INFERENCE_INTERVAL_SECONDS", "DEBUG_PANEL_HZ",
-                "LANE_PROB_THRESHOLD", "LANE_CENTER_SMOOTH_ALPHA", "LANE_THRESHOLD",
+                "LANE_PROB_THRESHOLD", "LANE_CENTER_SMOOTH_ALPHA", "DRIVABLE_PROB_THRESHOLD", "LANE_THRESHOLD",
+                "RL_TOP_ROI", "RL_BOTTOM_ROI", "RL_LEFT_ROI", "RL_RIGHT_ROI",
+                "LL_TOP_ROI", "LL_BOTTOM_ROI", "LL_LEFT_ROI", "LL_RIGHT_ROI",
+                "CW_TOP_ROI", "CW_BOTTOM_ROI", "CW_LEFT_ROI", "CW_RIGHT_ROI",
                 "CROSSWALK_THRESHOLD", "CROSSWALK_SLEEP",
                 "INTERSECTION_CHECK_INTERVAL_SECONDS", "LANE_CHANGE_DEBOUNCE_SECONDS",
                 "LANE_CHANGE_LINE_ANGLE_THRESHOLD_DEG",
                 "LANE_CHANGE_PLANNER_CHECK_INTERVAL_SECONDS",
-                "VISION_DEBUG", "DEBUG_SHOW_ROIS", "DEBUG_SHOW_LANE_MASK",
+                "VISION_DEBUG", "DEBUG_SHOW_ROIS", "DEBUG_SHOW_LANE_MASK", "DEBUG_SHOW_DRIVABLE_AREA",
                 "DEBUG_SHOW_TRAJECTORY", "DEBUG_SHOW_FPS", "DEBUG_SHOW_GPS",
             },
             "Hardware (reset)": {
-                "CAMERA_IMAGE_WIDTH", "CAMERA_IMAGE_HEIGHT", "MODEL_PATH",
+                "CAMERA_IMAGE_WIDTH", "CAMERA_IMAGE_HEIGHT", "INPUT_WIDTH", "INPUT_HEIGHT", "MODEL_PATH",
                 "ENABLE_SEMANTIC_CAMERA", "ENABLE_ALT_CAMERA",
             },
         }
@@ -247,7 +250,9 @@ class ControlPanel(QMainWindow):
         return scroll
 
     def _add_setting(self, form: QFormLayout, spec) -> None:
-        key, label, kind, limits, _realtime = spec
+        key, label, kind, limits, realtime = spec
+        if not realtime:
+            label = f"{label} [car/sensor reset required]"
         if kind == "bool":
             widget = QCheckBox()
             widget.stateChanged.connect(lambda _state, k=key: self._emit(k))

@@ -25,6 +25,7 @@ from ui.renderer import Renderer
 from ui.spawn_goal_picker import SpawnGoalPicker
 from utils.vehicle_utils import blank_frame, make_stop_control
 from vision.city_vision_processing import VisionProcessor
+from vision.drivable_area_debugger import DrivableAreaDebugger
 from trajectory.steering_agent import TrajectorySteeringAgent
 from trajectory.visualize import draw_waypoints
 from trajectory.worker import InferenceWorker
@@ -58,6 +59,7 @@ class CarlaLaneDrivingApp:
         self.controller: Optional[FixedSpeedPIDController] = None
         self.input_manager: Optional[InputManager] = None
         self.renderer = Renderer()
+        self.drivable_debugger = DrivableAreaDebugger()
 
         self.auto_driver: Optional[AutoDriver] = None
         self.lane_change_manager: Optional[LaneChangeManager] = None
@@ -302,6 +304,15 @@ class CarlaLaneDrivingApp:
                 lines.append(f"GPS: {loc.x:.1f}, {loc.y:.1f}, {loc.z:.1f}")
             except Exception:
                 pass
+
+        # Restore drivable-area processing as part of the same debug pipeline.
+        # The debugger is pure OpenCV and never opens its own GUI window.
+        try:
+            drive_info = self.drivable_debugger.show(self._vision_result)
+            if isinstance(self._vision_result, dict):
+                self._vision_result.setdefault("debug", {})["drivable_info"] = drive_info
+        except Exception:
+            pass
 
         if self.intersection_manager is not None:
             phase = self.intersection_manager.phase_name()
@@ -610,7 +621,7 @@ class CarlaLaneDrivingApp:
             static_control = (
                 self.intersection_manager.static_control(self.current_location)
                 if self.intersection_manager is not None
-                and phase == "STATIC"
+                and phase in {"CROSSWALK", "STATIC"}
                 else None
             )
             if static_control is not None:

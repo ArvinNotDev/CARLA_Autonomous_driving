@@ -44,19 +44,28 @@ class Renderer:
             cv2.LINE_AA,
         )
 
+    @staticmethod
+    def _ensure_bgr(frame: np.ndarray) -> np.ndarray:
+        arr = np.asarray(frame)
+        if arr.ndim == 2:
+            return cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+        if arr.ndim != 3 or arr.shape[2] < 3:
+            raise ValueError(f"unsupported debug frame shape: {arr.shape}")
+        return np.ascontiguousarray(arr[:, :, :3])
+
     def compose(self, screen: Optional[np.ndarray], overlay: Optional[dict] = None) -> np.ndarray:
         if screen is None:
-            screen = blank_frame()
+            out = blank_frame()
         else:
-            screen = screen.copy()
+            out = self._ensure_bgr(screen).copy()
 
+        h, w = out.shape[:2]
         if overlay:
             y = 28
             for text in overlay.get("lines", []):
-                self.overlay_text(screen, str(text), (12, y), 0.55, (255, 255, 255), 1)
+                self.overlay_text(out, str(text), (12, min(y, h - 8)), 0.55, (255, 255, 255), 1)
                 y += 20
-
-        return screen
+        return np.ascontiguousarray(out)
 
     def show_frame(self, screen: Optional[np.ndarray], overlay: Optional[dict] = None) -> np.ndarray:
         """Compatibility wrapper; presentation is performed by ControlPanel."""

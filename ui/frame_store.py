@@ -27,7 +27,9 @@ class DebugFrameStore:
         if image is None:
             return 0
         now = time.perf_counter() if captured_at is None else float(captured_at)
-        # The control thread must never mutate a published frame afterwards.
+        # Take ownership at publication. Qt may hold the frame while the producer
+        # immediately continues rendering the next one.
+        image = np.ascontiguousarray(np.asarray(image)).copy()
         image.setflags(write=False)
         with self._lock:
             self._sequence += 1

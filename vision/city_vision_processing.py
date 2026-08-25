@@ -101,14 +101,31 @@ class VisionProcessor:
         slope, _ = np.polyfit(ys, xs, 1)
         return float(np.degrees(np.arctan(slope)))
 
-    def _draw_debug(self, frame, line_mask, left_x, right_x, lane_center, lane_type):
-        vis = frame.copy()
-        overlay = vis.copy()
+    def _draw_debug(self, frame, line_mask, drivable_mask, left_x, right_x, lane_center, lane_type):
+        # OpenCV convention throughout the vision/control path is BGR.
+        vis = np.ascontiguousarray(frame[:, :, :3]).copy()
+        h, w = vis.shape[:2]
+
+        if drivable_mask is not None and getattr(conf, "DEBUG_SHOW_DRIVABLE_AREA", True):
+            drive = np.asarray(drivable_mask)
+            if drive.ndim == 3:
+                drive = cv2.cvtColor(drive, cv2.COLOR_BGR2GRAY)
+            drive = np.where(drive > 0, 255, 0).astype(np.uint8)
+            if drive.shape[:2] != (h, w):
+                drive = cv2.resize(drive, (w, h), interpolation=cv2.INTER_NEAREST)
+            overlay = vis.copy()
+            overlay[drive > 0] = (50, 170, 50)
+            vis = cv2.addWeighted(vis, 0.75, overlay, 0.25, 0)
 
         if line_mask is not None and getattr(conf, "DEBUG_SHOW_LANE_MASK", False):
+            lane = np.asarray(line_mask)
+            if lane.ndim == 3:
+                lane = cv2.cvtColor(lane, cv2.COLOR_BGR2GRAY)
+            if lane.shape[:2] != (h, w):
+                lane = cv2.resize(lane, (w, h), interpolation=cv2.INTER_NEAREST)
             overlay = vis.copy()
-            overlay[line_mask > 0] = (0, 255, 0)
-            vis = cv2.addWeighted(vis, 0.85, overlay, 0.15, 0)
+            overlay[lane > 0] = (0, 255, 255)
+            vis = cv2.addWeighted(vis, 0.82, overlay, 0.18, 0)
 
         h, w = vis.shape[:2]
         frame_center = w / 2.0
@@ -203,11 +220,19 @@ class VisionProcessor:
         # 4 = driving area
         # 5 = lane line
         lane_prob = self._extract_prob_map(outputs, 5)
-        drivable = utils_onnx.driving_area_mask(outputs[4])
+        drivable = utils_onnx.driving_area_mask(outputs[int(getattr(conf, "DRIVABLE_OUTPUT_INDEX", 4))])
 
-        lane_mask_small = self._predict_mask(lane_prob, getattr(conf, "LANE_PROB_THRESHOLD", 0.50), )
+        lane_mask_small = self._predict_mask(lane_prob, getattr(conf, "LANE_PROB_THRESHOLD", 0.50))
 
-        return drivable, lane_mask_small
+        drivable_arr = np.asarray(drivable)
+        if drivable_arr.ndim > 2:
+            drivable_arr = np.squeeze(drivable_arr)
+        if drivable_arr.dtype != np.uint8 or (drivable_arr.size and float(drivable_arr.max()) <= 1.0):
+            drivable_arr = (np.asarray(drivable_arr, dtype=np.float32) >= float(getattr(conf, "DRIVABLE_PROB_THRESHOLD", 0.50))).astype(np.uint8) * 255
+        else:
+            drivable_arr = (drivable_arr > 0).astype(np.uint8) * 255
+
+        return drivable_arr, lane_mask_small
 
     def _extract_masks_from_segmentation(self, semantic_frame):
         masks = self.extractor.extract(semantic_frame)
@@ -367,17 +392,24 @@ class VisionProcessor:
         smoothed_lane_center = self._smooth_lane_center(lane_center)
         error = smoothed_lane_center - frame_center
 
-        if self.debug:
+        debug_requested = any((
+            bool(getattr(conf, "VISION_DEBUG", False)),
+            bool(getattr(conf, "DEBUG_SHOW_ROIS", True)),
+            bool(getattr(conf, "DEBUG_SHOW_LANE_MASK", False)),
+            bool(getattr(conf, "DEBUG_SHOW_DRIVABLE_AREA", True)),
+        ))
+        if debug_requested:
             combined = self._draw_debug(
-                frame=base_frame,   # always RGB debug
+                frame=np.ascontiguousarray(base_frame[:, :, :3]),
                 line_mask=line_mask,
+                drivable_mask=drivable_mask,
                 left_x=left_x,
                 right_x=right_x,
                 lane_center=smoothed_lane_center,
                 lane_type=lane_type,
             )
         else:
-            combined = base_frame
+            combined = np.ascontiguousarray(base_frame[:, :, :3]).copy()
 
         return {
             "error": error,
