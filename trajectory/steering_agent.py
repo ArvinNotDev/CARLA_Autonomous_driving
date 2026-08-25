@@ -83,7 +83,7 @@ class TrajectorySteeringAgent:
         prev_steer: float = 0.0,
         speed_kmh: float = 0.0,
         max_steer: float = 1.0,
-        steer_gain: float = 0.9,
+        steer_gain: Optional[float] = None,
     ) -> float:
         if pred_ego is None or len(pred_ego) == 0:
             return prev_steer
@@ -95,6 +95,8 @@ class TrajectorySteeringAgent:
         x = max(1e-3, float(target[0]))
         y = float(target[1])
 
+        if steer_gain is None:
+            steer_gain = float(getattr(self.cfg, "TRAJECTORY_STEER_GAIN", 0.9))
         desired = steer_gain * (y / x_ref)
 
         desired = float(clamp(desired, -0.25, 0.25))
@@ -151,14 +153,14 @@ class TrajectorySteeringAgent:
         frame_rgb: np.ndarray,
         speed_kmh: float = 0.0,
         command_name: Optional[str] = None,
-        max_steer: float = 0.45,
+        max_steer: Optional[float] = None,
     ) -> tuple[float, np.ndarray]:
         pred = self.predict_waypoints(frame_rgb, command_name=command_name)
         steer = self.steering_from_waypoint(
             pred_ego=pred,
             prev_steer=self.prev_steer,
             speed_kmh=speed_kmh,
-            max_steer=max_steer,
+            max_steer=float(max_steer if max_steer is not None else getattr(self.cfg, "TRAJECTORY_MAX_STEER", 0.45)),
         )
         self.prev_steer = steer
         return steer, pred

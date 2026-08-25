@@ -7,7 +7,7 @@ from typing import Any, Optional, Tuple
 import carla
 import cv2
 import numpy as np
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 import config_city as conf
 from carla_manager import CarlaManager
@@ -29,6 +29,8 @@ from vision.color_extractor import HSVColorThresholdExtractor
 from vision.drivable_area_debugger import DrivableAreaDebugger
 from trajectory.steering_agent import TrajectorySteeringAgent
 from trajectory.visualize import draw_waypoints
+from runtime_settings import RuntimeSettings
+from ui.control_panel import ControlPanel
 
 
 def cfg(name: str, default: Any) -> Any:
@@ -92,6 +94,11 @@ class CarlaLaneDrivingApp:
         self._cached_trajectory_steer = 0.0
         self._cached_trajectory_pred = None
         self._last_intersection_check_at = 0.0
+        self._last_loop_at = time.perf_counter()
+        self._fps = 0.0
+        self._startup_drive_until = 0.0
+        self.settings = RuntimeSettings()
+        self.control_panel: Optional[ControlPanel] = None
 
     def _get_latest_rgb_frame(self) -> Optional[np.ndarray]:
         if self.camera_manager is None:
@@ -104,7 +111,44 @@ class CarlaLaneDrivingApp:
         return self.camera_manager.get_latest_semantic()
 
     def _show_frame(self, screen: np.ndarray) -> None:
-        self.renderer.show_frame(screen)
+        lines = []
+        if cfg("DEBUG_SHOW_FPS", True):
+            lines.append(f"FPS: {self._fps:.1f}")
+        if cfg("DEBUG_SHOW_GPS", True) and self.vehicle is not None:
+            try:
+                loc = self.vehicle.get_location()
+                lines.append(f"GPS: {loc.x:.1f}, {loc.y:.1f}, {loc.z:.1f}")
+            except Exception:
+                pass
+        self.renderer.show_frame(screen, {"lines": lines})
+
+    def _on_settings_changed(self, values: dict) -> None:
+        self.settings.apply(values)
+        if self.controller is not None:
+            self.controller.fixed_throttle = float(cfg("FIXED_THROTTLE", self.controller.fixed_throttle))
+            self.controller.kp = float(cfg("KP", self.controller.kp))
+            self.controller.ki = float(cfg("KI", self.controller.ki))
+            self.controller.kd = float(cfg("KD", self.controller.kd))
+            self.controller.steer_limit = float(cfg("STEER_LIMIT", self.controller.steer_limit))
+            self.controller.max_steer_step = float(cfg("MAX_STEER_STEP", self.controller.max_steer_step))
+        if self.vision_processor is not None:
+            self.vision_processor.debug = bool(cfg("VISION_DEBUG", False))
+            self.vision_processor.lane_center_alpha = float(
+                cfg("LANE_CENTER_SMOOTH_ALPHA", self.vision_processor.lane_center_alpha)
+            )
+        if self.trajectory_steering_agent is not None:
+            self.trajectory_steering_agent.cfg.target_speed_kmh = float(
+                cfg("TARGET_SPEED_KMH", self.trajectory_steering_agent.cfg.target_speed_kmh)
+            )
+
+    def _request_car_reset(self) -> None:
+        if self.control_panel is None:
+            return
+        QMessageBox.information(
+            self.control_panel,
+            "Car reset required",
+            "This setting changes a CARLA sensor/model resource. Reset the car (or restart the run) to apply it.",
+        )
 
     def _render_mode_overlay(self, screen: np.ndarray, mode: str, error: float) -> None:
         self.renderer.render_mode_overlay(screen, mode, error)
@@ -301,6 +345,11 @@ class CarlaLaneDrivingApp:
         )
 
         self.drivable_debugger = DrivableAreaDebugger()
+        self._startup_drive_until = time.monotonic() + 3.0
+        self.control_panel = ControlPanel(self.settings)
+        self.control_panel.settings_changed.connect(self._on_settings_changed)
+        self.control_panel.reset_requested.connect(self._request_car_reset)
+        self.control_panel.show()
 
         stream_thread = threading.Thread(
             target=start_stream,
@@ -342,6 +391,13 @@ class CarlaLaneDrivingApp:
         self.setup()
         try:
             while self.running:
+                QApplication.processEvents()
+                tick_now = time.perf_counter()
+                dt = tick_now - self._last_loop_at
+                self._last_loop_at = tick_now
+                if dt > 0:
+                    instant_fps = 1.0 / dt
+                    self._fps = instant_fps if self._fps <= 0 else 0.9 * self._fps + 0.1 * instant_fps
                 if (
                     self.input_manager is None
                     or self.controller is None
@@ -377,6 +433,8 @@ class CarlaLaneDrivingApp:
 
                 if rgb_frame is None and semantic_frame is None:
                     screen = blank_frame()
+                    if self.auto_mode and time.monotonic() < self._startup_drive_until:
+                        self._safe_vehicle_apply_control(carla.VehicleControl(throttle=0.18))
                     self._show_frame(screen)
                     time.sleep(0.01)
                     continue
@@ -396,13 +454,18 @@ class CarlaLaneDrivingApp:
                 except Exception:
                     drivable_area_result = None
 
-                if self._movement_active():
+                if self._movement_active() and cfg("JUNCTION_CONTROL_MODE", "trajectory") == "static_meters":
                     screen = rgb_frame.copy() if rgb_frame is not None else blank_frame()
                     self._show_frame(screen)
                     time.sleep(0.01)
                     continue
 
                 now = time.perf_counter()
+                if self.trajectory_steering_agent is not None:
+                    command = "LANE_FOLLOW"
+                    if self.is_intersection and self.next_maneuver in getattr(conf, "COMMANDS", ()):
+                        command = self.next_maneuver
+                    self.trajectory_steering_agent.command_name = command
                 trajectory_interval = float(
                     cfg("TRAJECTORY_INFERENCE_INTERVAL_SECONDS", 0.05)
                 )
@@ -447,15 +510,23 @@ class CarlaLaneDrivingApp:
                             self._update_intersection_manager()
                             self.intersec_once = False
 
-                        self._safe_vehicle_apply_control(
-                            carla.VehicleControl(
-                                throttle=0.15,
-                                steer=float(steer),
-                                brake=0.0,
-                                reverse=False,
-                                hand_brake=False,
+                        if cfg("JUNCTION_CONTROL_MODE", "trajectory") == "trajectory":
+                            speed = 0.0
+                            try:
+                                vel = self.vehicle.get_velocity()
+                                speed = float((vel.x**2 + vel.y**2 + vel.z**2) ** 0.5) * 3.6
+                            except Exception:
+                                pass
+                            throttle, brake = self.trajectory_steering_agent.throttle_brake_from_speed(
+                                speed, float(cfg("TARGET_SPEED_KMH", 25.0))
                             )
-                        )
+                            self._safe_vehicle_apply_control(
+                                carla.VehicleControl(throttle=throttle, steer=float(steer), brake=brake)
+                            )
+                        else:
+                            self._safe_vehicle_apply_control(
+                                carla.VehicleControl(throttle=0.15, steer=float(steer), brake=0.0)
+                            )
                     else:
                         self.seq_timeout = 0.0
                         self.intersection_sequence = False
@@ -486,10 +557,24 @@ class CarlaLaneDrivingApp:
                             self.is_intersection = False
                         self._last_intersection_check_at = now
 
-                    if self.is_intersection:
+                    if self.is_intersection and cfg("JUNCTION_CONTROL_MODE", "trajectory") == "static_meters":
                         self.intersection_sequence = True
                         self.seq_timeout = time.time()
                         self.intersec_once = True
+                    elif self.is_intersection and cfg("JUNCTION_CONTROL_MODE", "trajectory") == "trajectory":
+                        self.intersection_sequence = True
+                        self.seq_timeout = time.time()
+                        self.intersec_once = False
+                        if self.planner is not None and self.current_location is not None:
+                            try:
+                                maneuver = self.planner.get_next_maneuver_text(
+                                    self.current_location, self.goal_location
+                                )
+                                if maneuver in getattr(conf, "COMMANDS", ()):
+                                    self.next_maneuver = maneuver
+                                    self.trajectory_steering_agent.command_name = maneuver
+                            except Exception:
+                                pass
 
                     try:
                         candidate_out_checker, screen = self.auto_driver.update(
@@ -516,7 +601,7 @@ class CarlaLaneDrivingApp:
                         drivable_area_result=drivable_area_result,
                     )
 
-                    traj_visualized_scrn = draw_waypoints(screen, pred)
+                    traj_visualized_scrn = draw_waypoints(screen, pred) if cfg("DEBUG_SHOW_TRAJECTORY", True) else screen
                     self._show_frame(traj_visualized_scrn)
 
                 else:
@@ -528,7 +613,7 @@ class CarlaLaneDrivingApp:
 
                     self._safe_vehicle_apply_control(manual_control)
 
-                    traj_visualized_scrn = draw_waypoints(screen, pred)
+                    traj_visualized_scrn = draw_waypoints(screen, pred) if cfg("DEBUG_SHOW_TRAJECTORY", True) else screen
                     self._show_frame(traj_visualized_scrn)
 
                 time.sleep(0.01)

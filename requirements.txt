@@ -7,3 +7,4 @@ onnxruntime-gpu
 onnxruntime
 carla
 pygame
+PySide6

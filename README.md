@@ -1,40 +1,92 @@
 # CARLA Autonomous Driving
 
-Autonomous driving project built with CARLA, Python, OpenCV, ONNX Runtime, and YOLOPv2-based perception.
+An experimental autonomous-driving stack for [CARLA](https://carla.org/) with lane perception, drivable-area reasoning, route planning, junction handling, trajectory prediction, live debugging, and manual override.
 
-## Features
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![CARLA](https://img.shields.io/badge/CARLA-0.9.x-222222)
+![PySide6](https://img.shields.io/badge/UI-PySide6-41CD52)
+![License](https://img.shields.io/badge/License-MIT-blue)
 
-- Lane following
-- Route planning
-- Intersection detection
-- Lane changes
-- Autonomous and manual driving modes
-- Real-time video streaming
-- ONNX-based perception
+## What it does
+
+- Lane following from YOLOPv2 ONNX perception and optional semantic segmentation.
+- Learned waypoint/trajectory steering for junctions, with a selectable fallback to the existing static, meter-based movement sequences.
+- Route planning, junction classification, lane-change protection, spawn/goal selection, and manual WASD control.
+- A PySide6 runtime panel for live tuning of throttle, PID gains, target speed, trajectory parameters, ROIs, model thresholds, and debug overlays.
+- Persistent named profiles in `runtime_profiles.json`.
+- Live FPS/GPS overlays and trajectory, ROI, lane-mask, and vision debugging.
+
+## Junction modes
+
+The control panel exposes **Junction control**:
+
+| Mode | Behavior |
+| --- | --- |
+| `trajectory` | Uses the learned trajectory model and route command (`LEFT`, `RIGHT`, `STRAIGHT`) while crossing a junction. |
+| `static_meters` | Uses the existing distance/steering sequences from `navigation/intersection_manager.py`. |
+
+The setting can be changed while the program is running. Sensor dimensions and model-path changes are marked as requiring a car reset/restart.
 
 ## Requirements
 
-- Python 3.12
-- CARLA
-- OpenCV
-- NumPy
-- ONNX Runtime
+- CARLA 0.9.x server running on `localhost:2000`.
+- Python 3.10+ (3.12 recommended).
+- A working CARLA Python API installation.
+- NVIDIA CUDA is optional; ONNX Runtime and PyTorch will use CPU when CUDA is unavailable.
+
+Install Python dependencies:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+The repository includes the YOLOPv2 ONNX model and trajectory checkpoints under `models_and_datasets/models/`.
 
 ## Run
+
+Start the CARLA server, then:
 
 ```bash
 python main.py
 ```
 
+Choose a spawn point and goal. The runtime control panel opens automatically. Press `E` in the CARLA control window to toggle autonomous/manual mode; `WASD` controls the car in manual mode; `Esc` exits.
 
+The existing ROI/advanced editor is also available through:
 
+```bash
+python stream.py
+```
 
-# Third-party code notice
+## Runtime profiles
 
-This project includes code adapted from:
-YOLOPv2-ONNX-Sample by Kazuhito00
-https://github.com/Kazuhito00/YOLOPv2-ONNX-Sample
+Use the profile controls at the bottom of the PySide6 panel to save or load a named configuration. The last saved values are written to `runtime_profiles.json`, which is intentionally local and can be added to `.gitignore for machine-specific tuning.
 
-The original code is licensed under the MIT License.
-A copy of the license is included in:
-LICENSES/YOLOPv2-ONNX-Sample-MIT.txt
+Live settings update the active controller or perception pipeline immediately. Settings that change CARLA sensor resources or model loading are clearly marked **Hardware (reset)** and show a reset prompt.
+
+## Project layout
+
+```text
+main.py                    Application loop and live control-panel integration
+carla_manager.py           CARLA connection, spawn, and cleanup
+controllers/               PID and keyboard control
+driving/                   Autonomous driving orchestration
+navigation/                Route, junction, lane-side, and lane-change logic
+sensors/                   RGB, semantic, and trajectory cameras
+trajectory/                Waypoint model, steering agent, visualization
+vision/                    ONNX/segmentation perception and debug views
+ui/                        Spawn/goal picker, renderer, runtime control panel
+config_city.py             Defaults and JSON overrides
+Forza.json                 ROI/advanced settings
+```
+
+## Troubleshooting
+
+- **The car does not move after spawning:** confirm CARLA is running, the selected spawn point is on a drivable lane, and that the panel is in Auto mode. The app applies a short startup throttle grace period while camera frames become available.
+- **No ONNX inference:** verify `MODEL_PATH`, install `onnxruntime` (or `onnxruntime-gpu`), and check that the model file exists.
+- **Panel does not appear:** install `PySide6` and run from the repository root.
+- **CARLA API import errors:** add your CARLA `PythonAPI` directory to `PYTHONPATH` or update the paths used by `navigation/global_planner.py`.
+
+## Third-party notice
+
+Perception code includes adaptations from **YOLOPv2-ONNX-Sample** by Kazuhito00. The original MIT license is included in `LICENSES/YOLOPv2-ONNX-Sample-MIT.txt`.

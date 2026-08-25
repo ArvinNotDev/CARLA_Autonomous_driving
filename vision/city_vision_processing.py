@@ -105,7 +105,7 @@ class VisionProcessor:
         vis = frame.copy()
         overlay = vis.copy()
 
-        if line_mask is not None:
+        if line_mask is not None and getattr(conf, "DEBUG_SHOW_LANE_MASK", False):
             overlay = vis.copy()
             overlay[line_mask > 0] = (0, 255, 0)
             vis = cv2.addWeighted(vis, 0.85, overlay, 0.15, 0)
@@ -133,8 +133,9 @@ class VisionProcessor:
         rl_left = int(rl_left_roi * w)
         rl_right = int(rl_right_roi * w)
 
-        cv2.rectangle(vis, (ll_left, ll_top), (ll_right, ll_bottom), (0, 255, 0), 2)
-        cv2.rectangle(vis, (rl_left, rl_top), (rl_right, rl_bottom), (0, 255, 0), 2)
+        if getattr(conf, "DEBUG_SHOW_ROIS", True):
+            cv2.rectangle(vis, (ll_left, ll_top), (ll_right, ll_bottom), (0, 255, 0), 2)
+            cv2.rectangle(vis, (rl_left, rl_top), (rl_right, rl_bottom), (0, 255, 0), 2)
 
         cv2.line(vis, (int(frame_center), 0), (int(frame_center), h), (0, 0, 255), 2)
         cv2.line(vis, (int(lane_center), 0), (int(lane_center), h), (255, 0, 255), 2)

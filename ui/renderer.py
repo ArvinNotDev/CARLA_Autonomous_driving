@@ -37,10 +37,15 @@ class Renderer:
             cv2.LINE_AA,
         )
 
-    def show_frame(self, screen: Optional[np.ndarray]) -> None:
+    def show_frame(self, screen: Optional[np.ndarray], overlay: Optional[dict] = None) -> None:
         if screen is None:
             screen = blank_frame()
 
+        if overlay:
+            y = 28
+            for text in overlay.get("lines", []):
+                self.overlay_text(screen, str(text), (12, y), 0.55, (255, 255, 255), 1)
+                y += 20
         conf.debug_frame_buffer = screen
 
         if cfg("SHOW_OPENCV_WINDOW", False):
