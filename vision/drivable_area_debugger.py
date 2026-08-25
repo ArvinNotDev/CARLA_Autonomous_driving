@@ -53,8 +53,9 @@ class DrivableAreaDebugger:
         }
 
         if vision_result is None:
-            cv2.imshow(self.window_name, blank_frame())
-            cv2.waitKey(1)
+            if getattr(conf, "SHOW_OPENCV_WINDOW", False):
+                cv2.imshow(self.window_name, blank_frame())
+                cv2.waitKey(1)
             return empty_result
 
         try:
@@ -62,8 +63,9 @@ class DrivableAreaDebugger:
             drivable_mask = debug.get("drivable_mask", None)
 
             if drivable_mask is None:
-                cv2.imshow(self.window_name, blank_frame())
-                cv2.waitKey(1)
+                if getattr(conf, "SHOW_OPENCV_WINDOW", False):
+                    cv2.imshow(self.window_name, blank_frame())
+                    cv2.waitKey(1)
                 return empty_result
 
             if len(drivable_mask.shape) == 3:

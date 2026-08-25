@@ -10,22 +10,21 @@ An experimental autonomous-driving stack for [CARLA](https://carla.org/) with la
 ## What it does
 
 - Lane following from YOLOPv2 ONNX perception and optional semantic segmentation.
-- Learned waypoint/trajectory steering for junctions, with a selectable fallback to the existing static, meter-based movement sequences.
+- Learned waypoint/trajectory steering for junctions, preceded by a short configurable static meter-based lead-in.
 - Route planning, junction classification, lane-change protection, spawn/goal selection, and manual WASD control.
 - A PySide6 runtime panel for live tuning of throttle, PID gains, target speed, trajectory parameters, ROIs, model thresholds, and debug overlays.
 - Persistent named profiles in `runtime_profiles.json`.
 - Live FPS/GPS overlays and trajectory, ROI, lane-mask, and vision debugging.
 
-## Junction modes
+## Junction behavior
 
-The control panel exposes **Junction control**:
+Junction handling is intentionally one pipeline:
 
-| Mode | Behavior |
-| --- | --- |
-| `trajectory` | Uses the learned trajectory model and route command (`LEFT`, `RIGHT`, `STRAIGHT`) while crossing a junction. |
-| `static_meters` | Uses the existing distance/steering sequences from `navigation/intersection_manager.py`. |
+1. Detect a junction and determine the next route maneuver.
+2. Run a short configurable static lead-in (meters, throttle, and steering segments).
+3. Release vehicle control back to the trajectory model with the route command (`LEFT`, `RIGHT`, or `STRAIGHT`).
 
-The setting can be changed while the program is running. Sensor dimensions and model-path changes are marked as requiring a car reset/restart.
+The static lead-in and route lookup run in a worker so the debug frame and PySide6 panel keep updating. The panel exposes all lead-in distances and timing values; there is no separate junction-mode selector.
 
 ## Requirements
 
@@ -60,7 +59,7 @@ python stream.py
 
 ## Runtime profiles
 
-Use the profile controls at the bottom of the PySide6 panel to save or load a named configuration. The last saved values are written to `runtime_profiles.json`, which is intentionally local and can be added to `.gitignore for machine-specific tuning.
+Use the profile controls at the bottom of the PySide6 panel to save or load a named configuration. The last saved values are written to `runtime_profiles.json`, which is intentionally local and ignored by Git for machine-specific tuning.
 
 Live settings update the active controller or perception pipeline immediately. Settings that change CARLA sensor resources or model loading are clearly marked **Hardware (reset)** and show a reset prompt.
 

@@ -72,6 +72,7 @@ class CarlaLaneDrivingApp:
         self.is_intersection = False
         self.seq_timeout: float = 0.0
         self.next_maneuver: Optional[str] = None
+        self._junction_static_active = False
 
         self.intersection_model = IntersectionModel(
             "models_and_datasets/models/junction_model_resnet18.pt"
@@ -93,10 +94,15 @@ class CarlaLaneDrivingApp:
         self._last_trajectory_inference_at = 0.0
         self._cached_trajectory_steer = 0.0
         self._cached_trajectory_pred = None
+        self._trajectory_lock = threading.Lock()
+        self._trajectory_worker_active = False
+        self._trajectory_last_completed_at = 0.0
+        self._trajectory_last_error: Optional[str] = None
         self._last_intersection_check_at = 0.0
         self._last_loop_at = time.perf_counter()
         self._fps = 0.0
         self._startup_drive_until = 0.0
+        self._last_recovery_notice_at = 0.0
         self.settings = RuntimeSettings()
         self.control_panel: Optional[ControlPanel] = None
 
@@ -110,6 +116,57 @@ class CarlaLaneDrivingApp:
             return None
         return self.camera_manager.get_latest_semantic()
 
+    def _start_trajectory_inference(self, frame: np.ndarray) -> None:
+        if self.trajectory_steering_agent is None:
+            return
+        with self._trajectory_lock:
+            if self._trajectory_worker_active:
+                return
+            self._trajectory_worker_active = True
+            command = self.trajectory_steering_agent.command_name
+
+        frame_copy = frame.copy()
+
+        def worker() -> None:
+            try:
+                steer, pred = self.trajectory_steering_agent.get_steering_and_pred(
+                    frame_copy,
+                    command_name=command,
+                )
+                with self._trajectory_lock:
+                    self._cached_trajectory_steer = float(steer)
+                    self._cached_trajectory_pred = pred
+                    self._trajectory_last_completed_at = time.perf_counter()
+                    self._trajectory_last_error = None
+            except Exception as exc:
+                with self._trajectory_lock:
+                    self._cached_trajectory_steer = 0.0
+                    self._cached_trajectory_pred = None
+                    self._trajectory_last_completed_at = time.perf_counter()
+                    self._trajectory_last_error = str(exc)
+            finally:
+                with self._trajectory_lock:
+                    self._trajectory_worker_active = False
+
+        threading.Thread(
+            target=worker,
+            name="carla-trajectory-inference",
+            daemon=True,
+        ).start()
+
+    def _trajectory_output(self) -> tuple[float, Optional[np.ndarray], float]:
+        with self._trajectory_lock:
+            steer = float(self._cached_trajectory_steer)
+            pred = self._cached_trajectory_pred
+            completed_at = float(self._trajectory_last_completed_at)
+        stale_after = max(
+            0.5,
+            float(cfg("TRAJECTORY_INFERENCE_INTERVAL_SECONDS", 0.05)) * 6.0,
+        )
+        if completed_at <= 0.0 or time.perf_counter() - completed_at > stale_after:
+            return 0.0, None, completed_at
+        return steer, pred, completed_at
+
     def _show_frame(self, screen: np.ndarray) -> None:
         lines = []
         if cfg("DEBUG_SHOW_FPS", True):
@@ -120,10 +177,22 @@ class CarlaLaneDrivingApp:
                 lines.append(f"GPS: {loc.x:.1f}, {loc.y:.1f}, {loc.z:.1f}")
             except Exception:
                 pass
+        if self._junction_static_active:
+            lines.append("Junction: static lead-in")
+        elif self.intersection_sequence:
+            lines.append(
+                f"Junction: trajectory {self.next_maneuver or 'LANE_FOLLOW'}"
+            )
+        if self._trajectory_last_error:
+            lines.append("Trajectory: inference unavailable")
         self.renderer.show_frame(screen, {"lines": lines})
+        if self.control_panel is not None:
+            self.control_panel.update_debug_frame(screen)
 
     def _on_settings_changed(self, values: dict) -> None:
         self.settings.apply(values)
+        if "AUTO_MODE_DEFAULT" in values:
+            self.auto_mode = bool(values["AUTO_MODE_DEFAULT"])
         if self.controller is not None:
             self.controller.fixed_throttle = float(cfg("FIXED_THROTTLE", self.controller.fixed_throttle))
             self.controller.kp = float(cfg("KP", self.controller.kp))
@@ -135,6 +204,13 @@ class CarlaLaneDrivingApp:
             self.vision_processor.debug = bool(cfg("VISION_DEBUG", False))
             self.vision_processor.lane_center_alpha = float(
                 cfg("LANE_CENTER_SMOOTH_ALPHA", self.vision_processor.lane_center_alpha)
+            )
+        if self.lane_change_manager is not None:
+            self.lane_change_manager.lane_change_debounce_seconds = float(
+                cfg(
+                    "LANE_CHANGE_DEBOUNCE_SECONDS",
+                    self.lane_change_manager.lane_change_debounce_seconds,
+                )
             )
         if self.trajectory_steering_agent is not None:
             # ``main`` passes the config module to the agent, while dataset
@@ -170,18 +246,6 @@ class CarlaLaneDrivingApp:
         except Exception:
             pass
 
-    def _force_left_correction(self) -> None:
-        steer_limit = float(cfg("STEER_LIMIT", 0.35))
-        fixed_throttle = float(cfg("FIXED_THROTTLE", 0.3))
-
-        control = carla.VehicleControl(
-            throttle=fixed_throttle,
-            steer=-abs(steer_limit),
-            brake=0.0,
-        )
-        self._safe_vehicle_apply_control(control)
-        time.sleep(1)
-
     def _extract_error(self, drivable_area_result: Any) -> float:
         if isinstance(drivable_area_result, dict):
             try:
@@ -197,7 +261,8 @@ class CarlaLaneDrivingApp:
     ) -> None:
         """
         Start a checking window when AutoDriver requests it.
-        During that window, if error > threshold, steer left.
+        During that window, preserve diagnostic state without overriding the
+        trajectory controller.
         """
         error = self._extract_error(drivable_area_result)
         now = time.monotonic()
@@ -212,8 +277,13 @@ class CarlaLaneDrivingApp:
 
         self.out_checker = True
 
+        # Do not inject a blocking or hard-left recovery command here.  The
+        # old implementation slept for one second in the render loop and
+        # overrode trajectory steering with full-left input.  Keep recovery
+        # state for diagnostics and let the active controller recover.
         if error > self.out_checker_error_threshold:
-            self._force_left_correction()
+            self.out_checker = True
+            self._last_recovery_notice_at = now
 
         if now - self.out_checker_started_at >= self.out_checker_window_seconds:
             self.out_checker = False
@@ -248,26 +318,15 @@ class CarlaLaneDrivingApp:
                     pass
 
     def _update_intersection_manager(self) -> None:
-        """
-        Best-effort call into IntersectionManager so the app does not crash
-        if its API differs slightly.
-        """
         if self.intersection_manager is None:
             return
-
-        candidates = [
-            (self.intersection_sequence, self.current_location, self.goal_location),
-            (),
-        ]
-
-        for args in candidates:
-            try:
-                self.intersection_manager.update(*args)
-                return
-            except TypeError:
-                continue
-            except Exception:
-                return
+        try:
+            self.intersection_manager.start_for_intersection(
+                self.current_location,
+                self.goal_location,
+            )
+        except Exception:
+            return
 
     def _get_intersection_input_frame(
         self,
@@ -365,6 +424,12 @@ class CarlaLaneDrivingApp:
         time.sleep(1.0)
 
     def shutdown(self) -> None:
+        if self.control_panel is not None:
+            try:
+                self.control_panel.close()
+            except Exception:
+                pass
+
         try:
             if self.vehicle is not None:
                 self.vehicle.apply_control(make_stop_control())
@@ -459,8 +524,31 @@ class CarlaLaneDrivingApp:
                 except Exception:
                     drivable_area_result = None
 
-                if self._movement_active() and cfg("JUNCTION_CONTROL_MODE", "trajectory") == "static_meters":
+                # The static lead-in owns vehicle control until its distance
+                # sequence completes.  Do not let PID/trajectory control race
+                # that worker; this was the source of bad post-junction
+                # steering and apparent frame stalls.
+                if self._junction_static_active and not self._movement_active():
+                    self._junction_static_active = False
+                    self.seq_timeout = time.time()
+                    if (
+                        self.intersection_manager is not None
+                        and self.intersection_manager.next_maneuver
+                        in getattr(conf, "COMMANDS", ())
+                    ):
+                        self.next_maneuver = (
+                            self.intersection_manager.next_maneuver
+                        )
+                        self.trajectory_steering_agent.command_name = (
+                            self.next_maneuver
+                        )
+                if self._movement_active():
                     screen = rgb_frame.copy() if rgb_frame is not None else blank_frame()
+                    screen = draw_waypoints(
+                        screen,
+                        self._cached_trajectory_pred,
+                        scale=float(cfg("TRAJECTORY_DEBUG_SCALE", 2.2)),
+                    ) if cfg("DEBUG_SHOW_TRAJECTORY", True) and self._cached_trajectory_pred is not None else screen
                     self._show_frame(screen)
                     time.sleep(0.01)
                     continue
@@ -468,7 +556,11 @@ class CarlaLaneDrivingApp:
                 now = time.perf_counter()
                 if self.trajectory_steering_agent is not None:
                     command = "LANE_FOLLOW"
-                    if self.is_intersection and self.next_maneuver in getattr(conf, "COMMANDS", ()):
+                    if (
+                        self.intersection_sequence
+                        and self.next_maneuver
+                        in getattr(conf, "COMMANDS", ())
+                    ):
                         command = self.next_maneuver
                     self.trajectory_steering_agent.command_name = command
                 trajectory_interval = float(
@@ -482,56 +574,28 @@ class CarlaLaneDrivingApp:
                         >= trajectory_interval
                     )
                 ):
-                    try:
-                        self._cached_trajectory_steer, self._cached_trajectory_pred = (
-                            self.trajectory_steering_agent.get_steering_and_pred(
-                                rgb_frame
-                            )
-                        )
-                        self._last_trajectory_inference_at = now
-                    except Exception:
-                        self._cached_trajectory_steer = 0.0
-                        self._cached_trajectory_pred = None
-                steer = self._cached_trajectory_steer
-                pred = self._cached_trajectory_pred
+                    self._last_trajectory_inference_at = now
+                    self._start_trajectory_inference(rgb_frame)
+                steer, pred, _ = self._trajectory_output()
 
                 if self.auto_mode:
                     if self.vehicle is not None:
                         self.current_location = self.vehicle.get_location()
                     else:
                         self.current_location = None
-                    if self.intersection_sequence and (time.time() - self.seq_timeout < 10.0):
-                        self.next_maneuver = None
-                        if self.planner is not None and self.current_location is not None:
-                            try:
-                                self.next_maneuver = self.planner.get_next_maneuver_text(
-                                    self.current_location,
-                                    self.goal_location,
-                                )
-                            except Exception:
-                                self.next_maneuver = None
-
-                        if self.intersection_manager is not None and self.intersec_once:
-                            self._update_intersection_manager()
-                            self.intersec_once = False
-
-                        if cfg("JUNCTION_CONTROL_MODE", "trajectory") == "trajectory":
-                            speed = 0.0
-                            try:
-                                vel = self.vehicle.get_velocity()
-                                speed = float((vel.x**2 + vel.y**2 + vel.z**2) ** 0.5) * 3.6
-                            except Exception:
-                                pass
-                            throttle, brake = self.trajectory_steering_agent.throttle_brake_from_speed(
-                                speed, float(cfg("TARGET_SPEED_KMH", 25.0))
-                            )
-                            self._safe_vehicle_apply_control(
-                                carla.VehicleControl(throttle=throttle, steer=float(steer), brake=brake)
-                            )
-                        else:
-                            self._safe_vehicle_apply_control(
-                                carla.VehicleControl(throttle=0.15, steer=float(steer), brake=0.0)
-                            )
+                    if self.intersection_sequence and (time.time() - self.seq_timeout < float(cfg("JUNCTION_TRAJECTORY_WINDOW_SECONDS", 12.0))):
+                        speed = 0.0
+                        try:
+                            vel = self.vehicle.get_velocity()
+                            speed = float((vel.x**2 + vel.y**2 + vel.z**2) ** 0.5) * 3.6
+                        except Exception:
+                            pass
+                        throttle, brake = self.trajectory_steering_agent.throttle_brake_from_speed(
+                            speed, float(cfg("TARGET_SPEED_KMH", 25.0))
+                        )
+                        self._safe_vehicle_apply_control(
+                            carla.VehicleControl(throttle=throttle, steer=float(steer), brake=brake)
+                        )
                     else:
                         self.seq_timeout = 0.0
                         self.intersection_sequence = False
@@ -562,22 +626,26 @@ class CarlaLaneDrivingApp:
                             self.is_intersection = False
                         self._last_intersection_check_at = now
 
-                    if self.is_intersection and cfg("JUNCTION_CONTROL_MODE", "trajectory") == "static_meters":
-                        self.intersection_sequence = True
-                        self.seq_timeout = time.time()
-                        self.intersec_once = True
-                    elif self.is_intersection and cfg("JUNCTION_CONTROL_MODE", "trajectory") == "trajectory":
-                        self.intersection_sequence = True
-                        self.seq_timeout = time.time()
-                        self.intersec_once = False
+                    if self.is_intersection and not self.intersection_sequence:
                         if self.planner is not None and self.current_location is not None:
                             try:
-                                maneuver = self.planner.get_next_maneuver_text(
-                                    self.current_location, self.goal_location
-                                )
+                                if self.intersection_manager is not None:
+                                    started = self.intersection_manager.start_for_intersection(
+                                        self.current_location, self.goal_location
+                                    )
+                                    maneuver = self.intersection_manager.next_maneuver
+                                else:
+                                    started = False
+                                    maneuver = self.planner.get_next_maneuver_text(
+                                        self.current_location, self.goal_location
+                                    )
                                 if maneuver in getattr(conf, "COMMANDS", ()):
                                     self.next_maneuver = maneuver
                                     self.trajectory_steering_agent.command_name = maneuver
+                                if started:
+                                    self._junction_static_active = True
+                                    self.intersection_sequence = True
+                                    self.seq_timeout = 0.0
                             except Exception:
                                 pass
 
@@ -606,7 +674,11 @@ class CarlaLaneDrivingApp:
                         drivable_area_result=drivable_area_result,
                     )
 
-                    traj_visualized_scrn = draw_waypoints(screen, pred) if cfg("DEBUG_SHOW_TRAJECTORY", True) else screen
+                    traj_visualized_scrn = draw_waypoints(
+                        screen,
+                        pred,
+                        scale=float(cfg("TRAJECTORY_DEBUG_SCALE", 2.2)),
+                    ) if cfg("DEBUG_SHOW_TRAJECTORY", True) and pred is not None else screen
                     self._show_frame(traj_visualized_scrn)
 
                 else:
@@ -618,7 +690,11 @@ class CarlaLaneDrivingApp:
 
                     self._safe_vehicle_apply_control(manual_control)
 
-                    traj_visualized_scrn = draw_waypoints(screen, pred) if cfg("DEBUG_SHOW_TRAJECTORY", True) else screen
+                    traj_visualized_scrn = draw_waypoints(
+                        screen,
+                        pred,
+                        scale=float(cfg("TRAJECTORY_DEBUG_SCALE", 2.2)),
+                    ) if cfg("DEBUG_SHOW_TRAJECTORY", True) and pred is not None else screen
                     self._show_frame(traj_visualized_scrn)
 
                 time.sleep(0.01)

@@ -30,6 +30,9 @@ class LaneChangeManager:
 
         self.movement_thread: Optional[threading.Thread] = None
         self.turning_intersection = False
+        self._planner_query_active = False
+        self._last_planner_query_at = 0.0
+        self._state_lock = threading.Lock()
 
     def _movement_active(self) -> bool:
         return self.movement_thread is not None and self.movement_thread.is_alive()
@@ -175,15 +178,46 @@ class LaneChangeManager:
         if time.time() < self.lane_change_debounce_until:
             return
 
-        next_maneuver_text = self.planner.get_next_maneuver_text(
-            current_location,
-            goal_location,
+        now = time.monotonic()
+        query_interval = float(
+            getattr(
+                conf,
+                "LANE_CHANGE_PLANNER_CHECK_INTERVAL_SECONDS",
+                0.50,
+            )
         )
+        with self._state_lock:
+            if self._planner_query_active or (
+                now - self._last_planner_query_at < query_interval
+            ):
+                return
+            self._planner_query_active = True
+            self._last_planner_query_at = now
 
-        if next_maneuver_text == "CHANGE_LANE_LEFT":
-            self._start_verified_lane_change("left")
-            self.lane_change_debounce_until = time.time() + self.lane_change_debounce_seconds
+        def query_worker() -> None:
+            try:
+                next_maneuver_text = self.planner.get_next_maneuver_text(
+                    current_location,
+                    goal_location,
+                )
+                if next_maneuver_text == "CHANGE_LANE_LEFT":
+                    self._start_verified_lane_change("left")
+                    self.lane_change_debounce_until = (
+                        time.time() + self.lane_change_debounce_seconds
+                    )
+                elif next_maneuver_text == "CHANGE_LANE_RIGHT":
+                    self._start_verified_lane_change("right")
+                    self.lane_change_debounce_until = (
+                        time.time() + self.lane_change_debounce_seconds
+                    )
+            except Exception:
+                pass
+            finally:
+                with self._state_lock:
+                    self._planner_query_active = False
 
-        elif next_maneuver_text == "CHANGE_LANE_RIGHT":
-            self._start_verified_lane_change("right")
-            self.lane_change_debounce_until = time.time() + self.lane_change_debounce_seconds
+        threading.Thread(
+            target=query_worker,
+            name="carla-lane-planner-query",
+            daemon=True,
+        ).start()

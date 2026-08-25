@@ -38,15 +38,13 @@ def overlay_text(img: np.ndarray, lines: list[str]) -> np.ndarray:
         y += 22
     return out
 
-def draw_waypoints(frame, pred):
+def draw_waypoints(frame, pred, scale: float = 2.2):
     img = frame.copy()
 
     h, w = img.shape[:2]
 
     origin_x = w // 2
     origin_y = h - 50
-
-    scale = 2.2 # pixels per meter
 
     prev_pt = None
 

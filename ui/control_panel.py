@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QPushButton, QScrollArea, QSpinBox,
@@ -21,11 +22,16 @@ class ControlPanel(QMainWindow):
         self.settings = settings
         self.widgets: dict[str, QWidget] = {}
         self.setWindowTitle("CARLA Runtime Control Panel")
-        self.resize(470, 760)
+        self.resize(1120, 900)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
 
         root = QWidget()
         root_layout = QVBoxLayout(root)
+        self.debug_frame = QLabel("Waiting for CARLA debug frame…")
+        self.debug_frame.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.debug_frame.setMinimumHeight(360)
+        self.debug_frame.setStyleSheet("background:#101418; color:#cdd6f4;")
+        root_layout.addWidget(self.debug_frame)
         self.tabs = QTabWidget()
         root_layout.addWidget(self.tabs)
         self.status = QLabel("Live settings apply immediately.")
@@ -33,9 +39,9 @@ class ControlPanel(QMainWindow):
         self.setCentralWidget(root)
 
         groups = {
-            "Driving": {"JUNCTION_CONTROL_MODE", "AUTO_MODE_DEFAULT", "FIXED_THROTTLE", "KP", "KI", "KD", "STEER_LIMIT", "MAX_STEER_STEP", "TARGET_SPEED_KMH"},
-            "Trajectory": {"TRAJECTORY_INFERENCE_INTERVAL_SECONDS", "TRAJECTORY_STEER_GAIN", "TRAJECTORY_MAX_STEER"},
-            "Vision / debug": {"LANE_PROB_THRESHOLD", "LANE_CENTER_SMOOTH_ALPHA", "VISION_DEBUG", "DEBUG_SHOW_ROIS", "DEBUG_SHOW_LANE_MASK", "DEBUG_SHOW_TRAJECTORY", "DEBUG_SHOW_FPS", "DEBUG_SHOW_GPS", "SHOW_OPENCV_WINDOW"},
+            "Driving": {"AUTO_MODE_DEFAULT", "FIXED_THROTTLE", "KP", "KI", "KD", "STEER_LIMIT", "MAX_STEER_STEP", "TARGET_SPEED_KMH"},
+            "Trajectory + junction lead-in": {"TRAJECTORY_INFERENCE_INTERVAL_SECONDS", "TRAJECTORY_STEER_GAIN", "TRAJECTORY_MAX_STEER", "TRAJECTORY_DEBUG_SCALE", "JUNCTION_STATIC_THROTTLE", "JUNCTION_STATIC_TIMEOUT_SECONDS", "JUNCTION_ENTRY_DISTANCE_M", "JUNCTION_RIGHT_TURN_DISTANCE_M", "JUNCTION_LEFT_STRAIGHT_DISTANCE_M", "JUNCTION_LEFT_TURN_DISTANCE_M", "JUNCTION_STRAIGHT_DISTANCE_M", "JUNCTION_TRAJECTORY_WINDOW_SECONDS"},
+            "Vision / debug": {"LANE_PROB_THRESHOLD", "LANE_CENTER_SMOOTH_ALPHA", "LANE_THRESHOLD", "CROSSWALK_THRESHOLD", "CROSSWALK_SLEEP", "INTERSECTION_CHECK_INTERVAL_SECONDS", "LANE_CHANGE_DEBOUNCE_SECONDS", "LANE_CHANGE_LINE_ANGLE_THRESHOLD_DEG", "LANE_CHANGE_PLANNER_CHECK_INTERVAL_SECONDS", "OUT_CHECKER_WINDOW_SECONDS", "OUT_CHECKER_ERROR_THRESHOLD", "VISION_DEBUG", "DEBUG_SHOW_ROIS", "DEBUG_SHOW_LANE_MASK", "DEBUG_SHOW_TRAJECTORY", "DEBUG_SHOW_FPS", "DEBUG_SHOW_GPS", "SHOW_OPENCV_WINDOW"},
             "Hardware (reset)": {"CAMERA_IMAGE_WIDTH", "CAMERA_IMAGE_HEIGHT", "MODEL_PATH"},
         }
         for title, keys in groups.items():
@@ -49,6 +55,23 @@ class ControlPanel(QMainWindow):
 
         self._build_profiles(root_layout)
         self._load_values(self.settings.snapshot())
+
+    def update_debug_frame(self, frame) -> None:
+        if frame is None:
+            return
+        try:
+            rgb = frame[:, :, ::-1].copy()
+            h, w = rgb.shape[:2]
+            image = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+            self.debug_frame.setPixmap(
+                QPixmap.fromImage(image).scaled(
+                    self.debug_frame.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        except Exception:
+            pass
 
     def _scroll(self, widget: QWidget) -> QScrollArea:
         scroll = QScrollArea()
@@ -115,7 +138,7 @@ class ControlPanel(QMainWindow):
     def _load_values(self, values: dict[str, Any]) -> None:
         for key, value in values.items():
             widget = self.widgets.get(key)
-            if widget is None:
+            if widget is None or value is None:
                 continue
             widget.blockSignals(True)
             if isinstance(widget, QCheckBox):
