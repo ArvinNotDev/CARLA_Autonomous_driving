@@ -1,38 +1,62 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import threading
-from typing import Optional, Sequence, Tuple
+import time
+from typing import Optional, Tuple
 
 import config_city as conf
-from navigation.navigate import move_vehicle_for_distance
-from utils.vehicle_utils import make_stop_control
+
+
+@dataclass(frozen=True)
+class JunctionPlan:
+    request_id: int
+    maneuver: str
+    segments: tuple[tuple[float, float, bool, float, float], ...]
+
+
+
+
+@dataclass(frozen=True)
+class StaticControlFallback:
+    throttle: float
+    steer: float
+    brake: float = 0.0
+    reverse: bool = False
+    hand_brake: bool = False
+    manual_gear_shift: bool = False
 
 
 class IntersectionManager:
-    """Runs the short fixed-distance junction lead-in off the render thread."""
+    """
+    Nonblocking junction state machine.
+
+    Planner lookup may run asynchronously, but no worker thread ever calls
+    vehicle.apply_control. The control loop owns all vehicle commands.
+
+    State:
+        IDLE -> PLANNING -> STATIC -> IDLE
+
+    The main control loop owns the separate configurable trajectory takeover
+    window after STATIC.
+    """
 
     def __init__(self, vehicle, planner) -> None:
         self.vehicle = vehicle
         self.planner = planner
 
-        self.movement_thread: Optional[threading.Thread] = None
-        self.turning_intersection = False
         self.next_maneuver: Optional[str] = None
-        self._planning_active = False
+        self.phase = "IDLE"
         self._state_lock = threading.Lock()
+        self._planning_thread: Optional[threading.Thread] = None
+        self._planning_request_id = 0
+        self._latest_plan: Optional[JunctionPlan] = None
+        self._last_plan_error: Optional[str] = None
 
-    def _movement_active(self) -> bool:
-        with self._state_lock:
-            return bool(
-                self._planning_active
-                or (
-                    self.movement_thread is not None
-                    and self.movement_thread.is_alive()
-                )
-            )
-
-    def movement_active(self) -> bool:
-        return self._movement_active()
+        self._active_plan: Optional[JunctionPlan] = None
+        self._segment_index = 0
+        self._segment_start_location = None
+        self._segment_started_at = 0.0
 
     @staticmethod
     def _segments_for_maneuver(
@@ -42,9 +66,7 @@ class IntersectionManager:
         timeout = float(getattr(conf, "JUNCTION_STATIC_TIMEOUT_SECONDS", 20.0))
         entry = float(getattr(conf, "JUNCTION_ENTRY_DISTANCE_M", 11.0))
         right_turn = float(getattr(conf, "JUNCTION_RIGHT_TURN_DISTANCE_M", 6.0))
-        left_straight = float(
-            getattr(conf, "JUNCTION_LEFT_STRAIGHT_DISTANCE_M", 10.0)
-        )
+        left_straight = float(getattr(conf, "JUNCTION_LEFT_STRAIGHT_DISTANCE_M", 10.0))
         left_turn = float(getattr(conf, "JUNCTION_LEFT_TURN_DISTANCE_M", 4.0))
         straight = float(getattr(conf, "JUNCTION_STRAIGHT_DISTANCE_M", 3.0))
 
@@ -62,19 +84,24 @@ class IntersectionManager:
             return [(straight, 0.0, True, throttle, timeout)]
         return []
 
+    def movement_active(self) -> bool:
+        with self._state_lock:
+            return self.phase in {"PLANNING", "STATIC"}
+
     def start_for_intersection(self, current_location, goal_location) -> bool:
-        """Schedule route lookup and the static lead-in without blocking main."""
         if self.vehicle is None or self.planner is None:
             return False
 
         with self._state_lock:
-            if self._planning_active or (
-                self.movement_thread is not None
-                and self.movement_thread.is_alive()
-            ):
+            if self.phase != "IDLE":
                 return False
-            self._planning_active = True
+            self._planning_request_id += 1
+            request_id = self._planning_request_id
+            self.phase = "PLANNING"
             self.next_maneuver = None
+            self._latest_plan = None
+            self._active_plan = None
+            self._last_plan_error = None
 
         def worker() -> None:
             try:
@@ -82,56 +109,138 @@ class IntersectionManager:
                     current_location,
                     goal_location,
                 )
-                entry_trigger = float(
-                    getattr(conf, "JUNCTION_ENTRY_DISTANCE_M", 11.0)
-                )
-                if distance is None or distance > entry_trigger:
-                    return
-
-                maneuver = self.planner.get_next_maneuver_text(
-                    current_location,
-                    goal_location,
-                )
-                self.next_maneuver = maneuver
-                segments = self._segments_for_maneuver(maneuver)
-                if not segments:
-                    return
-
-                self.turning_intersection = True
-                for distance_m, steer, forward, throttle, timeout in segments:
-                    move_vehicle_for_distance(
-                        self.vehicle,
-                        distance_m,
-                        steer,
-                        forward,
-                        throttle,
-                        timeout,
-                        blocking=True,
+                entry_trigger = float(getattr(conf, "JUNCTION_ENTRY_DISTANCE_M", 11.0))
+                if distance is None or float(distance) > entry_trigger:
+                    plan = None
+                else:
+                    maneuver = str(
+                        self.planner.get_next_maneuver_text(
+                            current_location,
+                            goal_location,
+                        )
+                        or ""
                     )
-            except Exception:
-                self.next_maneuver = None
-            finally:
-                try:
-                    if self.vehicle is not None:
-                        self.vehicle.apply_control(make_stop_control())
-                except Exception:
-                    pass
+                    segments = self._segments_for_maneuver(maneuver)
+                    plan = (
+                        JunctionPlan(
+                            request_id=request_id,
+                            maneuver=maneuver,
+                            segments=tuple(segments),
+                        )
+                        if segments
+                        else None
+                    )
+
                 with self._state_lock:
-                    self.turning_intersection = False
-                    self._planning_active = False
-                    self.movement_thread = None
+                    if request_id != self._planning_request_id:
+                        return
+                    self._latest_plan = plan
+                    self.next_maneuver = plan.maneuver if plan else None
+                    if plan is None:
+                        self.phase = "IDLE"
+            except Exception as exc:
+                with self._state_lock:
+                    if request_id == self._planning_request_id:
+                        self._latest_plan = None
+                        self._last_plan_error = str(exc)
+                        self.phase = "IDLE"
 
         thread = threading.Thread(
             target=worker,
-            name="carla-junction-lead-in",
+            name="carla-junction-planner",
             daemon=True,
         )
         with self._state_lock:
-            self.movement_thread = thread
+            self._planning_thread = thread
         thread.start()
         return True
 
-    def update(self, is_intersection: bool, current_location, goal_location) -> bool:
-        if not is_intersection:
-            return False
-        return self.start_for_intersection(current_location, goal_location)
+    def _activate_plan_if_ready(self, current_location) -> None:
+        with self._state_lock:
+            plan = self._latest_plan
+            if self.phase != "PLANNING" or plan is None:
+                return
+            self._latest_plan = None
+            self._active_plan = plan
+            self.phase = "STATIC"
+            self._segment_index = 0
+            self._segment_start_location = current_location
+            self._segment_started_at = time.monotonic()
+            self.next_maneuver = plan.maneuver
+
+    def update(self, current_location) -> None:
+        """Advance the state machine without sleeping or blocking."""
+        self._activate_plan_if_ready(current_location)
+
+        with self._state_lock:
+            if self.phase != "STATIC":
+                return
+            plan = self._active_plan
+            idx = self._segment_index
+            start = self._segment_start_location
+            segment_started_at = self._segment_started_at
+
+        if plan is None or start is None or current_location is None:
+            return
+
+        distance_m = float(current_location.distance(start))
+        target_m, _, _, _, timeout = plan.segments[idx]
+        segment_elapsed = max(0.0, time.monotonic() - segment_started_at)
+
+        if distance_m >= float(target_m) or segment_elapsed >= float(timeout):
+            with self._state_lock:
+                if self.phase != "STATIC":
+                    return
+                self._segment_index += 1
+                if self._segment_index >= len(plan.segments):
+                    self.phase = "IDLE"
+                    self._active_plan = None
+                    self._segment_start_location = None
+                    self._segment_started_at = 0.0
+                    return
+                self._segment_start_location = current_location
+                self._segment_started_at = time.monotonic()
+
+    def static_control(self, current_location):
+        """
+        Return the current static-segment VehicleControl, or None.
+
+        This method performs no CARLA RPC. The caller owns apply_control().
+        """
+        with self._state_lock:
+            if self.phase != "STATIC" or self._active_plan is None:
+                return None
+            idx = self._segment_index
+            segment = self._active_plan.segments[idx]
+
+        _, steer, forward, throttle, _ = segment
+
+        values = dict(
+            throttle=max(0.0, min(1.0, float(throttle))),
+            steer=max(-1.0, min(1.0, float(steer))),
+            brake=0.0,
+            reverse=not bool(forward),
+            hand_brake=False,
+            manual_gear_shift=False,
+        )
+        try:
+            import carla
+            return carla.VehicleControl(**values)
+        except ImportError:
+            return StaticControlFallback(**values)
+
+    def phase_name(self) -> str:
+        with self._state_lock:
+            return self.phase
+
+    def last_plan_error(self) -> Optional[str]:
+        with self._state_lock:
+            return self._last_plan_error
+
+    def stop(self) -> None:
+        with self._state_lock:
+            self._planning_request_id += 1
+            self.phase = "IDLE"
+            self._latest_plan = None
+            self._active_plan = None
+            self._segment_start_location = None

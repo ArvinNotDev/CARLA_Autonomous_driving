@@ -75,7 +75,12 @@ ALT_CAMERA_PITCH_DEG = -25.0
 AUTO_MODE_DEFAULT = True
 # The PySide6 runtime panel is the primary debug view.  OpenCV can still be
 # enabled from the panel when a separate legacy window is useful.
-SHOW_OPENCV_WINDOW = False
+SHOW_OPENCV_WINDOW = False  # legacy key; the PySide6 panel is the only active debug sink
+ENABLE_SEMANTIC_CAMERA = False
+ENABLE_ALT_CAMERA = False
+VISION_MODE = "onnx"
+CONTROL_LOOP_HZ = 30.0
+DEBUG_PANEL_HZ = 15.0
 STREAM_HOST = "0.0.0.0"
 STREAM_PORT = 5000
 
@@ -143,6 +148,7 @@ VISION_DEBUG = False
 TRAJECTORY_INFERENCE_INTERVAL_SECONDS = 0.10
 VISION_INFERENCE_INTERVAL_SECONDS = 0.05
 INTERSECTION_CHECK_INTERVAL_SECONDS = 0.25
+INTERSECTION_RESULT_MAX_AGE_SECONDS = 0.75
 TARGET_SPEED_KMH = 25.0
 TRAJECTORY_STEER_GAIN = 0.9
 TRAJECTORY_MAX_STEER = 0.45
@@ -281,5 +287,5 @@ class PipelineConfig:
     @property
     def debug_dir(self) -> Path:
         return self.root_dir / "debug"
-    
+
 apply_json_override()

@@ -16,15 +16,23 @@ An experimental autonomous-driving stack for [CARLA](https://carla.org/) with la
 - Persistent named profiles in `runtime_profiles.json`.
 - Live FPS/GPS overlays and trajectory, ROI, lane-mask, and vision debugging.
 
+## Runtime architecture
+
+The PySide6 GUI runs its normal Qt event loop on the main thread. Vehicle control runs at a fixed cadence (`CONTROL_LOOP_HZ`) on one dedicated control thread. A single inference worker serializes vision, trajectory, and junction-model inference and keeps only the newest pending frame for each task type.
+
+The debug panel uses a latest-frame buffer and its own Qt refresh timer (`DEBUG_PANEL_HZ`). It converts and scales frames only when the panel actually refreshes. Display FPS is measured from newly painted debug frames over a rolling time window, not from control-loop iterations or inference completions.
+
+Trajectory output is an immutable, timestamped result. Busy/failed inference never replaces the last valid prediction with `None`; result age and worker state are exposed in the diagnostics overlay.
+
 ## Junction behavior
 
 Junction handling is intentionally one pipeline:
 
 1. Detect a junction and determine the next route maneuver.
-2. Run a short configurable static lead-in (meters, throttle, and steering segments).
-3. Release vehicle control back to the trajectory model with the route command (`LEFT`, `RIGHT`, or `STRAIGHT`).
+2. Run a short configurable static meter-based lead-in.
+3. Return control to the trajectory model for the configurable takeover duration with the route command (`LEFT`, `RIGHT`, or `STRAIGHT`).
 
-The static lead-in and route lookup run in a worker so the debug frame and PySide6 panel keep updating. The panel exposes all lead-in distances and timing values; there is no separate junction-mode selector.
+The planner may run asynchronously, but no junction worker calls `vehicle.apply_control()`. The control thread is the sole owner of vehicle commands during normal driving, lane changes, static junction lead-ins, and trajectory takeover. There is no blocking render-loop sleep and no legacy full-left recovery command.
 
 ## Requirements
 
@@ -39,7 +47,7 @@ Install Python dependencies:
 python -m pip install -r requirements.txt
 ```
 
-The repository includes the YOLOPv2 ONNX model and trajectory checkpoints under `models_and_datasets/models/`.
+The runtime expects the YOLOPv2 ONNX model and trajectory/junction checkpoints under `models_and_datasets/models/`.
 
 ## Run
 

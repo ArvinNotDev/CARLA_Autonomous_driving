@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -58,18 +57,22 @@ class TrajectorySteeringAgent:
         arr = np.frombuffer(image.raw_data, dtype=np.uint8).reshape((image.height, image.width, 4))
         return arr[:, :, :3][:, :, ::-1].copy()
 
-    def preprocess_for_model(self, rgb: np.ndarray) -> torch.Tensor:
+    def preprocess_for_model(self, frame_bgr: np.ndarray) -> torch.Tensor:
+        """Convert the camera's OpenCV BGR frame to RGB exactly once."""
+        if frame_bgr is None or frame_bgr.size == 0:
+            raise ValueError("Empty camera frame")
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         return self._tf(rgb)
 
     @torch.inference_mode()
-    def predict_waypoints(self, rgb: np.ndarray, command_name: Optional[str] = None) -> np.ndarray:
+    def predict_waypoints(self, frame_bgr: np.ndarray, command_name: Optional[str] = None) -> np.ndarray:
         if command_name is None:
             command_name = self.command_name
 
         if command_name not in COMMAND_TO_IDX:
             raise ValueError(f"Unknown command: {command_name}. Available: {list(COMMAND_TO_IDX.keys())}")
 
-        image_t = self.preprocess_for_model(rgb).unsqueeze(0).to(self.device)
+        image_t = self.preprocess_for_model(frame_bgr).unsqueeze(0).to(self.device)
         cmd_idx = torch.tensor([COMMAND_TO_IDX[command_name]], dtype=torch.long, device=self.device)
 
         pred = self.model(image_t, cmd_idx).squeeze(0).detach().cpu().numpy()
@@ -137,12 +140,12 @@ class TrajectorySteeringAgent:
 
     def get_steering_angle(
         self,
-        frame_rgb: np.ndarray,
+        frame_bgr: np.ndarray,
         speed_kmh: float = 0.0,
         command_name: Optional[str] = None,
         max_steer: float = 1.0,
     ) -> float:
-        pred = self.predict_waypoints(frame_rgb, command_name=command_name)
+        pred = self.predict_waypoints(frame_bgr, command_name=command_name)
         steer = self.steering_from_waypoint(
             pred_ego=pred,
             prev_steer=self.prev_steer,
@@ -154,12 +157,12 @@ class TrajectorySteeringAgent:
 
     def get_steering_and_pred(
         self,
-        frame_rgb: np.ndarray,
+        frame_bgr: np.ndarray,
         speed_kmh: float = 0.0,
         command_name: Optional[str] = None,
         max_steer: Optional[float] = None,
     ) -> tuple[float, np.ndarray]:
-        pred = self.predict_waypoints(frame_rgb, command_name=command_name)
+        pred = self.predict_waypoints(frame_bgr, command_name=command_name)
         steer = self.steering_from_waypoint(
             pred_ego=pred,
             prev_steer=self.prev_steer,
@@ -171,12 +174,12 @@ class TrajectorySteeringAgent:
 
     def get_control_from_frame(
         self,
-        frame_rgb: np.ndarray,
+        frame_bgr: np.ndarray,
         speed_kmh: float = 0.0,
         command_name: Optional[str] = None,
         max_steer: float = 0.45,
     ) -> tuple[float, float, float, np.ndarray]:
-        pred = self.predict_waypoints(frame_rgb, command_name=command_name)
+        pred = self.predict_waypoints(frame_bgr, command_name=command_name)
         steer = self.steering_from_waypoint(
             pred_ego=pred,
             prev_steer=self.prev_steer,

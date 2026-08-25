@@ -36,8 +36,6 @@ SETTING_SPECS = [
     ("LANE_CHANGE_DEBOUNCE_SECONDS", "Lane-change debounce (s)", "float", (0.0, 30.0, 0.5), True),
     ("LANE_CHANGE_LINE_ANGLE_THRESHOLD_DEG", "Lane-change angle threshold", "float", (0.0, 90.0, 1.0), True),
     ("LANE_CHANGE_PLANNER_CHECK_INTERVAL_SECONDS", "Lane planner interval (s)", "float", (0.05, 5.0, 0.05), True),
-    ("OUT_CHECKER_WINDOW_SECONDS", "Recovery window (s)", "float", (0.0, 30.0, 0.5), True),
-    ("OUT_CHECKER_ERROR_THRESHOLD", "Recovery error threshold", "float", (0.0, 200.0, 1.0), True),
     ("CROSSWALK_SLEEP", "Crosswalk pause (s)", "float", (0.0, 30.0, 0.5), True),
     ("LANE_THRESHOLD", "Lane mask threshold", "int", (0, 255, 1), True),
     ("CROSSWALK_THRESHOLD", "Crosswalk threshold", "int", (0, 255, 1), True),
@@ -49,9 +47,12 @@ SETTING_SPECS = [
     ("DEBUG_SHOW_TRAJECTORY", "Show trajectory", "bool", None, True),
     ("DEBUG_SHOW_FPS", "Show FPS", "bool", None, True),
     ("DEBUG_SHOW_GPS", "Show GPS/navigation", "bool", None, True),
-    ("SHOW_OPENCV_WINDOW", "OpenCV debug window", "bool", None, True),
     ("CAMERA_IMAGE_WIDTH", "Camera width", "int", (160, 1920, 16), False),
     ("CAMERA_IMAGE_HEIGHT", "Camera height", "int", (120, 1080, 16), False),
+    ("CONTROL_LOOP_HZ", "Control loop frequency (Hz)", "float", (10.0, 60.0, 1.0), False),
+    ("DEBUG_PANEL_HZ", "Debug panel refresh (Hz)", "float", (5.0, 30.0, 1.0), True),
+    ("ENABLE_SEMANTIC_CAMERA", "Enable semantic camera", "bool", None, False),
+    ("ENABLE_ALT_CAMERA", "Enable alternate camera", "bool", None, False),
     ("MODEL_PATH", "ONNX model path", "str", None, False),
 ]
 

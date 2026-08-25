@@ -146,7 +146,7 @@ class VisionProcessor:
             cv2.circle(vis, (int(right_x), int(h * 0.90)), 6, (0, 255, 255), -1)
 
         return vis
-    
+
     def _smooth_lane_center(self, lane_center):
         if self.last_lane_center is None:
             smoothed_lane_center = lane_center
@@ -195,7 +195,7 @@ class VisionProcessor:
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
         return mask
-    
+
     def _extract_masks_from_onnx(self, rgb_frame):
         outputs = self.session.run(None, {self.input_name: self._preprocess_onnx(rgb_frame)})
 
@@ -204,7 +204,7 @@ class VisionProcessor:
         # 5 = lane line
         lane_prob = self._extract_prob_map(outputs, 5)
         drivable = utils_onnx.driving_area_mask(outputs[4])
-        
+
         lane_mask_small = self._predict_mask(lane_prob, getattr(conf, "LANE_PROB_THRESHOLD", 0.50), )
 
         return drivable, lane_mask_small
@@ -378,11 +378,6 @@ class VisionProcessor:
             )
         else:
             combined = base_frame
-
-        try:
-            conf.debug_frame_buffer = combined
-        except Exception:
-            pass
 
         return {
             "error": error,

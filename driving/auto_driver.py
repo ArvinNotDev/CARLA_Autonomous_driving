@@ -9,6 +9,8 @@ from utils.vehicle_utils import blank_frame, make_stop_control
 
 
 class AutoDriver:
+    """Compute autonomous control without performing CARLA RPCs."""
+
     def __init__(
         self,
         vehicle,
@@ -30,15 +32,14 @@ class AutoDriver:
         self.goal_location = None
 
     def movement_active(self) -> bool:
-        lane_active = False
-        inter_active = False
-
-        if self.lane_change_manager is not None:
-            lane_active = self.lane_change_manager.movement_active()
-
-        if self.intersection_manager is not None:
-            inter_active = self.intersection_manager.movement_active()
-
+        lane_active = (
+            self.lane_change_manager is not None
+            and self.lane_change_manager.movement_active()
+        )
+        inter_active = (
+            self.intersection_manager is not None
+            and self.intersection_manager.movement_active()
+        )
         return lane_active or inter_active
 
     def update(
@@ -48,60 +49,41 @@ class AutoDriver:
         current_location,
         goal_location,
         intersection_sequence,
-    ) -> np.ndarray:
+    ) -> tuple[bool, np.ndarray, carla.VehicleControl]:
         self.current_location = current_location
         self.goal_location = goal_location
 
-
-        # self.is_intersection = is_intersection
-        # self.is_intersection = self.intersection_model.is_intersection_ahead(
-        #     rgb_frame
-        # )
-
-        if vision_result is None:
-            screen = (
-                rgb_frame.copy()
-                if rgb_frame is not None
-                else blank_frame()
-            )
-
-            if self.vehicle is not None:
-                self.vehicle.apply_control(
-                    make_stop_control()
-                )
-
-            return False, screen
-
-        error = float(
-            vision_result.get("error", 0.0)
+        screen = (
+            rgb_frame.copy()
+            if rgb_frame is not None
+            else blank_frame()
         )
 
+        if vision_result is None:
+            return False, screen, make_stop_control()
+
+        error = float(vision_result.get("error", 0.0) or 0.0)
         debug = vision_result.get("debug", {})
+        combined = debug.get("combined")
+        if isinstance(combined, np.ndarray):
+            screen = combined.copy()
 
-        screen = debug.get("combined", rgb_frame if rgb_frame is not None else blank_frame(),).copy()
+        if intersection_sequence:
+            return True, screen, self.controller.update(error=error)
 
-        if not intersection_sequence:
+        if self.lane_change_manager is not None:
+            self.lane_change_manager.update(
+                current_location,
+                goal_location,
+                line_angles={
+                    "left": debug.get("left_line_angle_deg"),
+                    "right": debug.get("right_line_angle_deg"),
+                },
+                rgb_frame=rgb_frame,
+            )
+            override = self.lane_change_manager.control_override()
+            if override is not None:
+                return True, screen, override
 
-            control = self.controller.update(error=error)
-
-            if self.vehicle is not None:
-                self.vehicle.apply_control(control)
-
-            if self.lane_change_manager is not None:
-                self.lane_change_manager.update(
-                    current_location,
-                    goal_location,
-                    line_angles={
-                        "left": debug.get("left_line_angle_deg"),
-                        "right": debug.get("right_line_angle_deg"),
-                    },
-                )
-
-        # if self.intersection_manager is not None:
-        #     self.intersection_manager.update(
-        #         self.is_intersection,
-        #         current_location,
-        #         goal_location,
-        #     )
-
-        return True, screen
+        control = self.controller.update(error=error)
+        return True, screen, control

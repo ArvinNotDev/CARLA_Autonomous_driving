@@ -14,6 +14,13 @@ def cfg(name: str, default: Any) -> Any:
 
 
 class Renderer:
+    """
+    CPU-only debug compositor.
+
+    The PySide6 panel owns presentation. OpenCV HighGUI is intentionally not
+    driven from the CARLA/control thread, avoiding two competing GUI event loops.
+    """
+
     def __init__(self, window_name: str = "CARLA") -> None:
         self.window_name = window_name
 
@@ -37,20 +44,23 @@ class Renderer:
             cv2.LINE_AA,
         )
 
-    def show_frame(self, screen: Optional[np.ndarray], overlay: Optional[dict] = None) -> None:
+    def compose(self, screen: Optional[np.ndarray], overlay: Optional[dict] = None) -> np.ndarray:
         if screen is None:
             screen = blank_frame()
+        else:
+            screen = screen.copy()
 
         if overlay:
             y = 28
             for text in overlay.get("lines", []):
                 self.overlay_text(screen, str(text), (12, y), 0.55, (255, 255, 255), 1)
                 y += 20
-        conf.debug_frame_buffer = screen
 
-        if cfg("SHOW_OPENCV_WINDOW", False):
-            cv2.imshow(self.window_name, cv2.resize(screen, (1280, 720)))
-            cv2.waitKey(1)
+        return screen
+
+    def show_frame(self, screen: Optional[np.ndarray], overlay: Optional[dict] = None) -> np.ndarray:
+        """Compatibility wrapper; presentation is performed by ControlPanel."""
+        return self.compose(screen, overlay)
 
     def render_mode_overlay(self, screen: np.ndarray, mode: str, error: float) -> None:
         self.overlay_text(screen, f"MODE: {mode}", (20, 30), 0.9, (255, 255, 0), 2)

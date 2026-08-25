@@ -1,37 +1,84 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtGui import QImage, QPixmap, QPaintEvent
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QPushButton, QScrollArea, QSpinBox,
     QTabWidget, QVBoxLayout, QWidget,
 )
 
+import config_city as conf
+
+from runtime_metrics import DisplayMetrics
 from runtime_settings import SETTING_SPECS, RuntimeSettings
+from ui.frame_store import DebugFrameStore
+
+
+class DebugFrameLabel(QLabel):
+    """Counts each newly submitted pixmap once, when it is actually painted."""
+
+    def __init__(self, display_metrics: DisplayMetrics, parent=None) -> None:
+        super().__init__(parent)
+        self._display_metrics = display_metrics
+        self._frame_token = 0
+        self._last_painted_token = 0
+
+    def setPixmapForFrame(self, pixmap: QPixmap) -> None:
+        self._frame_token += 1
+        self.setPixmap(pixmap)
+
+    def setPixmapResized(self, pixmap: QPixmap) -> None:
+        self.setPixmap(pixmap)
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        super().paintEvent(event)
+        if self._last_painted_token != self._frame_token:
+            self._last_painted_token = self._frame_token
+            self._display_metrics.record_presented()
 
 
 class ControlPanel(QMainWindow):
     settings_changed = Signal(dict)
     reset_requested = Signal()
 
-    def __init__(self, settings: RuntimeSettings, parent=None) -> None:
+    def __init__(
+        self,
+        settings: RuntimeSettings,
+        *,
+        display_metrics: Optional[DisplayMetrics] = None,
+        frame_store: Optional[DebugFrameStore] = None,
+        metrics_provider: Optional[Callable[[], dict[str, Any]]] = None,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.settings = settings
+        self.display_metrics = display_metrics or DisplayMetrics()
+        self.frame_store = frame_store
+        self.metrics_provider = metrics_provider
         self.widgets: dict[str, QWidget] = {}
+        self._last_frame_sequence = 0
+        self._last_scaled_size = None
+        self._last_qimage: Optional[QImage] = None
         self.setWindowTitle("CARLA Runtime Control Panel")
         self.resize(1120, 900)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
 
         root = QWidget()
         root_layout = QVBoxLayout(root)
-        self.debug_frame = QLabel("Waiting for CARLA debug frame…")
+
+        self.debug_frame = DebugFrameLabel(self.display_metrics)
         self.debug_frame.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.debug_frame.setMinimumHeight(360)
         self.debug_frame.setStyleSheet("background:#101418; color:#cdd6f4;")
         root_layout.addWidget(self.debug_frame)
+
+        self.metrics_label = QLabel("display FPS: 0.0 | control FPS: 0.0 | trajectory FPS: 0.0 | vision FPS: 0.0")
+        self.metrics_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        root_layout.addWidget(self.metrics_label)
+
         self.tabs = QTabWidget()
         root_layout.addWidget(self.tabs)
         self.status = QLabel("Live settings apply immediately.")
@@ -39,10 +86,32 @@ class ControlPanel(QMainWindow):
         self.setCentralWidget(root)
 
         groups = {
-            "Driving": {"AUTO_MODE_DEFAULT", "FIXED_THROTTLE", "KP", "KI", "KD", "STEER_LIMIT", "MAX_STEER_STEP", "TARGET_SPEED_KMH"},
-            "Trajectory + junction lead-in": {"TRAJECTORY_INFERENCE_INTERVAL_SECONDS", "TRAJECTORY_STEER_GAIN", "TRAJECTORY_MAX_STEER", "TRAJECTORY_DEBUG_SCALE", "JUNCTION_STATIC_THROTTLE", "JUNCTION_STATIC_TIMEOUT_SECONDS", "JUNCTION_ENTRY_DISTANCE_M", "JUNCTION_RIGHT_TURN_DISTANCE_M", "JUNCTION_LEFT_STRAIGHT_DISTANCE_M", "JUNCTION_LEFT_TURN_DISTANCE_M", "JUNCTION_STRAIGHT_DISTANCE_M", "JUNCTION_TRAJECTORY_WINDOW_SECONDS"},
-            "Vision / debug": {"VISION_INFERENCE_INTERVAL_SECONDS", "LANE_PROB_THRESHOLD", "LANE_CENTER_SMOOTH_ALPHA", "LANE_THRESHOLD", "CROSSWALK_THRESHOLD", "CROSSWALK_SLEEP", "INTERSECTION_CHECK_INTERVAL_SECONDS", "LANE_CHANGE_DEBOUNCE_SECONDS", "LANE_CHANGE_LINE_ANGLE_THRESHOLD_DEG", "LANE_CHANGE_PLANNER_CHECK_INTERVAL_SECONDS", "OUT_CHECKER_WINDOW_SECONDS", "OUT_CHECKER_ERROR_THRESHOLD", "VISION_DEBUG", "DEBUG_SHOW_ROIS", "DEBUG_SHOW_LANE_MASK", "DEBUG_SHOW_TRAJECTORY", "DEBUG_SHOW_FPS", "DEBUG_SHOW_GPS", "SHOW_OPENCV_WINDOW"},
-            "Hardware (reset)": {"CAMERA_IMAGE_WIDTH", "CAMERA_IMAGE_HEIGHT", "MODEL_PATH"},
+            "Driving": {
+                "AUTO_MODE_DEFAULT", "FIXED_THROTTLE", "KP", "KI", "KD",
+                "STEER_LIMIT", "MAX_STEER_STEP", "TARGET_SPEED_KMH", "CONTROL_LOOP_HZ",
+            },
+            "Trajectory + junction lead-in": {
+                "TRAJECTORY_INFERENCE_INTERVAL_SECONDS", "TRAJECTORY_STEER_GAIN",
+                "TRAJECTORY_MAX_STEER", "TRAJECTORY_DEBUG_SCALE",
+                "JUNCTION_STATIC_THROTTLE", "JUNCTION_STATIC_TIMEOUT_SECONDS",
+                "JUNCTION_ENTRY_DISTANCE_M", "JUNCTION_RIGHT_TURN_DISTANCE_M",
+                "JUNCTION_LEFT_STRAIGHT_DISTANCE_M", "JUNCTION_LEFT_TURN_DISTANCE_M",
+                "JUNCTION_STRAIGHT_DISTANCE_M", "JUNCTION_TRAJECTORY_WINDOW_SECONDS",
+            },
+            "Vision / debug": {
+                "VISION_INFERENCE_INTERVAL_SECONDS", "DEBUG_PANEL_HZ",
+                "LANE_PROB_THRESHOLD", "LANE_CENTER_SMOOTH_ALPHA", "LANE_THRESHOLD",
+                "CROSSWALK_THRESHOLD", "CROSSWALK_SLEEP",
+                "INTERSECTION_CHECK_INTERVAL_SECONDS", "LANE_CHANGE_DEBOUNCE_SECONDS",
+                "LANE_CHANGE_LINE_ANGLE_THRESHOLD_DEG",
+                "LANE_CHANGE_PLANNER_CHECK_INTERVAL_SECONDS",
+                "VISION_DEBUG", "DEBUG_SHOW_ROIS", "DEBUG_SHOW_LANE_MASK",
+                "DEBUG_SHOW_TRAJECTORY", "DEBUG_SHOW_FPS", "DEBUG_SHOW_GPS",
+            },
+            "Hardware (reset)": {
+                "CAMERA_IMAGE_WIDTH", "CAMERA_IMAGE_HEIGHT", "MODEL_PATH",
+                "ENABLE_SEMANTIC_CAMERA", "ENABLE_ALT_CAMERA",
+            },
         }
         for title, keys in groups.items():
             page = QWidget()
@@ -56,25 +125,99 @@ class ControlPanel(QMainWindow):
         self._build_profiles(root_layout)
         self._load_values(self.settings.snapshot())
 
+        self._refresh_timer = QTimer(self)
+        self._set_refresh_rate(float(getattr(conf, "DEBUG_PANEL_HZ", 15.0)))
+        self._refresh_timer.timeout.connect(self._refresh_live_view)
+        self._refresh_timer.start()
+
+        self._metrics_timer = QTimer(self)
+        self._metrics_timer.setInterval(250)
+        self._metrics_timer.timeout.connect(self._refresh_metrics)
+        self._metrics_timer.start()
+
+    def _set_refresh_rate(self, refresh_hz: float) -> None:
+        hz = max(5.0, min(30.0, float(refresh_hz)))
+        self._refresh_timer.setInterval(max(20, int(round(1000.0 / hz))))
+
+    def set_frame_store(self, store: DebugFrameStore) -> None:
+        self.frame_store = store
+
+    def set_metrics_provider(self, provider: Callable[[], dict[str, Any]]) -> None:
+        self.metrics_provider = provider
+
     def update_debug_frame(self, frame, now: float | None = None) -> None:
+        """Compatibility API. New code should publish into frame_store."""
         if frame is None:
             return
-        if now is not None and now - getattr(self, "_last_frame_update_at", 0.0) < 0.10:
+        if self.frame_store is None:
+            self._set_frame(frame)
+
+    def _refresh_live_view(self) -> None:
+        if self.frame_store is None:
             return
-        self._last_frame_update_at = now
+        packet = self.frame_store.latest()
+        if packet is None or packet.sequence == self._last_frame_sequence:
+            return
+        self._last_frame_sequence = packet.sequence
+        self._set_frame(packet.image)
+
+    def _set_frame(self, frame) -> None:
         try:
-            rgb = frame[:, :, ::-1].copy()
+            # CameraManager/renderer use BGR for OpenCV; Qt expects RGB.
+            rgb = frame[:, :, ::-1]
             h, w = rgb.shape[:2]
-            image = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
-            self.debug_frame.setPixmap(
-                QPixmap.fromImage(image).scaled(
-                    self.debug_frame.size(),
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
-        except Exception:
-            pass
+            image = QImage(
+                rgb.data,
+                w,
+                h,
+                3 * w,
+                QImage.Format.Format_RGB888,
+            ).copy()
+            self._last_qimage = image
+            self._apply_scaled_pixmap(new_frame=True)
+        except Exception as exc:
+            self.status.setText(f"Debug frame update failed: {exc}")
+
+    def _apply_scaled_pixmap(self, *, new_frame: bool) -> None:
+        if self._last_qimage is None:
+            return
+        size = self.debug_frame.size()
+        size_key = (size.width(), size.height())
+        if size_key[0] <= 0 or size_key[1] <= 0:
+            return
+        self._last_scaled_size = size_key
+        pixmap = QPixmap.fromImage(self._last_qimage).scaled(
+            size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.FastTransformation,
+        )
+        if new_frame:
+            self.debug_frame.setPixmapForFrame(pixmap)
+        else:
+            self.debug_frame.setPixmapResized(pixmap)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self._last_qimage is not None:
+            self._apply_scaled_pixmap(new_frame=False)
+
+    def _refresh_metrics(self) -> None:
+        display_fps = self.display_metrics.fps()
+        metrics = self.metrics_provider() if self.metrics_provider is not None else {}
+        control_fps = float(metrics.get("control_fps", 0.0))
+        traj_fps = float(metrics.get("trajectory_fps", 0.0))
+        vision_fps = float(metrics.get("vision_fps", 0.0))
+        traj_age = metrics.get("trajectory_age_s")
+        phase = str(metrics.get("junction_phase", "IDLE"))
+        busy_t = bool(metrics.get("trajectory_busy", False))
+        busy_v = bool(metrics.get("vision_busy", False))
+        age_text = "—" if traj_age is None else f"{float(traj_age):.2f}s"
+        self.metrics_label.setText(
+            f"display FPS: {display_fps:.1f} | control FPS: {control_fps:.1f} | "
+            f"trajectory FPS: {traj_fps:.1f} | vision FPS: {vision_fps:.1f} | "
+            f"trajectory age: {age_text} | junction: {phase} | "
+            f"workers: T={'busy' if busy_t else 'idle'} V={'busy' if busy_v else 'idle'}"
+        )
 
     def _scroll(self, widget: QWidget) -> QScrollArea:
         scroll = QScrollArea()
@@ -95,17 +238,22 @@ class ControlPanel(QMainWindow):
             widget = QSpinBox()
             widget.setRange(int(limits[0]), int(limits[1]))
             widget.setSingleStep(int(limits[2]))
-            widget.valueChanged.connect(lambda _value, k=key: self._emit(k))
+            self.widgets[key] = widget
         elif kind == "float":
             widget = QDoubleSpinBox()
             widget.setRange(float(limits[0]), float(limits[1]))
             widget.setSingleStep(float(limits[2]))
             widget.setDecimals(4)
-            widget.valueChanged.connect(lambda _value, k=key: self._emit(k))
         else:
             widget = QLineEdit()
             widget.editingFinished.connect(lambda k=key: self._emit(k))
-        self.widgets[key] = widget
+
+        if key not in self.widgets:
+            self.widgets[key] = widget
+        if kind == "int":
+            widget.valueChanged.connect(lambda _value, k=key: self._emit(k))
+        elif kind == "float":
+            widget.valueChanged.connect(lambda _value, k=key: self._emit(k))
         form.addRow(label, widget)
 
     def _build_profiles(self, root_layout: QVBoxLayout) -> None:
@@ -163,6 +311,8 @@ class ControlPanel(QMainWindow):
             self.reset_requested.emit()
         else:
             self.status.setText(f"{spec[1]} updated live.")
+        if key == "DEBUG_PANEL_HZ":
+            self._set_refresh_rate(float(value))
         self.settings_changed.emit({key: value})
 
     def _load_profile(self) -> None:

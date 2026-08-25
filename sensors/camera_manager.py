@@ -1,4 +1,9 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
 import threading
+import time
+from typing import Optional
 
 import carla
 import numpy as np
@@ -6,7 +11,22 @@ import numpy as np
 import config_city as conf
 
 
+@dataclass(frozen=True)
+class CameraFrame:
+    frame_id: int
+    captured_at: float
+    bgr: np.ndarray
+
+
 class CameraManager:
+    """
+    CARLA camera ownership and latest-frame storage.
+
+    Each callback copies the CARLA buffer exactly once because raw_data is only
+    valid for the callback lifetime. Readers receive the immutable owned array
+    without another copy.
+    """
+
     def __init__(self, world, vehicle):
         self.world = world
         self.vehicle = vehicle
@@ -15,25 +35,28 @@ class CameraManager:
         self.semantic_camera = None
         self.alt_camera = None
 
-        self.latest_rgb = None
-        self.latest_semantic = None
-        self.latest_drivable = None
-        self.latest_drivable_mask = None
-        self.latest_alt = None
+        self._latest_rgb: Optional[CameraFrame] = None
+        self._latest_semantic: Optional[CameraFrame] = None
+        self._latest_drivable: Optional[CameraFrame] = None
+        self._latest_drivable_mask: Optional[CameraFrame] = None
+        self._latest_alt: Optional[CameraFrame] = None
 
         self.rgb_lock = threading.Lock()
         self.semantic_lock = threading.Lock()
         self.alt_lock = threading.Lock()
 
-    # =====================================================
-    # START CAMERAS
-    # =====================================================
+    @staticmethod
+    def _copy_bgra_bgr(image) -> np.ndarray:
+        arr = np.frombuffer(image.raw_data, dtype=np.uint8).reshape(
+            (image.height, image.width, 4)
+        )
+        frame = arr[:, :, :3].copy()
+        frame.setflags(write=False)
+        return frame
+
     def start(self):
         bp_lib = self.world.get_blueprint_library()
 
-        # -------------------------
-        # Common transform
-        # -------------------------
         camera_transform = carla.Transform(
             carla.Location(
                 x=conf.CAMERA_X,
@@ -47,9 +70,6 @@ class CameraManager:
             ),
         )
 
-        # =====================================================
-        # RGB CAMERA
-        # =====================================================
         rgb_bp = bp_lib.find("sensor.camera.rgb")
         rgb_bp.set_attribute("image_size_x", str(conf.CAMERA_IMAGE_WIDTH))
         rgb_bp.set_attribute("image_size_y", str(conf.CAMERA_IMAGE_HEIGHT))
@@ -63,159 +83,140 @@ class CameraManager:
         )
         self.rgb_camera.listen(self._rgb_callback)
 
-        # =====================================================
-        # SEMANTIC SEGMENTATION CAMERA
-        # =====================================================
-        sem_bp = bp_lib.find("sensor.camera.semantic_segmentation")
-        sem_bp.set_attribute("image_size_x", str(conf.CAMERA_IMAGE_WIDTH))
-        sem_bp.set_attribute("image_size_y", str(conf.CAMERA_IMAGE_HEIGHT))
-        sem_bp.set_attribute("fov", str(conf.CAMERA_FOV))
-        sem_bp.set_attribute("sensor_tick", str(conf.CAMERA_SENSOR_TICK))
-
-        self.semantic_camera = self.world.spawn_actor(
-            sem_bp,
-            camera_transform,
-            attach_to=self.vehicle,
+        # The current vision pipeline is YOLOPv2/ONNX and does not consume
+        # semantic frames. Keep the sensor optional for legacy segmentation mode.
+        use_semantic = bool(
+            getattr(conf, "ENABLE_SEMANTIC_CAMERA", False)
+            or str(getattr(conf, "VISION_MODE", "onnx")).lower() == "segmentation"
         )
-        self.semantic_camera.listen(self._semantic_callback)
+        if use_semantic:
+            sem_bp = bp_lib.find("sensor.camera.semantic_segmentation")
+            sem_bp.set_attribute("image_size_x", str(conf.CAMERA_IMAGE_WIDTH))
+            sem_bp.set_attribute("image_size_y", str(conf.CAMERA_IMAGE_HEIGHT))
+            sem_bp.set_attribute("fov", str(conf.CAMERA_FOV))
+            sem_bp.set_attribute("sensor_tick", str(conf.CAMERA_SENSOR_TICK))
 
-        # =====================================================
-        # ALT CAMERA
-        # =====================================================
-        alt_transform = carla.Transform(
-            carla.Location(
-                x=conf.ALT_CAMERA_X,
-                y=conf.ALT_CAMERA_Y,
-                z=conf.ALT_CAMERA_Z,
-            ),
-            carla.Rotation(
-                pitch=conf.ALT_CAMERA_PITCH_DEG,
-                yaw=0.0,
-                roll=0.0,
-            ),
-        )
+            self.semantic_camera = self.world.spawn_actor(
+                sem_bp,
+                camera_transform,
+                attach_to=self.vehicle,
+            )
+            self.semantic_camera.listen(self._semantic_callback)
 
-        alt_bp = bp_lib.find("sensor.camera.rgb")
-        alt_bp.set_attribute("image_size_x", str(conf.model_image_size[0]))
-        alt_bp.set_attribute("image_size_y", str(conf.model_image_size[1]))
-        alt_bp.set_attribute("fov", str(conf.CAMERA_FOV))
-        alt_bp.set_attribute("sensor_tick", str(conf.CAMERA_SENSOR_TICK))
+        # This camera was previously spawned unconditionally but is not used by
+        # the runtime control path. Keep it opt-in to avoid an unnecessary sensor
+        # callback and memory copy.
+        if bool(getattr(conf, "ENABLE_ALT_CAMERA", False)):
+            alt_transform = carla.Transform(
+                carla.Location(
+                    x=conf.ALT_CAMERA_X,
+                    y=conf.ALT_CAMERA_Y,
+                    z=conf.ALT_CAMERA_Z,
+                ),
+                carla.Rotation(
+                    pitch=conf.ALT_CAMERA_PITCH_DEG,
+                    yaw=0.0,
+                    roll=0.0,
+                ),
+            )
 
-        self.alt_camera = self.world.spawn_actor(
-            alt_bp,
-            alt_transform,
-            attach_to=self.vehicle,
-        )
-        self.alt_camera.listen(self._alt_callback)
+            alt_bp = bp_lib.find("sensor.camera.rgb")
+            alt_bp.set_attribute("image_size_x", str(conf.model_image_size[0]))
+            alt_bp.set_attribute("image_size_y", str(conf.model_image_size[1]))
+            alt_bp.set_attribute("fov", str(conf.CAMERA_FOV))
+            alt_bp.set_attribute("sensor_tick", str(conf.CAMERA_SENSOR_TICK))
 
-    # =====================================================
-    # RGB CALLBACK
-    # =====================================================
+            self.alt_camera = self.world.spawn_actor(
+                alt_bp,
+                alt_transform,
+                attach_to=self.vehicle,
+            )
+            self.alt_camera.listen(self._alt_callback)
+
     def _rgb_callback(self, image):
-        img = np.frombuffer(image.raw_data, dtype=np.uint8)
-        img = img.reshape((image.height, image.width, 4))
-        frame = img[:, :, :3].copy()
-
+        frame = self._copy_bgra_bgr(image)
+        packet = CameraFrame(int(image.frame), time.perf_counter(), frame)
         with self.rgb_lock:
-            self.latest_rgb = frame
+            self._latest_rgb = packet
 
-    # =====================================================
-    # SEMANTIC CALLBACK
-    # =====================================================
     def _semantic_callback(self, image):
-        # Keep raw data for mask extraction before any visualization conversion
-        raw = np.frombuffer(image.raw_data, dtype=np.uint8)
-        raw = raw.reshape((image.height, image.width, 4))
-
-        # CARLA semantic class id is usually in channel 2
+        raw = np.frombuffer(image.raw_data, dtype=np.uint8).reshape(
+            (image.height, image.width, 4)
+        )
         class_map = raw[:, :, 2]
-
-        # Road/drivable class is usually 1
         drivable_mask = (class_map == 1).astype(np.uint8) * 255
+        drivable_mask.setflags(write=False)
 
-        # Convert only for visualization
         image.convert(carla.ColorConverter.CityScapesPalette)
-        vis = np.frombuffer(image.raw_data, dtype=np.uint8)
-        vis = vis.reshape((image.height, image.width, 4))
-        visual = vis[:, :, :3].copy()
+        visual = np.frombuffer(image.raw_data, dtype=np.uint8).reshape(
+            (image.height, image.width, 4)
+        )[:, :, :3].copy()
+        visual.setflags(write=False)
 
-        # Green overlay for drivable area
         drivable_view = np.zeros_like(visual)
         drivable_view[:, :, 1] = drivable_mask
+        drivable_view.setflags(write=False)
 
+        captured_at = time.perf_counter()
         with self.semantic_lock:
-            self.latest_semantic = visual
-            self.latest_drivable = drivable_view
-            self.latest_drivable_mask = drivable_mask
+            self._latest_semantic = CameraFrame(
+                int(image.frame), captured_at, visual
+            )
+            self._latest_drivable = CameraFrame(
+                int(image.frame), captured_at, drivable_view
+            )
+            self._latest_drivable_mask = CameraFrame(
+                int(image.frame), captured_at, drivable_mask
+            )
 
-    # =====================================================
-    # ALT CALLBACK
-    # =====================================================
     def _alt_callback(self, image):
-        img = np.frombuffer(image.raw_data, dtype=np.uint8)
-        img = img.reshape((image.height, image.width, 4))
-        frame = img[:, :, :3].copy()
-
+        frame = self._copy_bgra_bgr(image)
+        packet = CameraFrame(int(image.frame), time.perf_counter(), frame)
         with self.alt_lock:
-            self.latest_alt = frame
+            self._latest_alt = packet
 
-    # =====================================================
-    # GETTERS
-    # =====================================================
+    def snapshot(
+        self,
+    ) -> tuple[
+        Optional[CameraFrame],
+        Optional[CameraFrame],
+        Optional[CameraFrame],
+    ]:
+        with self.rgb_lock, self.semantic_lock, self.alt_lock:
+            return self._latest_rgb, self._latest_semantic, self._latest_alt
+
     def get_latest_rgb(self):
-        with self.rgb_lock:
-            if self.latest_rgb is None:
-                return None
-            return self.latest_rgb.copy()
+        packet, _, _ = self.snapshot()
+        return packet.bgr if packet is not None else None
 
     def get_latest_semantic(self):
-        with self.semantic_lock:
-            if self.latest_semantic is None:
-                return None
-            return self.latest_semantic.copy()
+        _, packet, _ = self.snapshot()
+        return packet.bgr if packet is not None else None
 
     def get_latest_drivable(self):
         with self.semantic_lock:
-            if self.latest_drivable is None:
-                return None
-            return self.latest_drivable.copy()
+            return self._latest_drivable.bgr if self._latest_drivable is not None else None
 
     def get_latest_drivable_mask(self):
         with self.semantic_lock:
-            if self.latest_drivable_mask is None:
-                return None
-            return self.latest_drivable_mask.copy()
+            return (
+                self._latest_drivable_mask.bgr
+                if self._latest_drivable_mask is not None
+                else None
+            )
 
     def get_latest_alt(self):
-        with self.alt_lock:
-            if self.latest_alt is None:
-                return None
-            return self.latest_alt.copy()
+        _, _, packet = self.snapshot()
+        return packet.bgr if packet is not None else None
 
-    # =====================================================
-    # CLEANUP
-    # =====================================================
     def cleanup(self):
-        if self.rgb_camera is not None:
+        for attr in ("rgb_camera", "semantic_camera", "alt_camera"):
+            actor = getattr(self, attr)
+            if actor is None:
+                continue
             try:
-                self.rgb_camera.stop()
-                self.rgb_camera.destroy()
+                actor.stop()
+                actor.destroy()
             except Exception:
                 pass
-            self.rgb_camera = None
-
-        if self.semantic_camera is not None:
-            try:
-                self.semantic_camera.stop()
-                self.semantic_camera.destroy()
-            except Exception:
-                pass
-            self.semantic_camera = None
-
-        if self.alt_camera is not None:
-            try:
-                self.alt_camera.stop()
-                self.alt_camera.destroy()
-            except Exception:
-                pass
-            self.alt_camera = None
+            setattr(self, attr, None)
