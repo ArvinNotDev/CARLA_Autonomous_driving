@@ -75,7 +75,7 @@ ALT_CAMERA_PITCH_DEG = -25.0
 AUTO_MODE_DEFAULT = True
 # The PySide6 runtime panel is the primary debug view.  OpenCV can still be
 # enabled from the panel when a separate legacy window is useful.
-SHOW_OPENCV_WINDOW = True
+SHOW_OPENCV_WINDOW = False
 ENABLE_SEMANTIC_CAMERA = True
 ENABLE_ALT_CAMERA = True
 VISION_MODE = "onnx"
@@ -102,7 +102,7 @@ MAX_STEER_STEP = 0.10
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "yolopv2.onnx")
 INPUT_WIDTH = 320
 INPUT_HEIGHT = 192
-DRIVABLE_OUTPUT_INDEX = 5
+DRIVABLE_OUTPUT_INDEX = 4
 DRIVABLE_PROB_THRESHOLD = 0.50
 
 LANE_PROB_THRESHOLD = 0.50
