@@ -98,9 +98,15 @@ class CarlaLaneDrivingApp:
         self._trajectory_worker_active = False
         self._trajectory_last_completed_at = 0.0
         self._trajectory_last_error: Optional[str] = None
+        self._vision_lock = threading.Lock()
+        self._vision_worker_active = False
+        self._vision_result = None
+        self._last_vision_inference_at = 0.0
         self._last_intersection_check_at = 0.0
         self._last_loop_at = time.perf_counter()
         self._fps = 0.0
+        self._display_frame_count = 0
+        self._fps_window_started_at = time.perf_counter()
         self._startup_drive_until = 0.0
         self._last_recovery_notice_at = 0.0
         self.settings = RuntimeSettings()
@@ -167,6 +173,42 @@ class CarlaLaneDrivingApp:
             return 0.0, None, completed_at
         return steer, pred, completed_at
 
+    def _start_vision_inference(
+        self,
+        semantic_frame: Optional[np.ndarray],
+        rgb_frame: Optional[np.ndarray],
+    ) -> None:
+        if self.vision_processor is None or semantic_frame is None:
+            return
+        with self._vision_lock:
+            if self._vision_worker_active:
+                return
+            self._vision_worker_active = True
+        semantic_copy = semantic_frame.copy()
+        rgb_copy = rgb_frame.copy() if rgb_frame is not None else None
+
+        def worker() -> None:
+            try:
+                result = self.vision_processor.detect(semantic_copy, rgb_copy)
+                with self._vision_lock:
+                    self._vision_result = result
+            except Exception:
+                with self._vision_lock:
+                    self._vision_result = None
+            finally:
+                with self._vision_lock:
+                    self._vision_worker_active = False
+
+        threading.Thread(
+            target=worker,
+            name="carla-line-perception",
+            daemon=True,
+        ).start()
+
+    def _latest_vision_result(self):
+        with self._vision_lock:
+            return self._vision_result
+
     def _show_frame(self, screen: np.ndarray) -> None:
         lines = []
         if cfg("DEBUG_SHOW_FPS", True):
@@ -185,9 +227,16 @@ class CarlaLaneDrivingApp:
             )
         if self._trajectory_last_error:
             lines.append("Trajectory: inference unavailable")
+        now = time.perf_counter()
+        self._display_frame_count += 1
+        elapsed = now - self._fps_window_started_at
+        if elapsed >= 0.5:
+            self._fps = self._display_frame_count / elapsed
+            self._display_frame_count = 0
+            self._fps_window_started_at = now
         self.renderer.show_frame(screen, {"lines": lines})
         if self.control_panel is not None:
-            self.control_panel.update_debug_frame(screen)
+            self.control_panel.update_debug_frame(screen, now=now)
 
     def _on_settings_changed(self, values: dict) -> None:
         self.settings.apply(values)
@@ -463,11 +512,7 @@ class CarlaLaneDrivingApp:
             while self.running:
                 QApplication.processEvents()
                 tick_now = time.perf_counter()
-                dt = tick_now - self._last_loop_at
                 self._last_loop_at = tick_now
-                if dt > 0:
-                    instant_fps = 1.0 / dt
-                    self._fps = instant_fps if self._fps <= 0 else 0.9 * self._fps + 0.1 * instant_fps
                 if (
                     self.input_manager is None
                     or self.controller is None
@@ -509,15 +554,17 @@ class CarlaLaneDrivingApp:
                     time.sleep(0.01)
                     continue
 
-                vision_result = None
-                if semantic_frame is not None:
-                    try:
-                        vision_result = self.vision_processor.detect(
-                            semantic_frame,
-                            rgb_frame,
-                        )
-                    except Exception:
-                        vision_result = None
+                vision_interval = float(
+                    cfg("VISION_INFERENCE_INTERVAL_SECONDS", 0.05)
+                )
+                if (
+                    semantic_frame is not None
+                    and tick_now - self._last_vision_inference_at
+                    >= vision_interval
+                ):
+                    self._last_vision_inference_at = tick_now
+                    self._start_vision_inference(semantic_frame, rgb_frame)
+                vision_result = self._latest_vision_result()
 
                 try:
                     drivable_area_result = self.drivable_debugger.show(vision_result)

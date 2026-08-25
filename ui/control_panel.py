@@ -41,7 +41,7 @@ class ControlPanel(QMainWindow):
         groups = {
             "Driving": {"AUTO_MODE_DEFAULT", "FIXED_THROTTLE", "KP", "KI", "KD", "STEER_LIMIT", "MAX_STEER_STEP", "TARGET_SPEED_KMH"},
             "Trajectory + junction lead-in": {"TRAJECTORY_INFERENCE_INTERVAL_SECONDS", "TRAJECTORY_STEER_GAIN", "TRAJECTORY_MAX_STEER", "TRAJECTORY_DEBUG_SCALE", "JUNCTION_STATIC_THROTTLE", "JUNCTION_STATIC_TIMEOUT_SECONDS", "JUNCTION_ENTRY_DISTANCE_M", "JUNCTION_RIGHT_TURN_DISTANCE_M", "JUNCTION_LEFT_STRAIGHT_DISTANCE_M", "JUNCTION_LEFT_TURN_DISTANCE_M", "JUNCTION_STRAIGHT_DISTANCE_M", "JUNCTION_TRAJECTORY_WINDOW_SECONDS"},
-            "Vision / debug": {"LANE_PROB_THRESHOLD", "LANE_CENTER_SMOOTH_ALPHA", "LANE_THRESHOLD", "CROSSWALK_THRESHOLD", "CROSSWALK_SLEEP", "INTERSECTION_CHECK_INTERVAL_SECONDS", "LANE_CHANGE_DEBOUNCE_SECONDS", "LANE_CHANGE_LINE_ANGLE_THRESHOLD_DEG", "LANE_CHANGE_PLANNER_CHECK_INTERVAL_SECONDS", "OUT_CHECKER_WINDOW_SECONDS", "OUT_CHECKER_ERROR_THRESHOLD", "VISION_DEBUG", "DEBUG_SHOW_ROIS", "DEBUG_SHOW_LANE_MASK", "DEBUG_SHOW_TRAJECTORY", "DEBUG_SHOW_FPS", "DEBUG_SHOW_GPS", "SHOW_OPENCV_WINDOW"},
+            "Vision / debug": {"VISION_INFERENCE_INTERVAL_SECONDS", "LANE_PROB_THRESHOLD", "LANE_CENTER_SMOOTH_ALPHA", "LANE_THRESHOLD", "CROSSWALK_THRESHOLD", "CROSSWALK_SLEEP", "INTERSECTION_CHECK_INTERVAL_SECONDS", "LANE_CHANGE_DEBOUNCE_SECONDS", "LANE_CHANGE_LINE_ANGLE_THRESHOLD_DEG", "LANE_CHANGE_PLANNER_CHECK_INTERVAL_SECONDS", "OUT_CHECKER_WINDOW_SECONDS", "OUT_CHECKER_ERROR_THRESHOLD", "VISION_DEBUG", "DEBUG_SHOW_ROIS", "DEBUG_SHOW_LANE_MASK", "DEBUG_SHOW_TRAJECTORY", "DEBUG_SHOW_FPS", "DEBUG_SHOW_GPS", "SHOW_OPENCV_WINDOW"},
             "Hardware (reset)": {"CAMERA_IMAGE_WIDTH", "CAMERA_IMAGE_HEIGHT", "MODEL_PATH"},
         }
         for title, keys in groups.items():
@@ -56,9 +56,12 @@ class ControlPanel(QMainWindow):
         self._build_profiles(root_layout)
         self._load_values(self.settings.snapshot())
 
-    def update_debug_frame(self, frame) -> None:
+    def update_debug_frame(self, frame, now: float | None = None) -> None:
         if frame is None:
             return
+        if now is not None and now - getattr(self, "_last_frame_update_at", 0.0) < 0.10:
+            return
+        self._last_frame_update_at = now
         try:
             rgb = frame[:, :, ::-1].copy()
             h, w = rgb.shape[:2]
