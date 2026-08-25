@@ -107,7 +107,8 @@ class CarlaLaneDrivingApp:
 
         self._startup_drive_until = 0.0
         self._last_recovery_notice_at = 0.0
-        self._drivable_recovery_started_at: Optional[float] = None
+        self._out_checker = False
+        self._out_checker_started_at: Optional[float] = None
         self._last_drivable_info: dict[str, Any] = {}
 
         self.settings = RuntimeSettings()
@@ -253,59 +254,57 @@ class CarlaLaneDrivingApp:
 
         return trajectory, self._vision_result
 
-    def _drivable_recovery_control(
-        self,
-        drive_info: Any,
-        phase: str,
-    ) -> Optional[carla.VehicleControl]:
-        """Recover toward the drivable-area center during normal lane follow.
-
-        Junction static/crosswalk phases and trajectory takeover retain
-        priority, so recovery cannot fight those state machines.
-        """
-        if (
-            not bool(cfg("DRIVABLE_RECOVERY_ENABLED", True))
-            or phase != "IDLE"
-            or self.intersection_sequence
-            or not isinstance(drive_info, dict)
-        ):
-            self._drivable_recovery_started_at = None
-            return None
-
-        try:
-            error = float(drive_info.get("error"))
-            if drive_info.get("center_x") is None:
-                raise ValueError
-        except (TypeError, ValueError):
-            self._drivable_recovery_started_at = None
-            return None
-
-        threshold = abs(float(cfg("DRIVABLE_RECOVERY_ERROR_THRESHOLD", 20.0)))
-        now = time.monotonic()
-        if self._drivable_recovery_started_at is None:
-            if abs(error) < threshold:
-                return None
-            self._drivable_recovery_started_at = now
-
-        window = max(0.1, float(cfg("DRIVABLE_RECOVERY_WINDOW_SECONDS", 10.0)))
-        if now - self._drivable_recovery_started_at >= window:
-            self._drivable_recovery_started_at = None
-            return None
-
-        magnitude = abs(float(cfg("DRIVABLE_RECOVERY_STEER", 0.45)))
-        steer = -magnitude if error > 0.0 else magnitude
-        throttle = max(
-            0.0,
-            min(1.0, float(cfg("DRIVABLE_RECOVERY_THROTTLE", 0.20))),
-        )
-        return carla.VehicleControl(
-            throttle=throttle,
-            steer=steer,
+    def _force_left_correction(self) -> None:
+        control = carla.VehicleControl(
+            throttle=float(cfg("DRIVABLE_RECOVERY_THROTTLE", cfg("FIXED_THROTTLE", 0.3))),
+            steer=-abs(float(cfg("DRIVABLE_RECOVERY_STEER", cfg("STEER_LIMIT", 0.35)))),
             brake=0.0,
             hand_brake=False,
             reverse=False,
             manual_gear_shift=False,
         )
+        self._safe_vehicle_apply_control(control)
+
+    @staticmethod
+    def _extract_drivable_error(drive_info: Any) -> float:
+        if isinstance(drive_info, dict):
+            try:
+                return float(drive_info.get("error", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                pass
+        return 0.0
+
+    def _update_out_checker_logic(self, candidate_out_checker: bool, drive_info: Any) -> None:
+        """Exact trajectory-branch recovery behavior.
+
+        A valid AutoDriver result starts a ten-second checking window. During
+        that window, a positive drivable-area error forces the same left
+        correction used by the trajectory branch.
+        """
+        if not bool(cfg("DRIVABLE_RECOVERY_ENABLED", True)):
+            self._out_checker = False
+            self._out_checker_started_at = None
+            return
+
+        error = self._extract_drivable_error(drive_info)
+        now = time.monotonic()
+        if self._out_checker_started_at is None:
+            if candidate_out_checker:
+                self._out_checker_started_at = now
+                self._out_checker = True
+            else:
+                self._out_checker = False
+            return
+
+        self._out_checker = True
+        if error > float(cfg("DRIVABLE_RECOVERY_ERROR_THRESHOLD", 20.0)):
+            self._force_left_correction()
+
+        if now - self._out_checker_started_at >= float(
+            cfg("DRIVABLE_RECOVERY_WINDOW_SECONDS", 10.0)
+        ):
+            self._out_checker = False
+            self._out_checker_started_at = None
 
     def _trajectory_for_control(self, current_command: str):
         if self.inference_worker is None:
@@ -673,10 +672,7 @@ class CarlaLaneDrivingApp:
             if self.intersection_manager is not None
             else "IDLE"
         )
-        recovery_control = self._drivable_recovery_control(
-            self._last_drivable_info,
-            phase,
-        )
+        candidate_out_checker = False
 
         if auto_mode:
             # Static junction lead-in always owns the control command.
@@ -686,10 +682,7 @@ class CarlaLaneDrivingApp:
                 and phase in {"CROSSWALK", "STATIC"}
                 else None
             )
-            if recovery_control is not None:
-                control = recovery_control
-                self._last_recovery_notice_at = time.monotonic()
-            elif static_control is not None:
+            if static_control is not None:
                 control = static_control
                 self.intersection_sequence = False
             elif (
@@ -706,23 +699,20 @@ class CarlaLaneDrivingApp:
                     pass
 
                 if matching_trajectory is not None and matching_trajectory.steer is not None:
-                    throttle, brake = self.trajectory_steering_agent.throttle_brake_from_speed(
-                        speed_kmh,
-                        float(cfg("TARGET_SPEED_KMH", 25.0)),
-                    )
                     control = carla.VehicleControl(
-                        throttle=throttle,
+                        throttle=0.15,
                         steer=float(matching_trajectory.steer),
-                        brake=brake,
+                        brake=0.0,
                         hand_brake=False,
                         reverse=False,
                         manual_gear_shift=False,
                     )
+                    candidate_out_checker = vision_result is not None
                 else:
                     # The last valid trajectory remains visible, but while a new
                     # command has no matching result, use the stable lane controller
                     # rather than mixing commands from different requests.
-                    _, screen, control = self.auto_driver.update(
+                    candidate_out_checker, screen, control = self.auto_driver.update(
                         rgb_packet.bgr,
                         vision_result,
                         self.current_location,
@@ -734,7 +724,7 @@ class CarlaLaneDrivingApp:
                     self.intersection_sequence = False
                     self.next_maneuver = None
                     self.trajectory_takeover_until = 0.0
-                _, screen, control = self.auto_driver.update(
+                candidate_out_checker, screen, control = self.auto_driver.update(
                     rgb_packet.bgr,
                     vision_result,
                     self.current_location,
@@ -747,6 +737,11 @@ class CarlaLaneDrivingApp:
             control = manual_control or make_stop_control()
 
         self._safe_vehicle_apply_control(control)
+        if auto_mode and static_control is None:
+            self._update_out_checker_logic(
+                candidate_out_checker=candidate_out_checker,
+                drive_info=self._last_drivable_info,
+            )
 
         if (
             cfg("DEBUG_SHOW_TRAJECTORY", True)
