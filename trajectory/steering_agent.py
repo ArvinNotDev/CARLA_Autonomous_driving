@@ -115,7 +115,11 @@ class TrajectorySteeringAgent:
         target_kmh: Optional[float] = None,
     ) -> tuple[float, float]:
         if target_kmh is None:
-            target_kmh = self.cfg.target_speed_kmh
+            target_kmh = getattr(
+                self.cfg,
+                "target_speed_kmh",
+                getattr(self.cfg, "TARGET_SPEED_KMH", 25.0),
+            )
 
         error = float(target_kmh - speed_kmh)
 

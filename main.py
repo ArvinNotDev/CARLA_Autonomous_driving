@@ -137,9 +137,13 @@ class CarlaLaneDrivingApp:
                 cfg("LANE_CENTER_SMOOTH_ALPHA", self.vision_processor.lane_center_alpha)
             )
         if self.trajectory_steering_agent is not None:
-            self.trajectory_steering_agent.cfg.target_speed_kmh = float(
-                cfg("TARGET_SPEED_KMH", self.trajectory_steering_agent.cfg.target_speed_kmh)
-            )
+            # ``main`` passes the config module to the agent, while dataset
+            # tooling may pass a PipelineConfig dataclass.  Support both.
+            target_speed = float(cfg("TARGET_SPEED_KMH", 25.0))
+            if hasattr(self.trajectory_steering_agent.cfg, "target_speed_kmh"):
+                self.trajectory_steering_agent.cfg.target_speed_kmh = target_speed
+            else:
+                setattr(self.trajectory_steering_agent.cfg, "TARGET_SPEED_KMH", target_speed)
 
     def _request_car_reset(self) -> None:
         if self.control_panel is None:
