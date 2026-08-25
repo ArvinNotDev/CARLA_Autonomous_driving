@@ -517,10 +517,21 @@ class CarlaLaneDrivingApp:
             control = (
                 carla.VehicleControl(throttle=0.18)
                 if auto_mode and time.monotonic() < self._startup_drive_until
-                else make_stop_control()
+                else (manual_control if not auto_mode else make_stop_control())
             )
             self._safe_vehicle_apply_control(control)
             self._publish_debug_frame(blank_frame())
+            return
+
+        # Manual driving must not wait for vision, trajectory, or junction
+        # inference. Those workers can be busy when E is pressed, which used
+        # to make keyboard control and the debug panel appear frozen.
+        if not auto_mode:
+            control = manual_control or make_stop_control()
+            screen = rgb_packet.bgr.copy()
+            self._render_mode_overlay(screen, "MANUAL", 0.0)
+            self._safe_vehicle_apply_control(control)
+            self._publish_debug_frame(screen)
             return
 
         self._submit_inference(rgb_packet, semantic_packet, now)
