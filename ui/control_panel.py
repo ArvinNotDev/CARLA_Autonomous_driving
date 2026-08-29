@@ -166,6 +166,7 @@ class JunctionSequenceEditor(QWidget):
 
 class ControlPanel(QMainWindow):
     settings_changed = Signal(dict)
+    external_settings_changed = Signal(dict)
     reset_requested = Signal()
     stream_toggle_requested = Signal(bool)
 
@@ -180,6 +181,7 @@ class ControlPanel(QMainWindow):
     ) -> None:
         super().__init__(parent)
         self.settings = settings
+        self.external_settings_changed.connect(self._apply_external_settings)
         self.display_metrics = display_metrics or DisplayMetrics()
         self.frame_store = frame_store
         self.metrics_provider = metrics_provider
@@ -506,6 +508,7 @@ class ControlPanel(QMainWindow):
     def _emit(self, key: str) -> None:
         value = self._value(key)
         self.settings.apply({key: value})
+        self.settings.persist_values({key: value})
         spec = next(s for s in SETTING_SPECS if s[0] == key)
         if not spec[4]:
             self.status.setText(f"{spec[1]} changed — reset the car to apply it.")
@@ -522,9 +525,21 @@ class ControlPanel(QMainWindow):
 
     def _emit_movement_sequences(self, value: dict[str, Any]) -> None:
         self.settings.apply({"JUNCTION_MOVEMENT_SEQUENCES": value})
-        self.settings.save()
+        self.settings.persist_values({"JUNCTION_MOVEMENT_SEQUENCES": value})
         self.status.setText("Junction movement sequence updated live.")
         self.settings_changed.emit({"JUNCTION_MOVEMENT_SEQUENCES": value})
+
+    def sync_external_settings(self, values: dict[str, Any]) -> None:
+        """Thread-safe entry point for settings changed by the Flask editor."""
+        self.external_settings_changed.emit(dict(values))
+
+    def _apply_external_settings(self, values: dict[str, Any]) -> None:
+        self.settings.apply(values)
+        self._load_values(values)
+        if "DEBUG_PANEL_HZ" in values:
+            self._set_refresh_rate(float(values["DEBUG_PANEL_HZ"]))
+        changed = ", ".join(values.keys())
+        self.status.setText(f"Flask settings synchronized: {changed}")
 
     def _load_profile(self) -> None:
         values = self.settings.profiles.get(self.profile_combo.currentText())

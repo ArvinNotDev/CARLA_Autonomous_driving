@@ -7,7 +7,7 @@ import threading
 import urllib.request
 
 import config_city as conf
-from runtime_settings import SETTING_SPECS
+from runtime_settings import SETTING_SPECS, RuntimeSettings
 logging.getLogger('werkzeug').disabled = True
 
 logger = logging.getLogger(__name__)
@@ -134,6 +134,18 @@ def _coerce_setting(spec, value):
 
 def _local_request_only():
     return request.remote_addr in {"127.0.0.1", "::1", "localhost"}
+
+def _notify_settings(updated):
+    if not updated:
+        return
+    RuntimeSettings.persist_values(updated)
+    if any(key in VARIABLES for key in updated):
+        save_conf_to_json()
+    if _settings_callback is not None:
+        try:
+            _settings_callback(updated)
+        except Exception:
+            logger.exception("Runtime settings callback failed")
 
 # --- HTML template (full UI) ---
 HTML_TEMPLATE = """
@@ -996,8 +1008,7 @@ def update_conf():
             except (ValueError, TypeError):
                 pass
 
-    if updated:
-        save_conf_to_json()
+    _notify_settings(updated)
 
     return jsonify(success=True, values=_current_values())
 
@@ -1013,7 +1024,7 @@ def set_variable():
     val = max(0.0, min(1.0, val))
     if var in VARIABLES:
         setattr(conf, var, val)
-        save_conf_to_json()
+        _notify_settings({var: val})
         return jsonify(success=True, variable=var, value=val)
     return jsonify(success=False, error="unknown variable"), 400
 
@@ -1049,11 +1060,7 @@ def set_settings():
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         return jsonify(success=False, error=f"invalid setting: {exc}"), 400
 
-    if updated and _settings_callback is not None:
-        try:
-            _settings_callback(updated)
-        except Exception:
-            logger.exception("Runtime settings callback failed")
+    _notify_settings(updated)
     return jsonify(success=True, values=_setting_values(), reset_required=reset_required)
 
 @app.route('/set_advanced', methods=['POST'])
@@ -1091,8 +1098,7 @@ def set_advanced():
         logger.exception("Invalid advanced payload")
         return jsonify(success=False, error="invalid payload"), 400
 
-    if updated:
-        save_conf_to_json()
+    _notify_settings(updated)
 
     return jsonify(success=True, advanced=_current_advanced())
 

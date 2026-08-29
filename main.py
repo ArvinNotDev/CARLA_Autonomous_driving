@@ -384,6 +384,8 @@ class CarlaLaneDrivingApp:
                 conf.CAMERA_Y,
                 conf.CAMERA_Z,
             )
+        if self.control_panel is not None:
+            self.control_panel.sync_external_settings(values)
 
     def _request_car_reset(self) -> None:
         if self.control_panel is None:

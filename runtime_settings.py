@@ -124,3 +124,26 @@ class RuntimeSettings:
     def save_profile(self, name: str, values: dict[str, Any]) -> None:
         self.profiles[name] = dict(values)
         self.save()
+
+    @classmethod
+    def persist_values(cls, values: dict[str, Any], path: Path = PROFILE_PATH) -> None:
+        """Persist live changes into the active profile without reloading config."""
+        try:
+            profiles = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(profiles, dict):
+                profiles = {}
+        except (OSError, ValueError):
+            profiles = {}
+
+        active = profiles.get("_active_profile")
+        profile_name = (
+            active
+            if isinstance(active, str) and active and active in profiles
+            else "default"
+        )
+        profile = profiles.get(profile_name)
+        if not isinstance(profile, dict):
+            profile = {}
+        profile.update({key: _json_value(value) for key, value in values.items()})
+        profiles[profile_name] = profile
+        path.write_text(json.dumps(profiles, indent=2), encoding="utf-8")
