@@ -13,6 +13,7 @@ logging.getLogger('werkzeug').disabled = True
 logger = logging.getLogger(__name__)
 stop_event = threading.Event()
 app = Flask(__name__)
+_server_thread = None
 _settings_callback = None
 
 # --- ROI variable names ---
