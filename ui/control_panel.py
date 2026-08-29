@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 from typing import Any, Callable, Optional
 
 from PySide6.QtCore import QTimer, Qt, Signal
@@ -213,6 +214,13 @@ class ControlPanel(QMainWindow):
         stream_row.addStretch(1)
         root_layout.addLayout(stream_row)
 
+        flask_url = self._flask_urls()
+        flask_label = QLabel(f"Flask editor URL: {flask_url}")
+        flask_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        root_layout.addWidget(flask_label)
+
         self.tabs = QTabWidget()
         root_layout.addWidget(self.tabs)
         self.status = QLabel("Live settings apply immediately.")
@@ -283,6 +291,22 @@ class ControlPanel(QMainWindow):
         self._metrics_timer.setInterval(250)
         self._metrics_timer.timeout.connect(self._refresh_metrics)
         self._metrics_timer.start()
+
+    @staticmethod
+    def _flask_urls() -> str:
+        host = str(getattr(conf, "STREAM_HOST", "127.0.0.1"))
+        port = int(getattr(conf, "STREAM_PORT", 5000))
+        if host not in {"0.0.0.0", "::", ""}:
+            return f"http://{host}:{port}"
+
+        urls = [f"http://127.0.0.1:{port}"]
+        try:
+            local_ip = socket.gethostbyname(socket.gethostname())
+            if local_ip not in {"127.0.0.1", "0.0.0.0"}:
+                urls.append(f"http://{local_ip}:{port}")
+        except OSError:
+            pass
+        return " / ".join(urls)
 
     def _set_refresh_rate(self, refresh_hz: float) -> None:
         hz = max(5.0, min(30.0, float(refresh_hz)))
