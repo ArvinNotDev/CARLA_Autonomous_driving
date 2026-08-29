@@ -12,7 +12,7 @@ from typing import Dict, Tuple
 CHANGE_WITH_JSON = True
 
 # The editor saves ROI here.
-ROI_CONFIG_PATH = "Forza.json"
+ROI_CONFIG_PATH = "roi_config.json"
 
 # Optional fallback if you still have older config files.
 LEGACY_CONFIG_PATHS = ["carla.json"]

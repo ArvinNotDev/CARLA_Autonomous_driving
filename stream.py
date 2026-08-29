@@ -34,8 +34,7 @@ ADVANCED_VARS = {
 
 # UI settings filename and functions
 def ui_filename():
-    mode = "Forza"
-    return f"{mode}_ui.json"
+    return "roi_config_ui.json"
 
 def load_ui_settings():
     fname = ui_filename()
@@ -66,8 +65,7 @@ UI_SETTINGS = load_ui_settings()
 
 # save ROI + advanced to JSON (primary config JSON)
 def config_filename():
-    mode = "Forza"
-    return f"{mode}.json"
+    return "roi_config.json"
 
 def save_conf_to_json():
     filename = config_filename()
@@ -829,7 +827,7 @@ document.getElementById('download_json').addEventListener('click', ()=>{
         const url = URL.createObjectURL(blob);
         const a=document.createElement('a');
         a.href=url;
-        a.download='Forza.json';
+        a.download='roi_config.json';
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -981,7 +979,7 @@ def index():
         values=_current_values(),
         ui=UI_SETTINGS,
         advanced=_current_advanced(),
-        mode="Forza",
+        mode="ROI configuration",
         runtime_values=_setting_values(),
         runtime_specs=[
             [key, label, kind, limits, realtime]

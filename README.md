@@ -84,7 +84,7 @@ trajectory/                Waypoint model, steering agent, visualization
 vision/                    ONNX/segmentation perception and debug views
 ui/                        Spawn/goal picker, renderer, runtime control panel
 config_city.py             Defaults and JSON overrides
-Forza.json                 ROI/advanced settings
+roi_config.json            ROI/advanced settings
 ```
 
 ## Troubleshooting
