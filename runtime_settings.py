@@ -27,10 +27,7 @@ SETTING_SPECS = [
     ("JUNCTION_STATIC_THROTTLE", "Junction lead-in throttle", "float", (0.0, 1.0, 0.01), True),
     ("JUNCTION_STATIC_TIMEOUT_SECONDS", "Static segment timeout (s)", "float", (1.0, 60.0, 1.0), True),
     ("JUNCTION_ENTRY_DISTANCE_M", "Junction entry distance (m)", "float", (0.0, 50.0, 0.5), True),
-    ("JUNCTION_RIGHT_TURN_DISTANCE_M", "Right turn distance (m)", "float", (0.0, 30.0, 0.5), True),
-    ("JUNCTION_LEFT_STRAIGHT_DISTANCE_M", "Left straight distance (m)", "float", (0.0, 40.0, 0.5), True),
-    ("JUNCTION_LEFT_TURN_DISTANCE_M", "Left turn distance (m)", "float", (0.0, 30.0, 0.5), True),
-    ("JUNCTION_STRAIGHT_DISTANCE_M", "Straight distance (m)", "float", (0.0, 30.0, 0.5), True),
+    ("JUNCTION_MOVEMENT_SEQUENCES", "Junction movement sequences", "sequence", None, True),
     ("JUNCTION_TRAJECTORY_WINDOW_SECONDS", "Trajectory takeover duration (s)", "float", (0.5, 60.0, 0.5), True),
     ("DRIVABLE_RECOVERY_ENABLED", "Drivable-area recovery", "bool", None, True),
     ("DRIVABLE_RECOVERY_ERROR_THRESHOLD", "Recovery error threshold (px)", "float", (1.0, 300.0, 1.0), True),
@@ -81,6 +78,10 @@ SETTING_SPECS = [
 def _json_value(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
     return str(value)
 
 

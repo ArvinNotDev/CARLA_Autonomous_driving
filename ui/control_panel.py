@@ -5,7 +5,7 @@ from typing import Any, Callable, Optional
 from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QImage, QPixmap, QPaintEvent
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QPushButton, QScrollArea, QSpinBox,
     QTabWidget, QVBoxLayout, QWidget,
 )
@@ -38,6 +38,129 @@ class DebugFrameLabel(QLabel):
         if self._last_painted_token != self._frame_token:
             self._last_painted_token = self._frame_token
             self._display_metrics.record_presented()
+
+
+class JunctionSequenceEditor(QWidget):
+    """Edit ordered distance/steering actions for each junction maneuver."""
+
+    _maneuvers = (("LEFT", "Left Turn"), ("RIGHT", "Right Turn"), ("STRAIGHT", "Straight"))
+    changed = Signal(dict)
+
+    def __init__(self, sequences: Optional[dict[str, Any]] = None, parent=None) -> None:
+        super().__init__(parent)
+        self._sequences = self._normalize(sequences or {})
+        self._layout = QVBoxLayout(self)
+        self._rebuild()
+
+    @classmethod
+    def _normalize(cls, sequences: Any) -> dict[str, list[dict[str, float]]]:
+        result = {}
+        for maneuver, _title in cls._maneuvers:
+            actions = []
+            raw_actions = sequences.get(maneuver, []) if isinstance(sequences, dict) else []
+            for action in raw_actions if isinstance(raw_actions, list) else []:
+                if not isinstance(action, dict):
+                    continue
+                try:
+                    distance = max(0.0, float(action.get("distance_m", 0.0)))
+                    steering = max(-1.0, min(1.0, float(action.get("steering_value", 0.0))))
+                except (TypeError, ValueError):
+                    continue
+                if distance > 0.0:
+                    actions.append({"distance_m": distance, "steering_value": steering})
+            result[maneuver] = actions
+        return result
+
+    def sequences(self) -> dict[str, list[dict[str, float]]]:
+        return {key: [dict(item) for item in value] for key, value in self._sequences.items()}
+
+    def set_sequences(self, sequences: Any) -> None:
+        self._sequences = self._normalize(sequences)
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        self._layout.addWidget(QLabel(
+            "هر action به ترتیب اجرا می‌شود؛ steering value بین -1 (چپ) و +1 (راست) است."
+        ))
+        for maneuver, title in self._maneuvers:
+            box = QGroupBox(title)
+            box_layout = QVBoxLayout(box)
+            grid = QGridLayout()
+            for col, text in enumerate(("#", "Distance (m)", "Steering value", "Order", "Action")):
+                grid.addWidget(QLabel(text), 0, col)
+            actions = self._sequences[maneuver]
+            for index, action in enumerate(actions):
+                distance = QDoubleSpinBox()
+                distance.setRange(0.01, 1000.0)
+                distance.setSingleStep(0.5)
+                distance.setDecimals(2)
+                distance.setValue(action["distance_m"])
+                steering = QDoubleSpinBox()
+                steering.setRange(-1.0, 1.0)
+                steering.setSingleStep(0.05)
+                steering.setDecimals(3)
+                steering.setValue(action["steering_value"])
+                distance.valueChanged.connect(
+                    lambda value, m=maneuver, i=index: self._update(m, i, distance_m=value)
+                )
+                steering.valueChanged.connect(
+                    lambda value, m=maneuver, i=index: self._update(m, i, steering_value=value)
+                )
+                grid.addWidget(QLabel(str(index + 1)), index + 1, 0)
+                grid.addWidget(distance, index + 1, 1)
+                grid.addWidget(steering, index + 1, 2)
+                order = QWidget()
+                order_layout = QHBoxLayout(order)
+                order_layout.setContentsMargins(0, 0, 0, 0)
+                up = QPushButton("↑")
+                down = QPushButton("↓")
+                up.setEnabled(index > 0)
+                down.setEnabled(index < len(actions) - 1)
+                up.clicked.connect(lambda _=False, m=maneuver, i=index: self._move(m, i, -1))
+                down.clicked.connect(lambda _=False, m=maneuver, i=index: self._move(m, i, 1))
+                order_layout.addWidget(up)
+                order_layout.addWidget(down)
+                grid.addWidget(order, index + 1, 3)
+                remove = QPushButton("Remove")
+                remove.clicked.connect(lambda _=False, m=maneuver, i=index: self._remove(m, i))
+                grid.addWidget(remove, index + 1, 4)
+            box_layout.addLayout(grid)
+            add = QPushButton("Add steering action")
+            add.clicked.connect(lambda _=False, m=maneuver: self._add(m))
+            box_layout.addWidget(add)
+            self._layout.addWidget(box)
+        self._layout.addStretch(1)
+
+    def _notify(self) -> None:
+        self.changed.emit(self.sequences())
+
+    def _update(self, maneuver: str, index: int, **values: float) -> None:
+        if index < len(self._sequences[maneuver]):
+            self._sequences[maneuver][index].update(values)
+            self._notify()
+
+    def _add(self, maneuver: str) -> None:
+        self._sequences[maneuver].append({"distance_m": 1.0, "steering_value": 0.0})
+        self._rebuild()
+        self._notify()
+
+    def _remove(self, maneuver: str, index: int) -> None:
+        if index < len(self._sequences[maneuver]):
+            self._sequences[maneuver].pop(index)
+            self._rebuild()
+            self._notify()
+
+    def _move(self, maneuver: str, index: int, offset: int) -> None:
+        actions = self._sequences[maneuver]
+        target = index + offset
+        if 0 <= target < len(actions):
+            actions[index], actions[target] = actions[target], actions[index]
+            self._rebuild()
+            self._notify()
 
 
 class ControlPanel(QMainWindow):
@@ -94,9 +217,7 @@ class ControlPanel(QMainWindow):
                 "TRAJECTORY_INFERENCE_INTERVAL_SECONDS", "TRAJECTORY_STEER_GAIN",
                 "TRAJECTORY_MAX_STEER", "TRAJECTORY_DEBUG_SCALE",
                 "JUNCTION_STATIC_THROTTLE", "JUNCTION_STATIC_TIMEOUT_SECONDS",
-                "JUNCTION_ENTRY_DISTANCE_M", "JUNCTION_RIGHT_TURN_DISTANCE_M",
-                "JUNCTION_LEFT_STRAIGHT_DISTANCE_M", "JUNCTION_LEFT_TURN_DISTANCE_M",
-                "JUNCTION_STRAIGHT_DISTANCE_M", "JUNCTION_TRAJECTORY_WINDOW_SECONDS",
+                "JUNCTION_ENTRY_DISTANCE_M", "JUNCTION_TRAJECTORY_WINDOW_SECONDS",
                 "DRIVABLE_RECOVERY_ENABLED", "DRIVABLE_RECOVERY_ERROR_THRESHOLD",
                 "DRIVABLE_RECOVERY_WINDOW_SECONDS", "DRIVABLE_RECOVERY_STEER",
                 "DRIVABLE_RECOVERY_THROTTLE",
@@ -124,9 +245,16 @@ class ControlPanel(QMainWindow):
             form = QFormLayout(page)
             form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
             for spec in SETTING_SPECS:
-                if spec[0] in keys:
+                if spec[0] in keys and spec[2] != "sequence":
                     self._add_setting(form, spec)
             self.tabs.addTab(self._scroll(page), title)
+
+        self.movement_editor = JunctionSequenceEditor(
+            getattr(conf, "JUNCTION_MOVEMENT_SEQUENCES", {})
+        )
+        self.widgets["JUNCTION_MOVEMENT_SEQUENCES"] = self.movement_editor
+        self.movement_editor.changed.connect(self._emit_movement_sequences)
+        self.tabs.addTab(self._scroll(self.movement_editor), "Junction movements")
 
         self._build_profiles(root_layout)
         self._load_values(self.settings.snapshot())
@@ -307,6 +435,8 @@ class ControlPanel(QMainWindow):
 
     def _value(self, key: str) -> Any:
         widget = self.widgets[key]
+        if isinstance(widget, JunctionSequenceEditor):
+            return widget.sequences()
         if isinstance(widget, QCheckBox):
             return widget.isChecked()
         if isinstance(widget, QComboBox):
@@ -319,6 +449,9 @@ class ControlPanel(QMainWindow):
         for key, value in values.items():
             widget = self.widgets.get(key)
             if widget is None or value is None:
+                continue
+            if isinstance(widget, JunctionSequenceEditor):
+                widget.set_sequences(value)
                 continue
             widget.blockSignals(True)
             if isinstance(widget, QCheckBox):
@@ -343,6 +476,12 @@ class ControlPanel(QMainWindow):
         if key == "DEBUG_PANEL_HZ":
             self._set_refresh_rate(float(value))
         self.settings_changed.emit({key: value})
+
+    def _emit_movement_sequences(self, value: dict[str, Any]) -> None:
+        self.settings.apply({"JUNCTION_MOVEMENT_SEQUENCES": value})
+        self.settings.save()
+        self.status.setText("Junction movement sequence updated live.")
+        self.settings_changed.emit({"JUNCTION_MOVEMENT_SEQUENCES": value})
 
     def _load_profile(self) -> None:
         values = self.settings.profiles.get(self.profile_combo.currentText())

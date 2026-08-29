@@ -65,25 +65,21 @@ class IntersectionManager:
     ) -> list[Tuple[float, float, bool, float, float]]:
         throttle = float(getattr(conf, "JUNCTION_STATIC_THROTTLE", 0.2))
         timeout = float(getattr(conf, "JUNCTION_STATIC_TIMEOUT_SECONDS", 20.0))
-        entry = float(getattr(conf, "JUNCTION_ENTRY_DISTANCE_M", 11.0))
-        right_turn = float(getattr(conf, "JUNCTION_RIGHT_TURN_DISTANCE_M", 6.0))
-        left_straight = float(getattr(conf, "JUNCTION_LEFT_STRAIGHT_DISTANCE_M", 10.0))
-        left_turn = float(getattr(conf, "JUNCTION_LEFT_TURN_DISTANCE_M", 4.0))
-        straight = float(getattr(conf, "JUNCTION_STRAIGHT_DISTANCE_M", 3.0))
-
-        if maneuver == "RIGHT":
-            return [
-                (entry, 0.0, True, throttle, timeout),
-                (right_turn, 0.65, True, throttle, timeout),
-            ]
-        if maneuver == "LEFT":
-            return [
-                (left_straight, 0.0, True, throttle, timeout),
-                (left_turn, -0.5, True, throttle, timeout),
-            ]
-        if maneuver == "STRAIGHT":
-            return [(straight, 0.0, True, throttle, timeout)]
-        return []
+        configured = getattr(conf, "JUNCTION_MOVEMENT_SEQUENCES", {})
+        sequence = configured.get(str(maneuver or "").upper(), [])
+        segments: list[Tuple[float, float, bool, float, float]] = []
+        for action in sequence if isinstance(sequence, list) else []:
+            if not isinstance(action, dict):
+                continue
+            try:
+                distance_m = max(0.0, float(action["distance_m"]))
+                steering_value = max(-1.0, min(1.0, float(action["steering_value"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if distance_m <= 0.0:
+                continue
+            segments.append((distance_m, steering_value, True, throttle, timeout))
+        return segments
 
     def movement_active(self) -> bool:
         with self._state_lock:

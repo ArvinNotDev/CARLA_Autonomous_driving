@@ -157,10 +157,21 @@ TRAJECTORY_DEBUG_SCALE = 2.2
 JUNCTION_STATIC_THROTTLE = 0.20
 JUNCTION_STATIC_TIMEOUT_SECONDS = 20.0
 JUNCTION_ENTRY_DISTANCE_M = 6.0
-JUNCTION_RIGHT_TURN_DISTANCE_M = 5.0
-JUNCTION_LEFT_STRAIGHT_DISTANCE_M = 20.0
-JUNCTION_LEFT_TURN_DISTANCE_M = 4.0
-JUNCTION_STRAIGHT_DISTANCE_M = 3.0
+# Each action is executed in list order. Steering values use CARLA's normalized
+# range: negative values steer left and positive values steer right.
+JUNCTION_MOVEMENT_SEQUENCES = {
+    "LEFT": [
+        {"distance_m": 20.0, "steering_value": 0.0},
+        {"distance_m": 4.0, "steering_value": -0.5},
+    ],
+    "RIGHT": [
+        {"distance_m": 6.0, "steering_value": 0.0},
+        {"distance_m": 5.0, "steering_value": 0.65},
+    ],
+    "STRAIGHT": [
+        {"distance_m": 6.0, "steering_value": 0.0},
+    ],
+}
 JUNCTION_TRAJECTORY_WINDOW_SECONDS = 10.0
 DRIVABLE_RECOVERY_ENABLED = True
 DRIVABLE_RECOVERY_ERROR_THRESHOLD = 20.0
