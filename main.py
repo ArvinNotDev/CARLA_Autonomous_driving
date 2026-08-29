@@ -375,6 +375,14 @@ class CarlaLaneDrivingApp:
         if "AUTO_MODE_DEFAULT" in values:
             with self._state_lock:
                 self.auto_mode = bool(values["AUTO_MODE_DEFAULT"])
+        if self.camera_manager is not None and any(
+            key in values for key in ("CAMERA_X", "CAMERA_Y", "CAMERA_Z")
+        ):
+            self.camera_manager.update_mount_location(
+                conf.CAMERA_X,
+                conf.CAMERA_Y,
+                conf.CAMERA_Z,
+            )
 
     def _request_car_reset(self) -> None:
         if self.control_panel is None:

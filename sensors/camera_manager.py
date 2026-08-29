@@ -133,6 +133,23 @@ class CameraManager:
             )
             self.alt_camera.listen(self._alt_callback)
 
+    def update_mount_location(self, x: float, y: float, z: float) -> None:
+        """Move the active camera sensors without respawning them."""
+        transform = carla.Transform(
+            carla.Location(x=float(x), y=float(y), z=float(z)),
+            carla.Rotation(
+                pitch=conf.CAMERA_PITCH_DEG,
+                yaw=conf.CAMERA_YAW_DEG,
+                roll=conf.CAMERA_ROLL_DEG,
+            ),
+        )
+        for actor in (self.rgb_camera, self.semantic_camera):
+            if actor is not None:
+                try:
+                    actor.set_transform(transform)
+                except Exception:
+                    pass
+
     def _rgb_callback(self, image):
         frame = self._copy_bgra_bgr(image)
         packet = CameraFrame(int(image.frame), time.perf_counter(), frame)

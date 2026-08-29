@@ -235,6 +235,9 @@ class ControlPanel(QMainWindow):
                 "VISION_DEBUG", "DEBUG_SHOW_ROIS", "DEBUG_SHOW_LANE_MASK", "DEBUG_SHOW_DRIVABLE_AREA",
                 "DEBUG_SHOW_TRAJECTORY", "DEBUG_SHOW_FPS", "DEBUG_SHOW_GPS",
             },
+            "Camera": {
+                "CAMERA_X", "CAMERA_Y", "CAMERA_Z", "CAMERA_FOV",
+            },
             "Hardware (reset)": {
                 "CAMERA_IMAGE_WIDTH", "CAMERA_IMAGE_HEIGHT", "INPUT_WIDTH", "INPUT_HEIGHT", "MODEL_PATH",
                 "ENABLE_SEMANTIC_CAMERA", "ENABLE_ALT_CAMERA",
