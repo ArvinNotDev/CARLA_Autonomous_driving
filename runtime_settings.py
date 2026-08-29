@@ -65,6 +65,7 @@ SETTING_SPECS = [
     ("DEBUG_SHOW_TRAJECTORY", "Show trajectory", "bool", None, True),
     ("DEBUG_SHOW_FPS", "Show FPS", "bool", None, True),
     ("DEBUG_SHOW_GPS", "Show GPS/navigation", "bool", None, True),
+    ("DEBUG_SHOW_TEXT", "Show debug text", "bool", None, True),
     ("CAMERA_X", "Camera X", "float", (-20.0, 20.0, 0.1), True),
     ("CAMERA_Y", "Camera Y", "float", (-20.0, 20.0, 0.1), True),
     ("CAMERA_Z", "Camera Z", "float", (-20.0, 20.0, 0.1), True),

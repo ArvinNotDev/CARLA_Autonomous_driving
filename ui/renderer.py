@@ -60,7 +60,7 @@ class Renderer:
             out = self._ensure_bgr(screen).copy()
 
         h, w = out.shape[:2]
-        if overlay:
+        if overlay and cfg("DEBUG_SHOW_TEXT", True):
             y = 28
             for text in overlay.get("lines", []):
                 self.overlay_text(out, str(text), (12, min(y, h - 8)), 0.55, (255, 255, 255), 1)
@@ -72,5 +72,7 @@ class Renderer:
         return self.compose(screen, overlay)
 
     def render_mode_overlay(self, screen: np.ndarray, mode: str, error: float) -> None:
+        if not cfg("DEBUG_SHOW_TEXT", True):
+            return
         self.overlay_text(screen, f"MODE: {mode}", (20, 30), 0.9, (255, 255, 0), 2)
         self.overlay_text(screen, f"error: {error:.2f}", (20, 60), 0.7, (255, 255, 255), 2)

@@ -4,13 +4,16 @@ import json
 import os
 from flask import Flask, Response, request, render_template_string, jsonify
 import threading
+import urllib.request
 
 import config_city as conf
+from runtime_settings import SETTING_SPECS
 logging.getLogger('werkzeug').disabled = True
 
 logger = logging.getLogger(__name__)
 stop_event = threading.Event()
 app = Flask(__name__)
+_settings_callback = None
 
 # --- ROI variable names ---
 VARIABLES = [
@@ -94,6 +97,42 @@ def _current_advanced():
         "CROSSWALK_THRESH_SPEND": float(getattr(conf, "CROSSWALK_THRESH_SPEND", ADVANCED_VARS["CROSSWALK_THRESH_SPEND"])),
         "RUN_LVL": getattr(conf, "RUN_LVL", ADVANCED_VARS["RUN_LVL"]),
     }
+
+def set_settings_callback(callback):
+    global _settings_callback
+    _settings_callback = callback
+
+def _setting_values():
+    values = {}
+    for key, *_ in SETTING_SPECS:
+        value = getattr(conf, key, None)
+        if isinstance(value, tuple):
+            value = list(value)
+        values[key] = value
+    return values
+
+def _coerce_setting(spec, value):
+    _key, _label, kind, limits, _realtime = spec
+    if kind == "bool":
+        if isinstance(value, str):
+            return value.lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+    if kind == "int":
+        result = int(float(value))
+    elif kind == "float":
+        result = float(value)
+    elif kind == "sequence":
+        if isinstance(value, str):
+            value = json.loads(value)
+        return value
+    else:
+        return str(value)
+    if limits:
+        result = max(limits[0], min(limits[1], result))
+    return result
+
+def _local_request_only():
+    return request.remote_addr in {"127.0.0.1", "::1", "localhost"}
 
 # --- HTML template (full UI) ---
 HTML_TEMPLATE = """
@@ -231,6 +270,17 @@ canvas{width:100%;height:auto;border-radius:8px;display:block;background:#000}
     </div>
 
     <div class="card">
+      <div class="section-title">Runtime Control Panel Settings</div>
+      <div class="small-muted">Settings marked [reset] need a CARLA restart. The others apply live.</div>
+      <div id="runtime_settings" class="inputs"></div>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button id="apply_runtime" class="btn">Apply runtime settings</button>
+        <button id="refresh_runtime" class="ghost">Refresh settings</button>
+      </div>
+      <div id="runtime_msg" class="small-muted" style="margin-top:6px"></div>
+    </div>
+
+    <div class="card">
       <div class="section-title">Live values</div>
       <pre id="values_json" style="white-space:pre-wrap;color:var(--muted);font-size:13px;margin:0">{{ values|tojson }}</pre>
     </div>
@@ -255,6 +305,85 @@ let markerHighlight = null;
 let fetchFrameTimer = null;
 let dragState = null;
 let debounceTimers = {};
+let runtimeValues = {{ runtime_values|tojson }};
+const runtimeSpecs = {{ runtime_specs|tojson }};
+
+function renderRuntimeSettings(){
+  const root = document.getElementById('runtime_settings');
+  root.innerHTML = '';
+  for(const spec of runtimeSpecs){
+    const [key, label, kind, limits, realtime] = spec;
+    const row = document.createElement('div');
+    row.className = 'form-row';
+    const title = document.createElement('label');
+    title.className = 'label';
+    title.textContent = label + (realtime ? '' : ' [reset]');
+    row.appendChild(title);
+    let input;
+    if(kind === 'bool'){
+      input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = !!runtimeValues[key];
+    } else if(kind === 'sequence'){
+      input = document.createElement('textarea');
+      input.rows = 3;
+      input.value = JSON.stringify(runtimeValues[key] || {}, null, 2);
+    } else {
+      input = document.createElement('input');
+      input.type = kind === 'str' ? 'text' : 'number';
+      if(kind !== 'str' && limits){
+        input.min = limits[0]; input.max = limits[1]; input.step = limits[2];
+      }
+      input.value = runtimeValues[key] ?? '';
+    }
+    input.dataset.key = key;
+    input.style.flex = '1';
+    row.appendChild(input);
+    root.appendChild(row);
+  }
+}
+renderRuntimeSettings();
+
+document.getElementById('refresh_runtime').addEventListener('click', ()=>{
+  fetch('/get_settings').then(r=>r.json()).then(data=>{
+    runtimeValues = data.values || {};
+    renderRuntimeSettings();
+    showToast('Runtime settings refreshed');
+  }).catch(()=>showToast('Refresh failed'));
+});
+
+document.getElementById('apply_runtime').addEventListener('click', ()=>{
+  const payload = {};
+  try {
+    document.querySelectorAll('#runtime_settings [data-key]').forEach(input=>{
+      const key = input.dataset.key;
+      const spec = runtimeSpecs.find(item=>item[0] === key);
+      if(spec[2] === 'bool') payload[key] = input.checked;
+      else if(spec[2] === 'sequence') payload[key] = JSON.parse(input.value);
+      else if(spec[2] === 'int') payload[key] = parseInt(input.value);
+      else if(spec[2] === 'float') payload[key] = parseFloat(input.value);
+      else payload[key] = input.value;
+    });
+  } catch(error) {
+    document.getElementById('runtime_msg').textContent = 'Invalid JSON sequence.';
+    return;
+  }
+  fetch('/set_settings',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(payload)
+  }).then(r=>r.json()).then(data=>{
+    if(!data.success) throw new Error(data.error || 'failed');
+    runtimeValues = data.values || runtimeValues;
+    renderRuntimeSettings();
+    document.getElementById('runtime_msg').textContent = data.reset_required
+      ? 'Applied. Restart required for reset-marked settings.'
+      : 'Applied live.';
+    showToast(data.reset_required ? 'Applied; restart required' : 'Applied live');
+  }).catch(error=>{
+    document.getElementById('runtime_msg').textContent = error.message;
+  });
+});
 
 function clamp01(v){ return Math.max(0, Math.min(1, v)); }
 function round01(v){ return Math.round(v*100)/100; }
@@ -840,6 +969,11 @@ def index():
         ui=UI_SETTINGS,
         advanced=_current_advanced(),
         mode="Forza",
+        runtime_values=_setting_values(),
+        runtime_specs=[
+            [key, label, kind, limits, realtime]
+            for key, label, kind, limits, realtime in SETTING_SPECS
+        ],
     )
 
 @app.route('/update_conf', methods=['POST'])
@@ -889,6 +1023,37 @@ def get_values():
 @app.route('/get_advanced')
 def get_advanced():
     return jsonify(advanced=_current_advanced())
+
+@app.route('/get_settings')
+def get_settings():
+    return jsonify(values=_setting_values())
+
+@app.route('/set_settings', methods=['POST'])
+def set_settings():
+    if not _local_request_only():
+        return jsonify(success=False, error="settings changes are local-only"), 403
+    data = request.get_json() or {}
+    specs = {spec[0]: spec for spec in SETTING_SPECS}
+    updated = {}
+    reset_required = False
+    try:
+        for key, value in data.items():
+            spec = specs.get(key)
+            if spec is None:
+                continue
+            coerced = _coerce_setting(spec, value)
+            setattr(conf, key, coerced)
+            updated[key] = coerced
+            reset_required = reset_required or not spec[4]
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        return jsonify(success=False, error=f"invalid setting: {exc}"), 400
+
+    if updated and _settings_callback is not None:
+        try:
+            _settings_callback(updated)
+        except Exception:
+            logger.exception("Runtime settings callback failed")
+    return jsonify(success=True, values=_setting_values(), reset_required=reset_required)
 
 @app.route('/set_advanced', methods=['POST'])
 def set_advanced():
@@ -983,6 +1148,34 @@ def start_stream(host=None, port=None):
         port = getattr(conf, "STREAM_PORT", 5000)
 
     app.run(host=host, port=port, threaded=True, debug=False, use_reloader=False)
+
+def start_stream_background(host=None, port=None):
+    global _server_thread
+    if _server_thread is not None and _server_thread.is_alive():
+        return False
+    _server_thread = threading.Thread(
+        target=start_stream,
+        kwargs={"host": host, "port": port},
+        name="carla-debug-stream",
+        daemon=True,
+    )
+    _server_thread.start()
+    return True
+
+def stop_stream(host=None, port=None):
+    if host in (None, "0.0.0.0", "::"):
+        host = "127.0.0.1"
+    if port is None:
+        port = getattr(conf, "STREAM_PORT", 5000)
+    try:
+        urllib.request.urlopen(
+            f"http://{host}:{int(port)}/shutdown",
+            data=b"",
+            timeout=1.5,
+        ).read()
+        return True
+    except Exception:
+        return False
 
 if __name__ == '__main__':
     start_stream()

@@ -166,6 +166,7 @@ class JunctionSequenceEditor(QWidget):
 class ControlPanel(QMainWindow):
     settings_changed = Signal(dict)
     reset_requested = Signal()
+    stream_toggle_requested = Signal(bool)
 
     def __init__(
         self,
@@ -202,6 +203,16 @@ class ControlPanel(QMainWindow):
         self.metrics_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         root_layout.addWidget(self.metrics_label)
 
+        stream_row = QHBoxLayout()
+        self.stream_toggle = QPushButton("Flask editor: ON")
+        self.stream_toggle.setCheckable(True)
+        self.stream_toggle.setChecked(True)
+        self.stream_toggle.clicked.connect(self._emit_stream_toggle)
+        stream_row.addWidget(self.stream_toggle)
+        stream_row.addWidget(QLabel("Use the Flask editor for live settings and ROI editing."))
+        stream_row.addStretch(1)
+        root_layout.addLayout(stream_row)
+
         self.tabs = QTabWidget()
         root_layout.addWidget(self.tabs)
         self.status = QLabel("Live settings apply immediately.")
@@ -234,6 +245,7 @@ class ControlPanel(QMainWindow):
                 "LANE_CHANGE_PLANNER_CHECK_INTERVAL_SECONDS",
                 "VISION_DEBUG", "DEBUG_SHOW_ROIS", "DEBUG_SHOW_LANE_MASK", "DEBUG_SHOW_DRIVABLE_AREA",
                 "DEBUG_SHOW_TRAJECTORY", "DEBUG_SHOW_FPS", "DEBUG_SHOW_GPS",
+                "DEBUG_SHOW_TEXT",
             },
             "Camera": {
                 "CAMERA_X", "CAMERA_Y", "CAMERA_Z", "CAMERA_FOV",
@@ -479,6 +491,10 @@ class ControlPanel(QMainWindow):
         if key == "DEBUG_PANEL_HZ":
             self._set_refresh_rate(float(value))
         self.settings_changed.emit({key: value})
+
+    def _emit_stream_toggle(self, enabled: bool) -> None:
+        self.stream_toggle.setText("Flask editor: ON" if enabled else "Flask editor: OFF")
+        self.stream_toggle_requested.emit(bool(enabled))
 
     def _emit_movement_sequences(self, value: dict[str, Any]) -> None:
         self.settings.apply({"JUNCTION_MOVEMENT_SEQUENCES": value})

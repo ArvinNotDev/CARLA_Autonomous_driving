@@ -111,14 +111,15 @@ class DrivableAreaDebugger:
             if right_x is not None:
                 cv2.circle(vis, (right_x, scan_y), 6, (0, 255, 0), -1)
 
-            cv2.putText(vis, f"max={max_val:.2f}", (10, 25),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(vis, f"center_x={center_x}", (10, 50),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(vis, f"img_center={image_center_x}", (10, 75),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(vis, f"error={error}", (10, 100),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            if bool(getattr(conf, "DEBUG_SHOW_TEXT", True)):
+                cv2.putText(vis, f"max={max_val:.2f}", (10, 25),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                cv2.putText(vis, f"center_x={center_x}", (10, 50),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                cv2.putText(vis, f"img_center={image_center_x}", (10, 75),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                cv2.putText(vis, f"error={error}", (10, 100),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
             # cv2.imshow(self.window_name, vis)
             # cv2.waitKey(1)

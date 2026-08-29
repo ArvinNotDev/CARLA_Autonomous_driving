@@ -19,7 +19,7 @@ from navigation.intersection_manager import IntersectionManager
 from navigation.global_planner import RoutePlanner
 from navigation.lane_change_manager import LaneChangeManager
 from sensors.camera_manager import CameraManager
-from stream import start_stream
+from stream import set_settings_callback, start_stream_background, stop_stream
 from ui.renderer import Renderer
 from ui.spawn_goal_picker import SpawnGoalPicker
 from utils.vehicle_utils import blank_frame, make_stop_control
@@ -367,6 +367,7 @@ class CarlaLaneDrivingApp:
             )
 
         composed = self.renderer.compose(screen, {"lines": lines})
+        conf.debug_frame_buffer = np.ascontiguousarray(composed)
         self.frame_store.publish(composed)
 
     def _on_settings_changed(self, values: dict) -> None:
@@ -506,18 +507,21 @@ class CarlaLaneDrivingApp:
         )
         self.control_panel.settings_changed.connect(self._on_settings_changed)
         self.control_panel.reset_requested.connect(self._request_car_reset)
+        self.control_panel.stream_toggle_requested.connect(self._toggle_flask_stream)
+        set_settings_callback(self._on_settings_changed)
         self.control_panel.show()
 
         # No sleep here: stream startup must not stall the Qt UI.
         try:
-            threading.Thread(
-                target=start_stream,
-                kwargs={"host": conf.STREAM_HOST, "port": conf.STREAM_PORT},
-                name="carla-debug-stream",
-                daemon=True,
-            ).start()
+            start_stream_background(conf.STREAM_HOST, conf.STREAM_PORT)
         except Exception:
             pass
+
+    def _toggle_flask_stream(self, enabled: bool) -> None:
+        if enabled:
+            start_stream_background(conf.STREAM_HOST, conf.STREAM_PORT)
+        else:
+            stop_stream(conf.STREAM_HOST, conf.STREAM_PORT)
 
     def _control_loop(self) -> None:
         configured_hz = float(cfg("CONTROL_LOOP_HZ", 30.0))
@@ -796,6 +800,10 @@ class CarlaLaneDrivingApp:
         try:
             if self.camera_manager is not None:
                 self.camera_manager.cleanup()
+        except Exception:
+                pass
+        try:
+            stop_stream(conf.STREAM_HOST, conf.STREAM_PORT)
         except Exception:
             pass
 

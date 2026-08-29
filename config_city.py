@@ -184,6 +184,7 @@ DEBUG_SHOW_DRIVABLE_AREA = True
 DEBUG_SHOW_TRAJECTORY = True
 DEBUG_SHOW_FPS = True
 DEBUG_SHOW_GPS = True
+DEBUG_SHOW_TEXT = False
 
 
 # -------------------------------------------------
