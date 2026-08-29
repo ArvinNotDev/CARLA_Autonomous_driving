@@ -18,7 +18,6 @@ from navigation.intersection_detector import IntersectionModel
 from navigation.intersection_manager import IntersectionManager
 from navigation.global_planner import RoutePlanner
 from navigation.lane_change_manager import LaneChangeManager
-from navigation.lane_side import LaneSideModel
 from sensors.camera_manager import CameraManager
 from stream import start_stream
 from ui.renderer import Renderer
@@ -119,14 +118,6 @@ class CarlaLaneDrivingApp:
         self.intersection_model = IntersectionModel(
             "models_and_datasets/models/junction_model_resnet18.pt"
         )
-        self.lane_side = LaneSideModel(
-            "models_and_datasets/models/lane_side_model_resnet18.pt"
-        )
-
-    def _get_latest_rgb_frame(self) -> Optional[np.ndarray]:
-        if self.camera_manager is None:
-            return None
-        return self.camera_manager.get_latest_rgb()
 
     def _metrics_for_panel(self) -> dict[str, Any]:
         control = self.control_metrics.snapshot()
@@ -464,9 +455,7 @@ class CarlaLaneDrivingApp:
 
         self.lane_change_manager = LaneChangeManager(
             vehicle=self.vehicle,
-            lane_side_model=self.lane_side,
             planner=self.planner,
-            get_latest_rgb=self._get_latest_rgb_frame,
             lane_change_debounce_seconds=float(
                 cfg("LANE_CHANGE_DEBOUNCE_SECONDS", 2.0)
             ),

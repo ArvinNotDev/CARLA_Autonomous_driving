@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Callable, Optional, Dict, Any
+from typing import Optional, Dict
 
 import config_city as conf
 
@@ -18,15 +18,11 @@ class LaneChangeManager:
     def __init__(
         self,
         vehicle,
-        lane_side_model,
         planner,
-        get_latest_rgb: Callable[[], Optional[Any]],
         lane_change_debounce_seconds: float = 1.5,
     ) -> None:
         self.vehicle = vehicle
-        self.lane_side = lane_side_model
         self.planner = planner
-        self.get_latest_rgb = get_latest_rgb
 
         self.lane_change_debounce_seconds = float(lane_change_debounce_seconds)
         self.lane_change_debounce_until = 0.0
@@ -51,30 +47,6 @@ class LaneChangeManager:
     def movement_active(self) -> bool:
         return self._movement_active()
 
-    def _get_lane_state(self, rgb_frame: Optional[Any]) -> Dict[str, bool]:
-        if rgb_frame is None:
-            return {
-                "left_lane": False,
-                "right_lane": False,
-                "out_from_right": False,
-                "out_from_left": False,
-            }
-
-        return {
-            "left_lane": self.lane_side.is_left_lane(rgb_frame),
-            "right_lane": self.lane_side.is_right_lane(rgb_frame),
-            "out_from_right": self.lane_side.is_out_from_right(rgb_frame),
-            "out_from_left": self.lane_side.is_out_from_left(rgb_frame),
-        }
-
-    @staticmethod
-    def _should_change_lane(direction: str, lane_state: Dict[str, bool]) -> bool:
-        if direction == "left":
-            return not lane_state["left_lane"] and not lane_state["out_from_left"]
-        if direction == "right":
-            return not lane_state["right_lane"] and not lane_state["out_from_right"]
-        return False
-
     def _angle_guard_triggered(self) -> bool:
         threshold = float(getattr(conf, "LANE_CHANGE_LINE_ANGLE_THRESHOLD_DEG", 20.0))
         return any(
@@ -98,7 +70,6 @@ class LaneChangeManager:
         current_location,
         goal_location,
         line_angles: Optional[Dict[str, Optional[float]]] = None,
-        rgb_frame: Optional[Any] = None,
     ) -> None:
         if self.vehicle is None:
             return
@@ -124,13 +95,9 @@ class LaneChangeManager:
                 traveled = 0.0
 
             if traveled >= 1.0:
-                lane_state = self._get_lane_state(rgb_frame)
-                if self._should_change_lane(direction or "", lane_state):
-                    with self._state_lock:
-                        self.phase = "CHANGE"
-                        self._segment_start_location = current_location
-                else:
-                    self._finish()
+                with self._state_lock:
+                    self.phase = "CHANGE"
+                    self._segment_start_location = current_location
             return
 
         if phase == "CHANGE" and segment_start is not None:
