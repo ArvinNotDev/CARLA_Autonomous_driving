@@ -1,0 +1,217 @@
+{
+  "default": {
+    "AUTO_MODE_DEFAULT": true,
+    "FIXED_THROTTLE": 0.13,
+    "KP": 0.015,
+    "KI": 0.0,
+    "KD": 0.002,
+    "STEER_LIMIT": 0.75,
+    "MAX_STEER_STEP": 0.1,
+    "TARGET_SPEED_KMH": 10.0,
+    "CONTROL_LOOP_HZ": 30.0,
+    "TRAJECTORY_INFERENCE_INTERVAL_SECONDS": 0.2,
+    "TRAJECTORY_STEER_GAIN": 1.0,
+    "TRAJECTORY_MAX_STEER": 0.5,
+    "TRAJECTORY_DEBUG_SCALE": 2.3,
+    "JUNCTION_STATIC_THROTTLE": 0.2,
+    "JUNCTION_STATIC_TIMEOUT_SECONDS": 20.0,
+    "JUNCTION_ENTRY_DISTANCE_M": 6.0,
+    "JUNCTION_TRAJECTORY_WINDOW_SECONDS": 2.0,
+    "DRIVABLE_RECOVERY_ENABLED": true,
+    "DRIVABLE_RECOVERY_ERROR_THRESHOLD": 16.0,
+    "DRIVABLE_RECOVERY_WINDOW_SECONDS": 15.5,
+    "DRIVABLE_RECOVERY_STEER": 0.75,
+    "DRIVABLE_RECOVERY_THROTTLE": 0.15,
+    "VISION_INFERENCE_INTERVAL_SECONDS": 0.03,
+    "INTERSECTION_CHECK_INTERVAL_SECONDS": 0.3,
+    "LANE_CHANGE_DEBOUNCE_SECONDS": 2.0,
+    "LANE_CHANGE_LINE_ANGLE_THRESHOLD_DEG": 35.0,
+    "LANE_CHANGE_PLANNER_CHECK_INTERVAL_SECONDS": 0.5,
+    "CROSSWALK_SLEEP": 3.0,
+    "LANE_THRESHOLD": 180,
+    "CROSSWALK_THRESHOLD": 180,
+    "LANE_PROB_THRESHOLD": 0.5,
+    "LANE_CENTER_SMOOTH_ALPHA": 0.3,
+    "DRIVABLE_PROB_THRESHOLD": 0.5,
+    "RL_TOP_ROI": 0.57,
+    "RL_BOTTOM_ROI": 0.69,
+    "RL_LEFT_ROI": 0.56,
+    "RL_RIGHT_ROI": 0.78,
+    "LL_TOP_ROI": 0.57,
+    "LL_BOTTOM_ROI": 0.69,
+    "LL_LEFT_ROI": 0.24,
+    "LL_RIGHT_ROI": 0.45,
+    "CW_TOP_ROI": 0.48,
+    "CW_BOTTOM_ROI": 0.77,
+    "CW_LEFT_ROI": 0.09,
+    "CW_RIGHT_ROI": 0.86,
+    "VISION_DEBUG": true,
+    "DEBUG_SHOW_ROIS": true,
+    "DEBUG_SHOW_LANE_MASK": true,
+    "DEBUG_SHOW_DRIVABLE_AREA": true,
+    "DEBUG_SHOW_TRAJECTORY": true,
+    "DEBUG_SHOW_FPS": false,
+    "DEBUG_SHOW_GPS": false,
+    "DEBUG_SHOW_TEXT": true,
+    "DEBUG_PANEL_HZ": 30.0,
+    "CAMERA_X": 1.7,
+    "CAMERA_Y": 0.0,
+    "CAMERA_Z": 2.1,
+    "CAMERA_FOV": 120.0,
+    "INPUT_WIDTH": 256,
+    "INPUT_HEIGHT": 160,
+    "CAMERA_IMAGE_WIDTH": 256,
+    "CAMERA_IMAGE_HEIGHT": 160,
+    "ENABLE_SEMANTIC_CAMERA": true,
+    "ENABLE_ALT_CAMERA": true,
+    "MODEL_PATH": "G:\\MyDesktop\\game_auto_driver\\carla\\new_v2\\CARLA_Autonomous_driving\\yolopv2.onnx",
+    "JUNCTION_MOVEMENT_SEQUENCES": {
+      "LEFT": [
+        {
+          "distance_m": 22.0,
+          "steering_value": 0.0
+        },
+        {
+          "distance_m": 5.0,
+          "steering_value": -0.4
+        },
+        {
+          "distance_m": 3.5,
+          "steering_value": -0.5
+        },
+        {
+          "distance_m": 2.5,
+          "steering_value": 0.0
+        }
+      ],
+      "RIGHT": [
+        {
+          "distance_m": 9.5,
+          "steering_value": 0.0
+        },
+        {
+          "distance_m": 8.0,
+          "steering_value": 0.25
+        },
+        {
+          "distance_m": 3.0,
+          "steering_value": 0.7000000000000001
+        }
+      ],
+      "STRAIGHT": [
+        {
+          "distance_m": 6.0,
+          "steering_value": 0.0
+        }
+      ]
+    }
+  },
+  "_active_profile": "stableV1",
+  "stableV1": {
+    "AUTO_MODE_DEFAULT": true,
+    "FIXED_THROTTLE": 0.13,
+    "KP": 0.015,
+    "KI": 0.0,
+    "KD": 0.002,
+    "STEER_LIMIT": 0.75,
+    "MAX_STEER_STEP": 0.1,
+    "TARGET_SPEED_KMH": 10.0,
+    "CONTROL_LOOP_HZ": 30.0,
+    "TRAJECTORY_INFERENCE_INTERVAL_SECONDS": 0.2,
+    "TRAJECTORY_STEER_GAIN": 1.0,
+    "TRAJECTORY_MAX_STEER": 0.5,
+    "TRAJECTORY_DEBUG_SCALE": 2.3,
+    "JUNCTION_STATIC_THROTTLE": 0.2,
+    "JUNCTION_STATIC_TIMEOUT_SECONDS": 20.0,
+    "JUNCTION_ENTRY_DISTANCE_M": 6.0,
+    "JUNCTION_TRAJECTORY_WINDOW_SECONDS": 2.0,
+    "DRIVABLE_RECOVERY_ENABLED": true,
+    "DRIVABLE_RECOVERY_ERROR_THRESHOLD": 16.0,
+    "DRIVABLE_RECOVERY_WINDOW_SECONDS": 15.5,
+    "DRIVABLE_RECOVERY_STEER": 0.75,
+    "DRIVABLE_RECOVERY_THROTTLE": 0.15,
+    "VISION_INFERENCE_INTERVAL_SECONDS": 0.03,
+    "INTERSECTION_CHECK_INTERVAL_SECONDS": 0.3,
+    "LANE_CHANGE_DEBOUNCE_SECONDS": 2.0,
+    "LANE_CHANGE_LINE_ANGLE_THRESHOLD_DEG": 35.0,
+    "LANE_CHANGE_PLANNER_CHECK_INTERVAL_SECONDS": 0.5,
+    "CROSSWALK_SLEEP": 3.0,
+    "LANE_THRESHOLD": 180,
+    "CROSSWALK_THRESHOLD": 180,
+    "LANE_PROB_THRESHOLD": 0.5,
+    "LANE_CENTER_SMOOTH_ALPHA": 0.3,
+    "DRIVABLE_PROB_THRESHOLD": 0.5,
+    "RL_TOP_ROI": 0.57,
+    "RL_BOTTOM_ROI": 0.69,
+    "RL_LEFT_ROI": 0.56,
+    "RL_RIGHT_ROI": 0.78,
+    "LL_TOP_ROI": 0.57,
+    "LL_BOTTOM_ROI": 0.69,
+    "LL_LEFT_ROI": 0.24,
+    "LL_RIGHT_ROI": 0.45,
+    "CW_TOP_ROI": 0.48,
+    "CW_BOTTOM_ROI": 0.77,
+    "CW_LEFT_ROI": 0.09,
+    "CW_RIGHT_ROI": 0.86,
+    "VISION_DEBUG": true,
+    "DEBUG_SHOW_ROIS": true,
+    "DEBUG_SHOW_LANE_MASK": true,
+    "DEBUG_SHOW_DRIVABLE_AREA": true,
+    "DEBUG_SHOW_TRAJECTORY": true,
+    "DEBUG_SHOW_FPS": false,
+    "DEBUG_SHOW_GPS": false,
+    "DEBUG_SHOW_TEXT": true,
+    "DEBUG_PANEL_HZ": 30.0,
+    "CAMERA_X": 1.7,
+    "CAMERA_Y": 0.0,
+    "CAMERA_Z": 2.1,
+    "CAMERA_FOV": 120.0,
+    "INPUT_WIDTH": 256,
+    "INPUT_HEIGHT": 160,
+    "CAMERA_IMAGE_WIDTH": 256,
+    "CAMERA_IMAGE_HEIGHT": 160,
+    "ENABLE_SEMANTIC_CAMERA": true,
+    "ENABLE_ALT_CAMERA": true,
+    "MODEL_PATH": "G:\\MyDesktop\\game_auto_driver\\carla\\new_v2\\CARLA_Autonomous_driving\\yolopv2.onnx",
+    "JUNCTION_MOVEMENT_SEQUENCES": {
+      "LEFT": [
+        {
+          "distance_m": 22.0,
+          "steering_value": 0.0
+        },
+        {
+          "distance_m": 5.0,
+          "steering_value": -0.4
+        },
+        {
+          "distance_m": 3.5,
+          "steering_value": -0.5
+        },
+        {
+          "distance_m": 2.5,
+          "steering_value": 0.0
+        }
+      ],
+      "RIGHT": [
+        {
+          "distance_m": 9.5,
+          "steering_value": 0.0
+        },
+        {
+          "distance_m": 8.0,
+          "steering_value": 0.25
+        },
+        {
+          "distance_m": 3.0,
+          "steering_value": 0.7000000000000001
+        }
+      ],
+      "STRAIGHT": [
+        {
+          "distance_m": 6.0,
+          "steering_value": 0.0
+        }
+      ]
+    }
+  }
+}

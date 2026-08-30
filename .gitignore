@@ -3,6 +3,5 @@ YOLOPv2.onnx
 **/__pycache__/
 **/dataset/
 **/dataset_**/
-runtime_profiles.json
 CARLA_Autonomous_driving_fixed/
 CARLA_Autonomous_driving_fixed_by_llm/

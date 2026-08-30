@@ -67,7 +67,7 @@ python stream.py
 
 ## Runtime profiles
 
-Use the profile controls at the bottom of the PySide6 panel to save or load a named configuration. The last saved values are written to `runtime_profiles.json`, which is intentionally local and ignored by Git for machine-specific tuning.
+Use the profile controls at the bottom of the PySide6 panel to save or load a named configuration. The repository includes the `stableV1` profile as the default startup profile; the last saved values are written to `runtime_profiles.json`.
 
 Live settings update the active controller or perception pipeline immediately. Settings that change CARLA sensor resources or model loading are clearly marked **Hardware (reset)** and show a reset prompt.
 
