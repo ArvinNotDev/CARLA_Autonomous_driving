@@ -23,7 +23,9 @@ class TrajectorySteeringAgent:
     ):
         self.cfg = cfg
         self.command_name = command_name
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # The ONNX lane detector is the only GPU model. Ignore any requested
+        # PyTorch device so this steering model always stays on CPU.
+        self.device = torch.device("cpu")
 
         checkpoint_path = Path(checkpoint_path)
         if not checkpoint_path.exists():

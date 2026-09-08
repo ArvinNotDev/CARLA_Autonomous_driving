@@ -15,7 +15,9 @@ class IntersectionModel:
         if not self.checkpoint_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {self.checkpoint_path}")
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Keep auxiliary PyTorch models on CPU. The ONNX lane model is the
+        # only model that is intentionally allowed to use the GPU.
+        self.device = torch.device("cpu")
         self.model, self.image_size, self.class_names = self._load_model()
         self.transform = self._build_transform()
 
