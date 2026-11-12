@@ -26,7 +26,22 @@ class LidarRadarWidget(QWidget):
         self._points: np.ndarray | None = None
         self._heading_deg = 0.0
         self._complete = False
+        sensor_range = min(
+            float(conf.LIDAR_MAX_RANGE_M), max(1.0, float(conf.LIDAR_RANGE_M))
+        )
+        self.display_range_m = min(
+            sensor_range,
+            max(5.0, float(getattr(conf, "LIDAR_DISPLAY_RANGE_M", sensor_range))),
+        )
         self.setMinimumSize(320, 320)
+
+    def zoom_in(self) -> None:
+        self.display_range_m = max(5.0, self.display_range_m - 5.0)
+        self.update()
+
+    def zoom_out(self) -> None:
+        self.display_range_m = min(self._sensor_range(), self.display_range_m + 5.0)
+        self.update()
 
     def refresh_scan(self) -> None:
         if self.lidar_manager is None:
@@ -129,19 +144,19 @@ class LidarRadarWidget(QWidget):
         )
         painter.end()
 
+    def _display_range(self) -> float:
+        self.display_range_m = min(self._sensor_range(), max(5.0, self.display_range_m))
+        return self.display_range_m
+
     @staticmethod
-    def _display_range() -> float:
-        sensor_range = min(
-            float(conf.LIDAR_MAX_RANGE_M), max(1.0, float(conf.LIDAR_RANGE_M))
-        )
+    def _sensor_range() -> float:
         return min(
-            sensor_range,
-            max(1.0, float(getattr(conf, "LIDAR_DISPLAY_RANGE_M", sensor_range))),
+            float(conf.LIDAR_MAX_RANGE_M), max(1.0, float(conf.LIDAR_RANGE_M))
         )
 
     @staticmethod
     def _ring_distances(max_range: float) -> list[float]:
-        step = 10.0 if max_range <= 60.0 else 25.0 if max_range <= 125.0 else 50.0
+        step = 5.0 if max_range <= 30.0 else 10.0 if max_range <= 60.0 else 25.0 if max_range <= 125.0 else 50.0
         distances = []
         distance = step
         while distance < max_range:
