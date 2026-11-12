@@ -16,6 +16,7 @@ import config_city as conf
 from runtime_metrics import DisplayMetrics
 from runtime_settings import SETTING_SPECS, RuntimeSettings
 from ui.frame_store import DebugFrameStore
+from ui.lidar_radar import LidarRadarWidget
 
 
 class DebugFrameLabel(QLabel):
@@ -176,6 +177,7 @@ class ControlPanel(QMainWindow):
         *,
         display_metrics: Optional[DisplayMetrics] = None,
         frame_store: Optional[DebugFrameStore] = None,
+        lidar_manager=None,
         metrics_provider: Optional[Callable[[], dict[str, Any]]] = None,
         parent=None,
     ) -> None:
@@ -184,6 +186,7 @@ class ControlPanel(QMainWindow):
         self.external_settings_changed.connect(self._apply_external_settings)
         self.display_metrics = display_metrics or DisplayMetrics()
         self.frame_store = frame_store
+        self.lidar_radar = LidarRadarWidget(lidar_manager)
         self.metrics_provider = metrics_provider
         self.widgets: dict[str, QWidget] = {}
         self._last_frame_sequence = 0
@@ -273,6 +276,8 @@ class ControlPanel(QMainWindow):
                 form.addRow("ONNX model input", QLabel("512 × 512 (fixed by model)"))
             self.tabs.addTab(self._scroll(page), title)
 
+        self.tabs.addTab(self.lidar_radar, "LiDAR 360°")
+
         self.movement_editor = JunctionSequenceEditor(
             getattr(conf, "JUNCTION_MOVEMENT_SEQUENCES", {})
         )
@@ -327,13 +332,12 @@ class ControlPanel(QMainWindow):
             self._set_frame(frame)
 
     def _refresh_live_view(self) -> None:
-        if self.frame_store is None:
-            return
-        packet = self.frame_store.latest()
-        if packet is None or packet.sequence == self._last_frame_sequence:
-            return
-        self._last_frame_sequence = packet.sequence
-        self._set_frame(packet.image)
+        if self.frame_store is not None:
+            packet = self.frame_store.latest()
+            if packet is not None and packet.sequence != self._last_frame_sequence:
+                self._last_frame_sequence = packet.sequence
+                self._set_frame(packet.image)
+        self.lidar_radar.refresh_scan()
 
     def _set_frame(self, frame) -> None:
         try:

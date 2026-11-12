@@ -19,6 +19,7 @@ from navigation.intersection_manager import IntersectionManager
 from navigation.global_planner import RoutePlanner
 from navigation.lane_change_manager import LaneChangeManager
 from sensors.camera_manager import CameraManager
+from sensors.lidar_manager import LidarManager
 from stream import set_settings_callback, start_stream_background, stop_stream
 from ui.renderer import Renderer
 from ui.spawn_goal_picker import SpawnGoalPicker
@@ -53,6 +54,7 @@ class CarlaLaneDrivingApp:
         self.vehicle = None
 
         self.camera_manager: Optional[CameraManager] = None
+        self.lidar_manager: Optional[LidarManager] = None
         self.vision_processor: Optional[VisionProcessor] = None
         self.controller: Optional[FixedSpeedPIDController] = None
         self.input_manager: Optional[InputManager] = None
@@ -384,6 +386,8 @@ class CarlaLaneDrivingApp:
 
         self.camera_manager = CameraManager(self.world, self.vehicle)
         self.camera_manager.start()
+        self.lidar_manager = LidarManager(self.world, self.vehicle)
+        self.lidar_manager.start()
 
         self.planner = RoutePlanner(self.world)
         self._apply_goal_to_planner()
@@ -443,6 +447,7 @@ class CarlaLaneDrivingApp:
             self.settings,
             display_metrics=self.display_metrics,
             frame_store=self.frame_store,
+            lidar_manager=self.lidar_manager,
             metrics_provider=self._metrics_for_panel,
         )
         self.control_panel.settings_changed.connect(self._on_settings_changed)
@@ -725,6 +730,11 @@ class CarlaLaneDrivingApp:
                 self.camera_manager.cleanup()
         except Exception:
                 pass
+        try:
+            if self.lidar_manager is not None:
+                self.lidar_manager.cleanup()
+        except Exception:
+            pass
         try:
             stop_stream(conf.STREAM_HOST, conf.STREAM_PORT)
         except Exception:
