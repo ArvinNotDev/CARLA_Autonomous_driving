@@ -23,6 +23,7 @@ from sensors.lidar_manager import LidarManager
 from stream import set_settings_callback, start_stream_background, stop_stream
 from ui.renderer import Renderer
 from ui.spawn_goal_picker import SpawnGoalPicker
+from ui.map_selection_dialog import MapSelectionDialog
 from utils.vehicle_utils import blank_frame, make_stop_control
 from vision.city_vision_processing import VisionProcessor
 from vision.drivable_area_debugger import DrivableAreaDebugger
@@ -481,7 +482,18 @@ class CarlaLaneDrivingApp:
                     pass
 
     def setup(self) -> None:
-        self.world = self.carla_manager.connect()
+        available_maps = self.carla_manager.get_available_maps()
+        if not available_maps:
+            raise RuntimeError("CARLA server did not report any available maps.")
+
+        current_world = self.carla_manager.client.get_world()
+        current_map = current_world.get_map().name
+        map_picker = MapSelectionDialog(available_maps, current_map)
+        if map_picker.exec() != QDialog.DialogCode.Accepted:
+            self.running = False
+            return
+
+        self.world = self.carla_manager.connect(map_picker.selected_map())
         if self.world is None:
             raise RuntimeError("Failed to connect to CARLA world.")
 

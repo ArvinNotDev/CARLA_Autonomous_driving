@@ -41,11 +41,19 @@ class CarlaManager:
 
         self.vehicle: Optional[carla.Vehicle] = None
 
-    def connect(self) -> carla.World:
-        self.client = carla.Client(self.host, self.port)
-        self.client.set_timeout(self.timeout)
+    def _ensure_client(self) -> carla.Client:
+        if self.client is None:
+            self.client = carla.Client(self.host, self.port)
+            self.client.set_timeout(self.timeout)
+        return self.client
 
-        self.world = self.client.get_world()
+    def get_available_maps(self) -> list[str]:
+        """Return maps installed in the connected CARLA server."""
+        return list(self._ensure_client().get_available_maps())
+
+    def connect(self, map_name: str | None = None) -> carla.World:
+        client = self._ensure_client()
+        self.world = client.load_world(map_name) if map_name else client.get_world()
         self.original_settings = self.world.get_settings()
 
         settings = self.world.get_settings()
