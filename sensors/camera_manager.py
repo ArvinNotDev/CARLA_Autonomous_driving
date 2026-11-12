@@ -27,9 +27,20 @@ class CameraManager:
     without another copy.
     """
 
-    def __init__(self, world, vehicle):
+    def __init__(
+        self,
+        world,
+        vehicle,
+        *,
+        rgb_image_width: Optional[int] = None,
+        rgb_image_height: Optional[int] = None,
+        rgb_sensor_tick: Optional[float] = None,
+    ):
         self.world = world
         self.vehicle = vehicle
+        self.rgb_image_width = rgb_image_width
+        self.rgb_image_height = rgb_image_height
+        self.rgb_sensor_tick = rgb_sensor_tick
 
         self.rgb_camera = None
         self.semantic_camera = None
@@ -71,10 +82,25 @@ class CameraManager:
         )
 
         rgb_bp = bp_lib.find("sensor.camera.rgb")
-        rgb_bp.set_attribute("image_size_x", str(conf.CAMERA_IMAGE_WIDTH))
-        rgb_bp.set_attribute("image_size_y", str(conf.CAMERA_IMAGE_HEIGHT))
+        rgb_width = (
+            conf.CAMERA_IMAGE_WIDTH
+            if self.rgb_image_width is None
+            else self.rgb_image_width
+        )
+        rgb_height = (
+            conf.CAMERA_IMAGE_HEIGHT
+            if self.rgb_image_height is None
+            else self.rgb_image_height
+        )
+        rgb_sensor_tick = (
+            conf.CAMERA_SENSOR_TICK
+            if self.rgb_sensor_tick is None
+            else self.rgb_sensor_tick
+        )
+        rgb_bp.set_attribute("image_size_x", str(rgb_width))
+        rgb_bp.set_attribute("image_size_y", str(rgb_height))
         rgb_bp.set_attribute("fov", str(conf.CAMERA_FOV))
-        rgb_bp.set_attribute("sensor_tick", str(conf.CAMERA_SENSOR_TICK))
+        rgb_bp.set_attribute("sensor_tick", str(rgb_sensor_tick))
 
         self.rgb_camera = self.world.spawn_actor(
             rgb_bp,

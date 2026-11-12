@@ -211,23 +211,29 @@ class VisionProcessor:
         )
         resized_width = max(1, int(round(frame_width * scale)))
         resized_height = max(1, int(round(frame_height * scale)))
-        resized = cv2.resize(
-            frame,
-            (resized_width, resized_height),
-            interpolation=cv2.INTER_LINEAR,
-        )
+        if (resized_width, resized_height) == (frame_width, frame_height):
+            resized = frame
+        else:
+            resized = cv2.resize(
+                frame,
+                (resized_width, resized_height),
+                interpolation=cv2.INTER_LINEAR,
+            )
 
         pad_width = self.input_width - resized_width
         pad_height = self.input_height - resized_height
         left = int(round(pad_width / 2.0 - 0.1))
         top = int(round(pad_height / 2.0 - 0.1))
-        letterboxed = np.full(
-            (self.input_height, self.input_width, 3), 114, dtype=np.uint8
-        )
-        letterboxed[
-            top : top + resized_height,
-            left : left + resized_width,
-        ] = resized
+        if pad_width == 0 and pad_height == 0:
+            letterboxed = resized
+        else:
+            letterboxed = np.full(
+                (self.input_height, self.input_width, 3), 114, dtype=np.uint8
+            )
+            letterboxed[
+                top : top + resized_height,
+                left : left + resized_width,
+            ] = resized
 
         image = cv2.cvtColor(letterboxed, cv2.COLOR_BGR2RGB)
         image = image.astype(np.float32) / 255.0
@@ -282,16 +288,18 @@ class VisionProcessor:
             (semantic_mask == self.drivable_class_id).astype(np.uint8) * 255
         )
         frame_height, frame_width = np.asarray(camera_frame).shape[:2]
-        lane_mask = cv2.resize(
-            lane_mask,
-            (frame_width, frame_height),
-            interpolation=cv2.INTER_NEAREST,
-        )
-        drivable_mask = cv2.resize(
-            drivable_mask,
-            (frame_width, frame_height),
-            interpolation=cv2.INTER_NEAREST,
-        )
+        if lane_mask.shape != (frame_height, frame_width):
+            lane_mask = cv2.resize(
+                lane_mask,
+                (frame_width, frame_height),
+                interpolation=cv2.INTER_NEAREST,
+            )
+        if drivable_mask.shape != (frame_height, frame_width):
+            drivable_mask = cv2.resize(
+                drivable_mask,
+                (frame_width, frame_height),
+                interpolation=cv2.INTER_NEAREST,
+            )
         return drivable_mask, lane_mask
 
     def _boundary_from_roi(self, full_mask, top, bottom, left, right):

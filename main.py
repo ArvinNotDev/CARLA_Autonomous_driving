@@ -111,6 +111,16 @@ class CarlaLaneDrivingApp:
         self._last_drivable_info: dict[str, Any] = {}
 
         self.settings = RuntimeSettings()
+        # Apply these in-memory runtime targets after the active user profile
+        # has loaded. They are intentionally kept out of RuntimeSettings.
+        self._runtime_performance_overrides = {
+            "CAMERA_IMAGE_WIDTH": 512,
+            "CAMERA_IMAGE_HEIGHT": 512,
+            "CAMERA_SENSOR_TICK": 0.025,
+            "CONTROL_LOOP_HZ": 40.0,
+            "VISION_INFERENCE_INTERVAL_SECONDS": 0.025,
+            "DEBUG_PANEL_HZ": 40.0,
+        }
         self.control_panel: Optional[ControlPanel] = None
 
         # These models are created before the inference worker, but after this
@@ -157,7 +167,12 @@ class CarlaLaneDrivingApp:
         frame_id = int(rgb_packet.frame_id)
 
         vision_interval = max(
-            0.03, float(cfg("VISION_INFERENCE_INTERVAL_SECONDS", 0.05))
+            0.0,
+            float(
+                self._runtime_performance_overrides[
+                    "VISION_INFERENCE_INTERVAL_SECONDS"
+                ]
+            ),
         )
         if frame_id != self._last_vision_frame_id and (
             now - self._last_vision_submit_at >= vision_interval
@@ -444,7 +459,19 @@ class CarlaLaneDrivingApp:
         if self.vehicle is None:
             raise RuntimeError("Failed to spawn vehicle.")
 
-        self.camera_manager = CameraManager(self.world, self.vehicle)
+        self.camera_manager = CameraManager(
+            self.world,
+            self.vehicle,
+            rgb_image_width=self._runtime_performance_overrides[
+                "CAMERA_IMAGE_WIDTH"
+            ],
+            rgb_image_height=self._runtime_performance_overrides[
+                "CAMERA_IMAGE_HEIGHT"
+            ],
+            rgb_sensor_tick=self._runtime_performance_overrides[
+                "CAMERA_SENSOR_TICK"
+            ],
+        )
         self.camera_manager.start()
 
         self.planner = RoutePlanner(self.world)
@@ -511,6 +538,12 @@ class CarlaLaneDrivingApp:
         self.control_panel.reset_requested.connect(self._request_car_reset)
         self.control_panel.stream_toggle_requested.connect(self._toggle_flask_stream)
         set_settings_callback(self._on_settings_changed)
+        # ControlPanel currently clamps its timer to 30 Hz. Set the requested
+        # runtime-only preview target after construction without changing the UI.
+        refresh_interval_ms = round(
+            1000.0 / self._runtime_performance_overrides["DEBUG_PANEL_HZ"]
+        )
+        self.control_panel._refresh_timer.setInterval(refresh_interval_ms)
         self.control_panel.show()
 
         # No sleep here: stream startup must not stall the Qt UI.
@@ -526,7 +559,9 @@ class CarlaLaneDrivingApp:
             stop_stream(conf.STREAM_HOST, conf.STREAM_PORT)
 
     def _control_loop(self) -> None:
-        configured_hz = float(cfg("CONTROL_LOOP_HZ", 30.0))
+        configured_hz = float(
+            self._runtime_performance_overrides["CONTROL_LOOP_HZ"]
+        )
         period = 1.0 / max(10.0, min(60.0, configured_hz))
         next_tick = time.perf_counter()
 
