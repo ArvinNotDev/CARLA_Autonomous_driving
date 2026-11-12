@@ -115,7 +115,7 @@ class CarlaLaneDrivingApp:
         # has loaded. They are intentionally kept out of RuntimeSettings.
         self._runtime_performance_overrides = {
             "CAMERA_IMAGE_WIDTH": 512,
-            "CAMERA_IMAGE_HEIGHT": 512,
+            "CAMERA_IMAGE_HEIGHT": 320,
             "CAMERA_SENSOR_TICK": 0.025,
             "CONTROL_LOOP_HZ": 40.0,
             "VISION_INFERENCE_INTERVAL_SECONDS": 0.025,
