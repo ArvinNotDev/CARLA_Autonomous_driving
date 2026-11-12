@@ -13,12 +13,14 @@ def inspect_lidar_obstacle_on_side(
     max_height_m: float,
     min_side_distance_m: float,
     max_side_distance_m: float,
-    min_forward_distance_m: float,
+    rear_extent_m: float,
     max_forward_distance_m: float,
     min_points: int,
 ) -> dict[str, Any]:
-    """Detect a sufficiently tall LiDAR return on the side implied by the mask error.
+    """Detect tall objects in a side-parallel corridor around the vehicle.
 
+    The corridor spans from rear_extent_m behind the vehicle to
+    max_forward_distance_m ahead, at the selected lateral side band.
     LiDAR points use vehicle-local CARLA coordinates: x forward, y right,
     and z as height above the estimated road surface.
     A positive DrivableAreaDebugger error means the visible drivable region is
@@ -50,14 +52,17 @@ def inspect_lidar_obstacle_on_side(
 
     min_side = max(0.0, float(min_side_distance_m))
     max_side = max(min_side, float(max_side_distance_m))
-    min_forward = float(min_forward_distance_m)
-    max_forward = max(min_forward, float(max_forward_distance_m))
+    # Check a corridor parallel to the vehicle flank. Include space behind
+    # the vehicle so an object is detected before the car reaches its position.
+    rear_extent = max(0.0, float(rear_extent_m))
+    min_longitudinal = -rear_extent
+    max_longitudinal = max(0.0, float(max_forward_distance_m))
     min_height = max(0.0, float(min_height_m))
     max_height = max(min_height, float(max_height_m))
 
     candidate_mask = (
-        (cloud[:, 0] >= min_forward)
-        & (cloud[:, 0] <= max_forward)
+        (cloud[:, 0] >= min_longitudinal)
+        & (cloud[:, 0] <= max_longitudinal)
         & (lateral >= min_side)
         & (lateral <= max_side)
         & (height >= min_height)
