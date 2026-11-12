@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import threading
+import time
 from typing import Optional
 
 import carla
@@ -21,6 +22,7 @@ class LidarManager:
         self._lock = threading.Lock()
         self._scan_chunks: list[np.ndarray] = []
         self._latest_complete_scan: Optional[np.ndarray] = None
+        self._latest_complete_received_at: Optional[float] = None
         self._scan_started_at: Optional[float] = None
         self._road_height_below_sensor_m = 2.0
         self._heading_deg = 0.0
@@ -115,6 +117,7 @@ class LidarManager:
                     np.concatenate((*self._scan_chunks, points), axis=0)
                 )
                 self._latest_complete_scan = complete_scan
+                self._latest_complete_received_at = time.monotonic()
                 self._scan_chunks = []
                 self._scan_started_at = timestamp
             else:
@@ -130,6 +133,11 @@ class LidarManager:
                 np.concatenate(self._scan_chunks, axis=0)
             )
             return partial, self._heading_deg, False
+
+    def complete_snapshot(self) -> tuple[Optional[np.ndarray], Optional[float]]:
+        """Return the latest full 360-degree scan and its monotonic receive time."""
+        with self._lock:
+            return self._latest_complete_scan, self._latest_complete_received_at
 
     def cleanup(self) -> None:
         sensor = self.sensor
@@ -147,4 +155,5 @@ class LidarManager:
         with self._lock:
             self._scan_chunks.clear()
             self._latest_complete_scan = None
+            self._latest_complete_received_at = None
             self._scan_started_at = None
