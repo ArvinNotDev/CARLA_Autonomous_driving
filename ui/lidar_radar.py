@@ -26,7 +26,7 @@ class LidarRadarWidget(QWidget):
         self._points: np.ndarray | None = None
         self._heading_deg = 0.0
         self._complete = False
-        self.setMinimumSize(420, 360)
+        self.setMinimumSize(320, 320)
 
     def refresh_scan(self) -> None:
         if self.lidar_manager is None:
@@ -64,10 +64,7 @@ class LidarRadarWidget(QWidget):
                 QImage.Format.Format_RGB888,
             ).copy()
 
-        max_range = min(
-            float(conf.LIDAR_MAX_RANGE_M),
-            max(1.0, float(conf.LIDAR_RANGE_M)),
-        )
+        max_range = self._display_range()
         px = (diameter / 2.0 + points[:, 1] * radius / max_range).astype(np.int32)
         py = (diameter / 2.0 - points[:, 0] * radius / max_range).astype(np.int32)
         inside = (
@@ -95,10 +92,7 @@ class LidarRadarWidget(QWidget):
 
         width = self.width()
         height = self.height()
-        max_range = min(
-            float(conf.LIDAR_MAX_RANGE_M),
-            max(1.0, float(conf.LIDAR_RANGE_M)),
-        )
+        max_range = self._display_range()
         diameter = max(80, int(min(width - 160, height - 70)))
         diameter = min(diameter, int(height - 48))
         radius = diameter / 2.0
@@ -136,8 +130,18 @@ class LidarRadarWidget(QWidget):
         painter.end()
 
     @staticmethod
+    def _display_range() -> float:
+        sensor_range = min(
+            float(conf.LIDAR_MAX_RANGE_M), max(1.0, float(conf.LIDAR_RANGE_M))
+        )
+        return min(
+            sensor_range,
+            max(1.0, float(getattr(conf, "LIDAR_DISPLAY_RANGE_M", sensor_range))),
+        )
+
+    @staticmethod
     def _ring_distances(max_range: float) -> list[float]:
-        step = 25.0 if max_range <= 125.0 else 50.0
+        step = 10.0 if max_range <= 60.0 else 25.0 if max_range <= 125.0 else 50.0
         distances = []
         distance = step
         while distance < max_range:

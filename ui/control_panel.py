@@ -203,7 +203,10 @@ class ControlPanel(QMainWindow):
         self.debug_frame.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.debug_frame.setMinimumHeight(360)
         self.debug_frame.setStyleSheet("background:#101418; color:#cdd6f4;")
-        root_layout.addWidget(self.debug_frame)
+        live_view_row = QHBoxLayout()
+        live_view_row.addWidget(self.debug_frame, 2)
+        live_view_row.addWidget(self.lidar_radar, 1)
+        root_layout.addLayout(live_view_row, 1)
 
         self.metrics_label = QLabel("display FPS: 0.0 | control FPS: 0.0 | trajectory FPS: 0.0 | vision FPS: 0.0")
         self.metrics_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -275,8 +278,6 @@ class ControlPanel(QMainWindow):
             if title == "Hardware (reset)":
                 form.addRow("ONNX model input", QLabel("512 × 512 (fixed by model)"))
             self.tabs.addTab(self._scroll(page), title)
-
-        self.tabs.addTab(self.lidar_radar, "LiDAR 360°")
 
         self.movement_editor = JunctionSequenceEditor(
             getattr(conf, "JUNCTION_MOVEMENT_SEQUENCES", {})
