@@ -258,7 +258,7 @@ class ControlPanel(QMainWindow):
                 "CAMERA_X", "CAMERA_Y", "CAMERA_Z", "CAMERA_FOV",
             },
             "Hardware (reset)": {
-                "CAMERA_IMAGE_WIDTH", "CAMERA_IMAGE_HEIGHT", "INPUT_WIDTH", "INPUT_HEIGHT", "MODEL_PATH",
+                "CAMERA_IMAGE_WIDTH", "CAMERA_IMAGE_HEIGHT", "CAMERA_SENSOR_TICK", "MODEL_PATH",
                 "ENABLE_SEMANTIC_CAMERA", "ENABLE_ALT_CAMERA",
             },
         }
@@ -269,6 +269,8 @@ class ControlPanel(QMainWindow):
             for spec in SETTING_SPECS:
                 if spec[0] in keys and spec[2] != "sequence":
                     self._add_setting(form, spec)
+            if title == "Hardware (reset)":
+                form.addRow("ONNX model input", QLabel("512 × 512 (fixed by model)"))
             self.tabs.addTab(self._scroll(page), title)
 
         self.movement_editor = JunctionSequenceEditor(
@@ -308,8 +310,8 @@ class ControlPanel(QMainWindow):
         return " / ".join(urls)
 
     def _set_refresh_rate(self, refresh_hz: float) -> None:
-        hz = max(5.0, min(30.0, float(refresh_hz)))
-        self._refresh_timer.setInterval(max(20, int(round(1000.0 / hz))))
+        hz = max(5.0, min(60.0, float(refresh_hz)))
+        self._refresh_timer.setInterval(max(16, int(round(1000.0 / hz))))
 
     def set_frame_store(self, store: DebugFrameStore) -> None:
         self.frame_store = store
