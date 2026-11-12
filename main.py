@@ -25,6 +25,8 @@ from ui.renderer import Renderer
 from ui.spawn_goal_picker import SpawnGoalPicker
 from utils.vehicle_utils import blank_frame, make_stop_control
 from vision.city_vision_processing import VisionProcessor
+from vision.drivable_area_debugger import DrivableAreaDebugger
+from sensors.lidar_obstacle_filter import inspect_lidar_obstacle_on_side
 from trajectory.steering_agent import TrajectorySteeringAgent
 from trajectory.visualize import draw_waypoints
 from trajectory.worker import InferenceWorker
@@ -59,6 +61,7 @@ class CarlaLaneDrivingApp:
         self.controller: Optional[FixedSpeedPIDController] = None
         self.input_manager: Optional[InputManager] = None
         self.renderer = Renderer()
+        self.drivable_debugger = DrivableAreaDebugger()
 
         self.auto_driver: Optional[AutoDriver] = None
         self.lane_change_manager: Optional[LaneChangeManager] = None
@@ -105,6 +108,10 @@ class CarlaLaneDrivingApp:
         self.frame_store = DebugFrameStore()
 
         self._startup_drive_until = 0.0
+        self._out_checker = False
+        self._out_checker_started_at: Optional[float] = None
+        self._last_drivable_info: dict[str, Any] = {}
+        self._last_recovery_lidar_info: dict[str, Any] = {}
 
         self.settings = RuntimeSettings()
         self.control_panel: Optional[ControlPanel] = None
@@ -241,6 +248,99 @@ class CarlaLaneDrivingApp:
 
         return trajectory, self._vision_result
 
+    def _force_left_correction(self) -> None:
+        control = carla.VehicleControl(
+            throttle=float(cfg("DRIVABLE_RECOVERY_THROTTLE", cfg("FIXED_THROTTLE", 0.3))),
+            steer=-abs(float(cfg("DRIVABLE_RECOVERY_STEER", cfg("STEER_LIMIT", 0.35)))),
+            brake=0.0,
+            hand_brake=False,
+            reverse=False,
+            manual_gear_shift=False,
+        )
+        self._safe_vehicle_apply_control(control)
+
+    @staticmethod
+    def _extract_drivable_error(drive_info: Any) -> float:
+        if isinstance(drive_info, dict):
+            try:
+                return float(drive_info.get("error", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                pass
+        return 0.0
+
+    def _inspect_recovery_side_for_obstacle(self, error: float) -> dict[str, Any]:
+        if not bool(cfg("DRIVABLE_RECOVERY_LIDAR_GATE_ENABLED", True)):
+            return {"blocked": False, "reason": "lidar_gate_disabled"}
+
+        if self.lidar_manager is None:
+            return {"blocked": False, "reason": "lidar_unavailable"}
+
+        try:
+            points, received_at = self.lidar_manager.complete_snapshot()
+        except Exception:
+            return {"blocked": False, "reason": "lidar_snapshot_error"}
+
+        if points is None or received_at is None:
+            return {"blocked": False, "reason": "waiting_for_complete_scan"}
+
+        scan_age = max(0.0, time.monotonic() - float(received_at))
+        if scan_age > float(cfg("DRIVABLE_RECOVERY_LIDAR_MAX_SCAN_AGE_SECONDS", 0.35)):
+            return {
+                "blocked": False,
+                "reason": "stale_lidar_scan",
+                "scan_age_s": scan_age,
+            }
+
+        evidence = inspect_lidar_obstacle_on_side(
+            points,
+            error,
+            min_height_m=float(cfg("DRIVABLE_RECOVERY_LIDAR_MIN_HEIGHT_M", 0.85)),
+            max_height_m=float(cfg("DRIVABLE_RECOVERY_LIDAR_MAX_HEIGHT_M", 8.0)),
+            min_side_distance_m=float(cfg("DRIVABLE_RECOVERY_LIDAR_MIN_SIDE_DISTANCE_M", 1.25)),
+            max_side_distance_m=float(cfg("DRIVABLE_RECOVERY_LIDAR_MAX_SIDE_DISTANCE_M", 8.0)),
+            min_forward_distance_m=float(cfg("DRIVABLE_RECOVERY_LIDAR_MIN_FORWARD_DISTANCE_M", 0.0)),
+            max_forward_distance_m=float(cfg("DRIVABLE_RECOVERY_LIDAR_MAX_FORWARD_DISTANCE_M", 25.0)),
+            min_points=int(cfg("DRIVABLE_RECOVERY_LIDAR_MIN_POINTS", 8)),
+        )
+        evidence["scan_age_s"] = scan_age
+        return evidence
+
+    def _update_out_checker_logic(self, candidate_out_checker: bool, drive_info: Any) -> None:
+        """Keep main's recovery window and correction rule, gated by side LiDAR evidence."""
+        if not bool(cfg("DRIVABLE_RECOVERY_ENABLED", True)):
+            self._out_checker = False
+            self._out_checker_started_at = None
+            self._last_recovery_lidar_info = {"blocked": False, "reason": "recovery_disabled"}
+            return
+
+        error = self._extract_drivable_error(drive_info)
+        now = time.monotonic()
+        if self._out_checker_started_at is None:
+            if candidate_out_checker:
+                self._out_checker_started_at = now
+                self._out_checker = True
+            else:
+                self._out_checker = False
+            return
+
+        self._out_checker = True
+        if error > float(cfg("DRIVABLE_RECOVERY_ERROR_THRESHOLD", 20.0)):
+            lidar_info = self._inspect_recovery_side_for_obstacle(error)
+            self._last_recovery_lidar_info = lidar_info
+            if not bool(lidar_info.get("blocked", False)):
+                self._force_left_correction()
+        else:
+            self._last_recovery_lidar_info = {
+                "blocked": False,
+                "reason": "error_below_threshold",
+            }
+
+        if now - self._out_checker_started_at >= float(
+            cfg("DRIVABLE_RECOVERY_WINDOW_SECONDS", 10.0)
+        ):
+            self._out_checker = False
+            self._out_checker_started_at = None
+
     def _trajectory_for_control(self, current_command: str):
         if self.inference_worker is None:
             return None
@@ -294,6 +394,19 @@ class CarlaLaneDrivingApp:
                 lines.append(f"GPS: {loc.x:.1f}, {loc.y:.1f}, {loc.z:.1f}")
             except Exception:
                 pass
+
+        drive_info = self._last_drivable_info
+        if drive_info.get("error") is not None:
+            lines.append(f"Drivable recovery error: {float(drive_info['error']):.1f}px")
+        lidar_info = self._last_recovery_lidar_info
+        if lidar_info:
+            if lidar_info.get("blocked"):
+                lines.append(
+                    f"Recovery suppressed: LiDAR object on {lidar_info.get('side', 'side')} "
+                    f"({lidar_info.get('point_count', 0)} points)"
+                )
+            else:
+                lines.append(f"Recovery LiDAR: {lidar_info.get('reason', 'idle')}")
 
         if self.intersection_manager is not None:
             phase = self.intersection_manager.phase_name()
@@ -544,6 +657,14 @@ class CarlaLaneDrivingApp:
         self._submit_inference(rgb_packet, semantic_packet, now)
         _, vision_result = self._accept_inference_results()
         try:
+            drive_info = self.drivable_debugger.show(vision_result)
+        except Exception:
+            drive_info = {}
+        self._last_drivable_info = drive_info if isinstance(drive_info, dict) else {}
+        if isinstance(vision_result, dict):
+            vision_result.setdefault("debug", {})["drivable_info"] = self._last_drivable_info
+
+        try:
             self.current_location = self.vehicle.get_location()
         except Exception:
             self.current_location = None
@@ -610,6 +731,7 @@ class CarlaLaneDrivingApp:
             if self.intersection_manager is not None
             else "IDLE"
         )
+        candidate_out_checker = False
         if auto_mode:
             # Static junction lead-in always owns the control command.
             static_control = (
@@ -643,11 +765,12 @@ class CarlaLaneDrivingApp:
                         reverse=False,
                         manual_gear_shift=False,
                     )
+                    candidate_out_checker = vision_result is not None
                 else:
                     # The last valid trajectory remains visible, but while a new
                     # command has no matching result, use the stable lane controller
                     # rather than mixing commands from different requests.
-                    _, screen, control = self.auto_driver.update(
+                    candidate_out_checker, screen, control = self.auto_driver.update(
                         rgb_packet.bgr,
                         vision_result,
                         self.current_location,
@@ -659,7 +782,7 @@ class CarlaLaneDrivingApp:
                     self.intersection_sequence = False
                     self.next_maneuver = None
                     self.trajectory_takeover_until = 0.0
-                _, screen, control = self.auto_driver.update(
+                candidate_out_checker, screen, control = self.auto_driver.update(
                     rgb_packet.bgr,
                     vision_result,
                     self.current_location,
@@ -672,6 +795,12 @@ class CarlaLaneDrivingApp:
             control = manual_control or make_stop_control()
 
         self._safe_vehicle_apply_control(control)
+        if auto_mode and static_control is None:
+            self._update_out_checker_logic(
+                candidate_out_checker=candidate_out_checker,
+                drive_info=self._last_drivable_info,
+            )
+
         if (
             cfg("DEBUG_SHOW_TRAJECTORY", True)
             and self.inference_worker is not None
