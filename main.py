@@ -298,7 +298,7 @@ class CarlaLaneDrivingApp:
             max_height_m=float(cfg("DRIVABLE_RECOVERY_LIDAR_MAX_HEIGHT_M", 8.0)),
             min_side_distance_m=float(cfg("DRIVABLE_RECOVERY_LIDAR_MIN_SIDE_DISTANCE_M", 1.25)),
             max_side_distance_m=float(cfg("DRIVABLE_RECOVERY_LIDAR_MAX_SIDE_DISTANCE_M", 8.0)),
-            min_forward_distance_m=float(cfg("DRIVABLE_RECOVERY_LIDAR_MIN_FORWARD_DISTANCE_M", 0.0)),
+            rear_extent_m=float(cfg("DRIVABLE_RECOVERY_LIDAR_REAR_EXTENT_M", 12.0)),
             max_forward_distance_m=float(cfg("DRIVABLE_RECOVERY_LIDAR_MAX_FORWARD_DISTANCE_M", 25.0)),
             min_points=int(cfg("DRIVABLE_RECOVERY_LIDAR_MIN_POINTS", 8)),
         )
