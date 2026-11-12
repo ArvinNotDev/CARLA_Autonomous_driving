@@ -21,7 +21,8 @@ class LidarManager:
 
         self._lock = threading.Lock()
         self._scan_chunks: list[np.ndarray] = []
-        self._latest_complete_scan: Optional[np.ndarray] = None
+        self._latest_complete_scan: Optional[np.ndarray] = None  # downsampled GUI scan
+        self._latest_complete_scan_raw: Optional[np.ndarray] = None  # full-resolution control scan
         self._latest_complete_received_at: Optional[float] = None
         self._scan_started_at: Optional[float] = None
         self._road_height_below_sensor_m = 2.0
@@ -113,10 +114,13 @@ class LidarManager:
             self._heading_deg = heading_deg
 
             if completed_revolution and self._scan_chunks:
-                complete_scan = self._sample_for_display(
-                    np.concatenate((*self._scan_chunks, points), axis=0)
+                raw_complete_scan = np.ascontiguousarray(
+                    np.concatenate((*self._scan_chunks, points), axis=0),
+                    dtype=np.float32,
                 )
-                self._latest_complete_scan = complete_scan
+                raw_complete_scan.setflags(write=False)
+                self._latest_complete_scan_raw = raw_complete_scan
+                self._latest_complete_scan = self._sample_for_display(raw_complete_scan)
                 self._latest_complete_received_at = time.monotonic()
                 self._scan_chunks = []
                 self._scan_started_at = timestamp
@@ -135,9 +139,13 @@ class LidarManager:
             return partial, self._heading_deg, False
 
     def complete_snapshot(self) -> tuple[Optional[np.ndarray], Optional[float]]:
-        """Return the latest full 360-degree scan and its monotonic receive time."""
+        """Return the full-resolution 360-degree scan and its monotonic receive time.
+
+        The GUI consumes a separately downsampled copy through snapshot(); recovery
+        uses the complete scan so small objects are not lost during display sampling.
+        """
         with self._lock:
-            return self._latest_complete_scan, self._latest_complete_received_at
+            return self._latest_complete_scan_raw, self._latest_complete_received_at
 
     def cleanup(self) -> None:
         sensor = self.sensor
@@ -155,5 +163,6 @@ class LidarManager:
         with self._lock:
             self._scan_chunks.clear()
             self._latest_complete_scan = None
+            self._latest_complete_scan_raw = None
             self._latest_complete_received_at = None
             self._scan_started_at = None
