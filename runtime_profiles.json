@@ -3,26 +3,26 @@
     "AUTO_MODE_DEFAULT": true,
     "FIXED_THROTTLE": 0.15,
     "KP": 0.015,
-    "KI": 0,
+    "KI": 0.0,
     "KD": 0.002,
     "STEER_LIMIT": 0.75,
     "MAX_STEER_STEP": 0.1,
-    "TARGET_SPEED_KMH": 10,
-    "CONTROL_LOOP_HZ": 40,
+    "TARGET_SPEED_KMH": 10.0,
+    "CONTROL_LOOP_HZ": 40.0,
     "TRAJECTORY_INFERENCE_INTERVAL_SECONDS": 0.25,
-    "TRAJECTORY_STEER_GAIN": 1,
+    "TRAJECTORY_STEER_GAIN": 1.0,
     "TRAJECTORY_MAX_STEER": 0.5,
     "TRAJECTORY_DEBUG_SCALE": 6.3,
     "JUNCTION_STATIC_THROTTLE": 0.2,
-    "JUNCTION_STATIC_TIMEOUT_SECONDS": 20,
-    "JUNCTION_ENTRY_DISTANCE_M": 6,
-    "JUNCTION_TRAJECTORY_WINDOW_SECONDS": 2,
+    "JUNCTION_STATIC_TIMEOUT_SECONDS": 20.0,
+    "JUNCTION_ENTRY_DISTANCE_M": 6.0,
+    "JUNCTION_TRAJECTORY_WINDOW_SECONDS": 2.0,
     "VISION_INFERENCE_INTERVAL_SECONDS": 0.025,
-    "INTERSECTION_CHECK_INTERVAL_SECONDS": 0.3,
-    "LANE_CHANGE_DEBOUNCE_SECONDS": 2,
-    "LANE_CHANGE_LINE_ANGLE_THRESHOLD_DEG": 35,
+    "INTERSECTION_CHECK_INTERVAL_SECONDS": 0.15,
+    "LANE_CHANGE_DEBOUNCE_SECONDS": 2.0,
+    "LANE_CHANGE_LINE_ANGLE_THRESHOLD_DEG": 35.0,
     "LANE_CHANGE_PLANNER_CHECK_INTERVAL_SECONDS": 0.5,
-    "CROSSWALK_SLEEP": 3,
+    "CROSSWALK_SLEEP": 3.0,
     "LANE_THRESHOLD": 180,
     "CROSSWALK_THRESHOLD": 180,
     "LANE_PROB_THRESHOLD": 0.5,
@@ -48,11 +48,25 @@
     "DEBUG_SHOW_FPS": false,
     "DEBUG_SHOW_GPS": false,
     "DEBUG_SHOW_TEXT": true,
-    "DEBUG_PANEL_HZ": 40,
+    "DEBUG_PANEL_HZ": 40.0,
+    "DRIVABLE_RECOVERY_ENABLED": true,
+    "DRIVABLE_RECOVERY_ERROR_THRESHOLD": 14.0,
+    "DRIVABLE_RECOVERY_WINDOW_SECONDS": 10.0,
+    "DRIVABLE_RECOVERY_STEER": 0.35,
+    "DRIVABLE_RECOVERY_THROTTLE": 0.3,
+    "DRIVABLE_RECOVERY_LIDAR_GATE_ENABLED": true,
+    "DRIVABLE_RECOVERY_LIDAR_MIN_HEIGHT_M": 0.85,
+    "DRIVABLE_RECOVERY_LIDAR_MAX_HEIGHT_M": 8.0,
+    "DRIVABLE_RECOVERY_LIDAR_MIN_SIDE_DISTANCE_M": 0.0,
+    "DRIVABLE_RECOVERY_LIDAR_MAX_SIDE_DISTANCE_M": 3.5,
+    "DRIVABLE_RECOVERY_LIDAR_REAR_EXTENT_M": 3.5,
+    "DRIVABLE_RECOVERY_LIDAR_MAX_FORWARD_DISTANCE_M": 8.0,
+    "DRIVABLE_RECOVERY_LIDAR_MIN_POINTS": 15,
+    "DRIVABLE_RECOVERY_LIDAR_MAX_SCAN_AGE_SECONDS": 0.35,
     "CAMERA_X": 1.7,
-    "CAMERA_Y": 0,
+    "CAMERA_Y": 0.0,
     "CAMERA_Z": 2.1,
-    "CAMERA_FOV": 120,
+    "CAMERA_FOV": 120.0,
     "CAMERA_IMAGE_WIDTH": 512,
     "CAMERA_IMAGE_HEIGHT": 320,
     "CAMERA_SENSOR_TICK": 0.025,
@@ -62,11 +76,11 @@
     "JUNCTION_MOVEMENT_SEQUENCES": {
       "LEFT": [
         {
-          "distance_m": 22,
-          "steering_value": 0
+          "distance_m": 22.0,
+          "steering_value": 0.0
         },
         {
-          "distance_m": 5,
+          "distance_m": 5.0,
           "steering_value": -0.4
         },
         {
@@ -75,32 +89,32 @@
         },
         {
           "distance_m": 2.5,
-          "steering_value": 0
+          "steering_value": 0.0
         }
       ],
       "RIGHT": [
         {
           "distance_m": 9.5,
-          "steering_value": 0
+          "steering_value": 0.0
         },
         {
-          "distance_m": 8,
+          "distance_m": 8.0,
           "steering_value": 0.25
         },
         {
-          "distance_m": 3,
+          "distance_m": 3.0,
           "steering_value": 0.7000000000000001
         }
       ],
       "STRAIGHT": [
         {
-          "distance_m": 6,
-          "steering_value": 0
+          "distance_m": 6.0,
+          "steering_value": 0.0
         }
       ]
     }
   },
-  "_active_profile": "test",
+  "_active_profile": "StableV2",
   "stableV1": {
     "AUTO_MODE_DEFAULT": true,
     "FIXED_THROTTLE": 0.13,
@@ -315,6 +329,121 @@
         {
           "distance_m": 6,
           "steering_value": 0
+        }
+      ]
+    }
+  },
+  "StableV2": {
+    "AUTO_MODE_DEFAULT": true,
+    "FIXED_THROTTLE": 0.15,
+    "KP": 0.015,
+    "KI": 0.0,
+    "KD": 0.002,
+    "STEER_LIMIT": 0.75,
+    "MAX_STEER_STEP": 0.1,
+    "TARGET_SPEED_KMH": 10.0,
+    "CONTROL_LOOP_HZ": 40.0,
+    "TRAJECTORY_INFERENCE_INTERVAL_SECONDS": 0.25,
+    "TRAJECTORY_STEER_GAIN": 1.0,
+    "TRAJECTORY_MAX_STEER": 0.5,
+    "TRAJECTORY_DEBUG_SCALE": 6.3,
+    "JUNCTION_STATIC_THROTTLE": 0.2,
+    "JUNCTION_STATIC_TIMEOUT_SECONDS": 20.0,
+    "JUNCTION_ENTRY_DISTANCE_M": 6.0,
+    "JUNCTION_TRAJECTORY_WINDOW_SECONDS": 2.0,
+    "VISION_INFERENCE_INTERVAL_SECONDS": 0.025,
+    "INTERSECTION_CHECK_INTERVAL_SECONDS": 0.15,
+    "LANE_CHANGE_DEBOUNCE_SECONDS": 2.0,
+    "LANE_CHANGE_LINE_ANGLE_THRESHOLD_DEG": 35.0,
+    "LANE_CHANGE_PLANNER_CHECK_INTERVAL_SECONDS": 0.5,
+    "CROSSWALK_SLEEP": 3.0,
+    "LANE_THRESHOLD": 180,
+    "CROSSWALK_THRESHOLD": 180,
+    "LANE_PROB_THRESHOLD": 0.5,
+    "LANE_CENTER_SMOOTH_ALPHA": 0.3,
+    "DRIVABLE_PROB_THRESHOLD": 0.5,
+    "RL_TOP_ROI": 0.57,
+    "RL_BOTTOM_ROI": 0.69,
+    "RL_LEFT_ROI": 0.56,
+    "RL_RIGHT_ROI": 0.78,
+    "LL_TOP_ROI": 0.57,
+    "LL_BOTTOM_ROI": 0.69,
+    "LL_LEFT_ROI": 0.24,
+    "LL_RIGHT_ROI": 0.45,
+    "CW_TOP_ROI": 0.48,
+    "CW_BOTTOM_ROI": 0.77,
+    "CW_LEFT_ROI": 0.09,
+    "CW_RIGHT_ROI": 0.86,
+    "VISION_DEBUG": true,
+    "DEBUG_SHOW_ROIS": true,
+    "DEBUG_SHOW_LANE_MASK": true,
+    "DEBUG_SHOW_DRIVABLE_AREA": true,
+    "DEBUG_SHOW_TRAJECTORY": true,
+    "DEBUG_SHOW_FPS": false,
+    "DEBUG_SHOW_GPS": false,
+    "DEBUG_SHOW_TEXT": true,
+    "DEBUG_PANEL_HZ": 40.0,
+    "DRIVABLE_RECOVERY_ENABLED": true,
+    "DRIVABLE_RECOVERY_ERROR_THRESHOLD": 14.0,
+    "DRIVABLE_RECOVERY_WINDOW_SECONDS": 10.0,
+    "DRIVABLE_RECOVERY_STEER": 0.35,
+    "DRIVABLE_RECOVERY_THROTTLE": 0.3,
+    "DRIVABLE_RECOVERY_LIDAR_GATE_ENABLED": true,
+    "DRIVABLE_RECOVERY_LIDAR_MIN_HEIGHT_M": 0.85,
+    "DRIVABLE_RECOVERY_LIDAR_MAX_HEIGHT_M": 8.0,
+    "DRIVABLE_RECOVERY_LIDAR_MIN_SIDE_DISTANCE_M": 0.0,
+    "DRIVABLE_RECOVERY_LIDAR_MAX_SIDE_DISTANCE_M": 3.5,
+    "DRIVABLE_RECOVERY_LIDAR_REAR_EXTENT_M": 3.5,
+    "DRIVABLE_RECOVERY_LIDAR_MAX_FORWARD_DISTANCE_M": 8.0,
+    "DRIVABLE_RECOVERY_LIDAR_MIN_POINTS": 15,
+    "DRIVABLE_RECOVERY_LIDAR_MAX_SCAN_AGE_SECONDS": 0.35,
+    "CAMERA_X": 1.7,
+    "CAMERA_Y": 0.0,
+    "CAMERA_Z": 2.1,
+    "CAMERA_FOV": 120.0,
+    "CAMERA_IMAGE_WIDTH": 512,
+    "CAMERA_IMAGE_HEIGHT": 320,
+    "CAMERA_SENSOR_TICK": 0.025,
+    "ENABLE_SEMANTIC_CAMERA": true,
+    "ENABLE_ALT_CAMERA": true,
+    "MODEL_PATH": "models_and_datasets/lane_and_drivable-area_model.onnx",
+    "JUNCTION_MOVEMENT_SEQUENCES": {
+      "LEFT": [
+        {
+          "distance_m": 22.0,
+          "steering_value": 0.0
+        },
+        {
+          "distance_m": 5.0,
+          "steering_value": -0.4
+        },
+        {
+          "distance_m": 3.5,
+          "steering_value": -0.5
+        },
+        {
+          "distance_m": 2.5,
+          "steering_value": 0.0
+        }
+      ],
+      "RIGHT": [
+        {
+          "distance_m": 9.5,
+          "steering_value": 0.0
+        },
+        {
+          "distance_m": 8.0,
+          "steering_value": 0.25
+        },
+        {
+          "distance_m": 3.0,
+          "steering_value": 0.7000000000000001
+        }
+      ],
+      "STRAIGHT": [
+        {
+          "distance_m": 6.0,
+          "steering_value": 0.0
         }
       ]
     }
