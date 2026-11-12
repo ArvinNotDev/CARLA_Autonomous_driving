@@ -76,7 +76,7 @@ SETTING_SPECS = [
     ("DEBUG_PANEL_HZ", "Debug panel refresh (Hz)", "float", (5.0, 30.0, 1.0), True),
     ("ENABLE_SEMANTIC_CAMERA", "Enable semantic camera", "bool", None, False),
     ("ENABLE_ALT_CAMERA", "Enable alternate camera", "bool", None, False),
-    ("MODEL_PATH", "ONNX model path", "str", None, False),
+    ("MODEL_PATH", "YOLO26s-sem ONNX Model Path", "str", None, False),
 ]
 
 

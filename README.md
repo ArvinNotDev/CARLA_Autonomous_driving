@@ -9,7 +9,7 @@ An experimental autonomous-driving stack for [CARLA](https://carla.org/) with la
 
 ## What it does
 
-- Lane following from YOLOPv2 ONNX perception and optional semantic segmentation.
+- Lane following from YOLO26s-sem ONNX perception and optional semantic segmentation.
 - Learned waypoint/trajectory steering for junctions, preceded by a short configurable static meter-based lead-in.
 - Route planning, junction classification, lane-change protection, spawn/goal selection, and manual WASD control.
 - A PySide6 runtime panel for live tuning of throttle, PID gains, target speed, trajectory parameters, ROIs, model thresholds, and debug overlays.
@@ -47,7 +47,7 @@ Install Python dependencies:
 python -m pip install -r requirements.txt
 ```
 
-The runtime expects the YOLOPv2 ONNX model and trajectory/junction checkpoints under `models_and_datasets/models/`.
+The runtime expects `models_and_datasets/lane_and_drivable-area_model.onnx` and trajectory/junction checkpoints under `models_and_datasets/models/`.
 
 ## Run
 

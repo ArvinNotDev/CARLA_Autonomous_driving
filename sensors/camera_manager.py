@@ -83,7 +83,7 @@ class CameraManager:
         )
         self.rgb_camera.listen(self._rgb_callback)
 
-        # The current vision pipeline is YOLOPv2/ONNX and does not consume
+        # The current YOLO26s-sem ONNX vision pipeline does not consume
         # semantic frames. Keep the sensor optional for legacy segmentation mode.
         use_semantic = bool(
             getattr(conf, "ENABLE_SEMANTIC_CAMERA", False)

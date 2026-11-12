@@ -64,7 +64,7 @@
     "CAMERA_IMAGE_HEIGHT": 160,
     "ENABLE_SEMANTIC_CAMERA": true,
     "ENABLE_ALT_CAMERA": true,
-    "MODEL_PATH": "G:\\MyDesktop\\game_auto_driver\\carla\\new_v2\\CARLA_Autonomous_driving\\yolopv2.onnx",
+    "MODEL_PATH": "models_and_datasets/lane_and_drivable-area_model.onnx",
     "JUNCTION_MOVEMENT_SEQUENCES": {
       "LEFT": [
         {
@@ -172,7 +172,7 @@
     "CAMERA_IMAGE_HEIGHT": 160,
     "ENABLE_SEMANTIC_CAMERA": true,
     "ENABLE_ALT_CAMERA": true,
-    "MODEL_PATH": "G:\\MyDesktop\\game_auto_driver\\carla\\new_v2\\CARLA_Autonomous_driving\\yolopv2.onnx",
+    "MODEL_PATH": "models_and_datasets/lane_and_drivable-area_model.onnx",
     "JUNCTION_MOVEMENT_SEQUENCES": {
       "LEFT": [
         {

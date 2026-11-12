@@ -99,10 +99,9 @@ MAX_STEER_STEP = 0.10
 # -------------------------------------------------
 # Vision model
 # -------------------------------------------------
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "yolopv2.onnx")
+MODEL_PATH = "models_and_datasets/lane_and_drivable-area_model.onnx"
 INPUT_WIDTH = 320
 INPUT_HEIGHT = 192
-DRIVABLE_OUTPUT_INDEX = 4
 DRIVABLE_PROB_THRESHOLD = 0.50
 
 LANE_PROB_THRESHOLD = 0.50

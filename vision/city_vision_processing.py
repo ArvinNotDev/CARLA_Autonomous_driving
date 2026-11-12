@@ -1,11 +1,11 @@
-import os
+import ast
+from pathlib import Path
 
 import cv2
 import numpy as np
 import onnxruntime as ort
 
 import config_city as conf
-from utils import utils_onnx
 from vision.color_extractor import HSVColorThresholdExtractor
 
 
@@ -34,12 +34,22 @@ class VisionProcessor:
 
         self.session = None
         self.input_name = None
-        self.input_width = getattr(conf, "INPUT_WIDTH", 416)
-        self.input_height = getattr(conf, "INPUT_HEIGHT", 416)
+        self.output_name = None
+        self.input_width = None
+        self.input_height = None
+        self.output_width = None
+        self.output_height = None
+        self.lane_class_id = None
+        self.drivable_class_id = None
+        self.class_names = {}
 
         if self.mode == "onnx":
-            model_path = conf.MODEL_PATH
-            if not os.path.exists(model_path):
+            project_root = Path(__file__).resolve().parents[1]
+            model_path = Path(str(conf.MODEL_PATH)).expanduser()
+            if not model_path.is_absolute():
+                model_path = project_root / model_path
+            model_path = model_path.resolve()
+            if not model_path.exists():
                 raise FileNotFoundError(f"ONNX model not found: {model_path}")
 
             opts = ort.SessionOptions()
@@ -48,12 +58,241 @@ class VisionProcessor:
             opts.inter_op_num_threads = 1
 
             self.session = ort.InferenceSession(
-                model_path,
+                str(model_path),
                 sess_options=opts,
                 providers=['CUDAExecutionProvider', 'CPUExecutionProvider'],
             )
-            print(self.session.get_providers())
-            self.input_name = self.session.get_inputs()[0].name
+            print(f"ONNX Runtime providers: {self.session.get_providers()}")
+            self._configure_onnx_model()
+
+    @staticmethod
+    def _static_dimension(value, tensor_name, axis):
+        if not isinstance(value, int) or value <= 0:
+            raise RuntimeError(
+                f"ONNX tensor '{tensor_name}' must have a positive static "
+                f"dimension at axis {axis}; got {value!r}"
+            )
+        return value
+
+    def _configure_onnx_model(self):
+        inputs = self.session.get_inputs()
+        if len(inputs) != 1:
+            raise RuntimeError(
+                f"YOLO26s-sem ONNX expects one input tensor; found {len(inputs)}"
+            )
+
+        model_input = inputs[0]
+        if model_input.type != "tensor(float)":
+            raise RuntimeError(
+                f"Unsupported ONNX input type {model_input.type!r}; "
+                "expected tensor(float)"
+            )
+        if len(model_input.shape) != 4:
+            raise RuntimeError(
+                f"Unsupported ONNX input shape {model_input.shape!r}; "
+                "expected NCHW [1, 3, height, width]"
+            )
+
+        batch, channels, height, width = (
+            self._static_dimension(value, model_input.name, axis)
+            for axis, value in enumerate(model_input.shape)
+        )
+        if batch != 1 or channels != 3:
+            raise RuntimeError(
+                f"Unsupported ONNX input shape {model_input.shape!r}; "
+                "expected a single NCHW RGB image"
+            )
+        self.input_name = model_input.name
+        self.input_height = height
+        self.input_width = width
+
+        outputs = self.session.get_outputs()
+        if len(outputs) != 1:
+            raise RuntimeError(
+                f"YOLO26s-sem ONNX expects one semantic output tensor; "
+                f"found {len(outputs)}"
+            )
+        model_output = outputs[0]
+        if model_output.type != "tensor(uint8)":
+            raise RuntimeError(
+                f"Unsupported ONNX output type {model_output.type!r}; "
+                "expected decoded tensor(uint8) class IDs"
+            )
+        if len(model_output.shape) != 3:
+            raise RuntimeError(
+                f"Unsupported ONNX output shape {model_output.shape!r}; "
+                "expected [1, height, width] decoded class IDs"
+            )
+        output_batch, output_height, output_width = (
+            self._static_dimension(value, model_output.name, axis)
+            for axis, value in enumerate(model_output.shape)
+        )
+        if (
+            output_batch != 1
+            or output_height != self.input_height
+            or output_width != self.input_width
+        ):
+            raise RuntimeError(
+                f"Unsupported ONNX output shape {model_output.shape!r}; "
+                f"expected [1, {self.input_height}, {self.input_width}]"
+            )
+        self.output_name = model_output.name
+        self.output_height = output_height
+        self.output_width = output_width
+
+        metadata = self.session.get_modelmeta().custom_metadata_map or {}
+        raw_names = metadata.get("names")
+        if raw_names is None:
+            raise RuntimeError(
+                "YOLO26s-sem ONNX metadata does not contain class names"
+            )
+        try:
+            parsed_names = ast.literal_eval(raw_names)
+            if isinstance(parsed_names, dict):
+                class_names = {
+                    int(class_id): name for class_id, name in parsed_names.items()
+                }
+            elif isinstance(parsed_names, (list, tuple)):
+                class_names = dict(enumerate(parsed_names))
+            else:
+                raise ValueError("class names must be a mapping or sequence")
+        except (SyntaxError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"Unable to parse ONNX class-name metadata: {raw_names!r}"
+            ) from exc
+
+        if (
+            len(class_names) != 3
+            or any(not isinstance(name, str) for name in class_names.values())
+            or len(set(class_names.values())) != len(class_names)
+        ):
+            raise RuntimeError(
+                f"Expected exactly three unique semantic class names; "
+                f"found {class_names!r}"
+            )
+        lane_ids = [
+            class_id
+            for class_id, name in class_names.items()
+            if name == "lane_lines"
+        ]
+        drivable_ids = [
+            class_id
+            for class_id, name in class_names.items()
+            if name == "ego_drivable_area"
+        ]
+        if len(lane_ids) != 1 or len(drivable_ids) != 1:
+            raise RuntimeError(
+                "ONNX class metadata must identify exactly one 'lane_lines' "
+                "and one 'ego_drivable_area' class; "
+                f"found {class_names!r}"
+            )
+        self.class_names = class_names
+        self.lane_class_id = lane_ids[0]
+        self.drivable_class_id = drivable_ids[0]
+
+    def _preprocess_onnx(self, frame):
+        frame = np.asarray(frame)
+        if frame.ndim != 3 or frame.shape[2] != 3:
+            raise ValueError(
+                f"Expected a three-channel BGR camera frame; got shape {frame.shape!r}"
+            )
+        if frame.dtype != np.uint8:
+            raise ValueError(
+                f"Expected a uint8 camera frame; got dtype {frame.dtype}"
+            )
+
+        frame_height, frame_width = frame.shape[:2]
+        if frame_height <= 0 or frame_width <= 0:
+            raise ValueError(f"Invalid camera frame dimensions: {frame.shape!r}")
+
+        scale = min(
+            self.input_width / frame_width,
+            self.input_height / frame_height,
+        )
+        resized_width = max(1, int(round(frame_width * scale)))
+        resized_height = max(1, int(round(frame_height * scale)))
+        resized = cv2.resize(
+            frame,
+            (resized_width, resized_height),
+            interpolation=cv2.INTER_LINEAR,
+        )
+
+        pad_width = self.input_width - resized_width
+        pad_height = self.input_height - resized_height
+        left = int(round(pad_width / 2.0 - 0.1))
+        top = int(round(pad_height / 2.0 - 0.1))
+        letterboxed = np.full(
+            (self.input_height, self.input_width, 3), 114, dtype=np.uint8
+        )
+        letterboxed[
+            top : top + resized_height,
+            left : left + resized_width,
+        ] = resized
+
+        image = cv2.cvtColor(letterboxed, cv2.COLOR_BGR2RGB)
+        image = image.astype(np.float32) / 255.0
+        image = np.transpose(image, (2, 0, 1))
+        image = np.expand_dims(image, axis=0)
+        image = np.ascontiguousarray(image)
+        transform = (top, left, resized_height, resized_width)
+        return image, transform
+
+    def _extract_masks_from_onnx(self, camera_frame):
+        input_tensor, transform = self._preprocess_onnx(camera_frame)
+        outputs = self.session.run(
+            [self.output_name],
+            {self.input_name: input_tensor},
+        )
+        if len(outputs) != 1 or outputs[0] is None:
+            raise RuntimeError("YOLO26s-sem ONNX returned no semantic output")
+
+        output = np.asarray(outputs[0])
+        expected_shape = (1, self.output_height, self.output_width)
+        if output.shape != expected_shape:
+            raise RuntimeError(
+                f"Unexpected semantic output shape {output.shape!r}; "
+                f"expected {expected_shape!r}"
+            )
+        if output.dtype != np.uint8:
+            raise RuntimeError(
+                f"Unexpected semantic output dtype {output.dtype}; expected uint8"
+            )
+
+        semantic_mask = np.squeeze(output)
+        if semantic_mask.ndim != 2:
+            raise RuntimeError(
+                "Decoded semantic class map must be two-dimensional after "
+                f"squeezing; got shape {semantic_mask.shape!r}"
+            )
+
+        top, left, resized_height, resized_width = transform
+        semantic_mask = semantic_mask[
+            top : top + resized_height,
+            left : left + resized_width,
+        ]
+        if semantic_mask.shape != (resized_height, resized_width):
+            raise RuntimeError(
+                "Letterbox crop did not match the resized camera frame: "
+                f"got {semantic_mask.shape!r}, expected "
+                f"{(resized_height, resized_width)!r}"
+            )
+
+        lane_mask = (semantic_mask == self.lane_class_id).astype(np.uint8) * 255
+        drivable_mask = (
+            (semantic_mask == self.drivable_class_id).astype(np.uint8) * 255
+        )
+        frame_height, frame_width = np.asarray(camera_frame).shape[:2]
+        lane_mask = cv2.resize(
+            lane_mask,
+            (frame_width, frame_height),
+            interpolation=cv2.INTER_NEAREST,
+        )
+        drivable_mask = cv2.resize(
+            drivable_mask,
+            (frame_width, frame_height),
+            interpolation=cv2.INTER_NEAREST,
+        )
+        return drivable_mask, lane_mask
 
     def _boundary_from_roi(self, full_mask, top, bottom, left, right):
         h, w = full_mask.shape[:2]
@@ -175,65 +414,6 @@ class VisionProcessor:
         self.last_lane_center = smoothed_lane_center
         return smoothed_lane_center
 
-    def _preprocess_onnx(self, frame):
-        img = cv2.resize(
-            frame,
-            (self.input_width, self.input_height),
-            interpolation=cv2.INTER_LINEAR,
-        )
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = img.astype(np.float32) / 255.0
-        img = np.transpose(img, (2, 0, 1))
-        return np.expand_dims(img, 0)
-
-    def _sigmoid(self, x):
-        x = np.clip(np.asarray(x, dtype=np.float32), -50.0, 50.0)
-        return 1.0 / (1.0 + np.exp(-x))
-
-    def _extract_prob_map(self, outputs, output_index):
-        if not outputs:
-            raise RuntimeError("Model returned no outputs")
-
-        if output_index < 0 or output_index >= len(outputs):
-            raise IndexError(f"Invalid output index: {output_index}")
-
-        out = np.squeeze(np.asarray(outputs[output_index])).astype(np.float32)
-        if out.ndim == 3:
-            out = out[0]
-
-        if out.min() < 0.0 or out.max() > 1.0:
-            out = self._sigmoid(out)
-
-        return out
-
-    def _predict_mask(self, prob_map, threshold):
-        mask = (prob_map > threshold).astype(np.uint8) * 255
-        kernel = np.ones((3, 3), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
-        return mask
-
-    def _extract_masks_from_onnx(self, rgb_frame):
-        outputs = self.session.run(None, {self.input_name: self._preprocess_onnx(rgb_frame)})
-
-        # YOLOPv2 standard indices:
-        # 4 = driving area
-        # 5 = lane line
-        lane_prob = self._extract_prob_map(outputs, 5)
-        drivable = utils_onnx.driving_area_mask(outputs[int(getattr(conf, "DRIVABLE_OUTPUT_INDEX", 4))])
-
-        lane_mask_small = self._predict_mask(lane_prob, getattr(conf, "LANE_PROB_THRESHOLD", 0.50))
-
-        drivable_arr = np.asarray(drivable)
-        if drivable_arr.ndim > 2:
-            drivable_arr = np.squeeze(drivable_arr)
-        if drivable_arr.dtype != np.uint8 or (drivable_arr.size and float(drivable_arr.max()) <= 1.0):
-            drivable_arr = (np.asarray(drivable_arr, dtype=np.float32) >= float(getattr(conf, "DRIVABLE_PROB_THRESHOLD", 0.50))).astype(np.uint8) * 255
-        else:
-            drivable_arr = (drivable_arr > 0).astype(np.uint8) * 255
-
-        return drivable_arr, lane_mask_small
-
     def _extract_masks_from_segmentation(self, semantic_frame):
         masks = self.extractor.extract(semantic_frame)
         green_mask = masks["green"]
@@ -334,19 +514,7 @@ class VisionProcessor:
         lane_offset_px = width * self.fallback_lane_offset_ratio
 
         if self.mode == "onnx":
-            drivable_mask_small, line_mask_small = self._extract_masks_from_onnx(rgb_frame)
-
-            drivable_mask = cv2.resize(
-                drivable_mask_small,
-                (width, height),
-                interpolation=cv2.INTER_NEAREST,
-            )
-
-            line_mask = cv2.resize(
-                line_mask_small,
-                (width, height),
-                interpolation=cv2.INTER_NEAREST,
-            )
+            drivable_mask, line_mask = self._extract_masks_from_onnx(rgb_frame)
             green_mask = None
             dark_purple_mask = None
         else:
