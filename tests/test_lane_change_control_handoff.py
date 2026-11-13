@@ -98,7 +98,7 @@ def test_lane_change_releases_only_after_angle_transition_and_stable_frames():
     manager.update(
         Location(2.2),
         None,
-        line_angles={"left": 3.0, "right": -2.0},
+        line_angles={"left": -15.0, "right": 15.0},
         lane_type="only_right",
         source_frame_id=12,
     )
@@ -108,7 +108,7 @@ def test_lane_change_releases_only_after_angle_transition_and_stable_frames():
     manager.update(
         Location(2.3),
         None,
-        line_angles={"left": 3.0, "right": -2.0},
+        line_angles={"left": -15.0, "right": 15.0},
         lane_type="only_right",
         source_frame_id=13,
     )
@@ -124,7 +124,7 @@ def test_lane_change_does_not_confirm_without_lane_markings():
         manager.update(
             Location(distance),
             None,
-            line_angles={"left": 3.0, "right": -2.0},
+            line_angles={"left": -15.0, "right": 15.0},
             lane_type="none",
             source_frame_id=frame_id,
         )
@@ -140,7 +140,7 @@ def test_lane_change_does_not_confirm_from_angle_without_transition():
         manager.update(
             Location(distance),
             None,
-            line_angles={"left": 3.0, "right": -2.0},
+            line_angles={"left": -15.0, "right": 15.0},
             lane_type="only_left",
             source_frame_id=frame_id,
         )
