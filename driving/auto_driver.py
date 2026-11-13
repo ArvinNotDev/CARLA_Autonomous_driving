@@ -79,6 +79,8 @@ class AutoDriver:
                     "left": debug.get("left_line_angle_deg"),
                     "right": debug.get("right_line_angle_deg"),
                 },
+                lane_type=vision_result.get("lane_type"),
+                source_frame_id=vision_result.get("_source_frame_id"),
             )
             override = self.lane_change_manager.control_override()
             if override is not None:
