@@ -38,6 +38,12 @@ Junction handling is intentionally one pipeline:
 
 The planner may run asynchronously, but no junction worker calls `vehicle.apply_control()`. The control thread is the sole owner of vehicle commands during normal driving, lane changes, static junction lead-ins, and trajectory takeover. There is no blocking render-loop sleep and no legacy full-left recovery command.
 
+## Lane-change steering handoff
+
+A lane change keeps steering ownership away from the normal lane-follow PID through the `VERIFY`, `CHANGE`, and `SETTLE` phases. After the initial steering-distance segment, the manager holds a small direction-specific steering input while it waits for camera evidence that the lane markings have moved through a lane-change angle and returned to a stable, near-vertical state. The handoff requires the configured number of **distinct vision frames** with valid lane markings; repeatedly reading the same cached vision result cannot satisfy the confirmation. Only after that confirmation does the lane-follow controller regain steering. The debug overlay shows the active lane-change phase and indicates when lane-follow steering is locked.
+
+The **Lane change** runtime settings expose approach and initial steering distances, angle-transition and stable-angle thresholds, required confirmation frames, and the small holding-steer value used during settling.
+
 ## Junction detection modes
 
 The runtime setting **Junction detection method** selects either the trained ResNet18 junction classifier or **Crosswalk ROI — horizontal line**. The ROI mode uses the normalized `CW_TOP_ROI`, `CW_BOTTOM_ROI`, `CW_LEFT_ROI`, and `CW_RIGHT_ROI` values edited in the Flask ROI editor. It searches the camera image inside that rectangle for a sufficiently long, near-horizontal edge using OpenCV, then confirms it across consecutive vision frames. A confirmed line enters the same junction-planning and full-brake `CROSSWALK` state used by the existing controller. The detected segment is highlighted in the debug image.
