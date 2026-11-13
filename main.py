@@ -275,6 +275,9 @@ class CarlaLaneDrivingApp:
         return 0.0
 
     def _inspect_recovery_side_for_obstacle(self, error: float) -> dict[str, Any]:
+        if not bool(cfg("LIDAR_ENABLED", False)):
+            return {"blocked": False, "reason": "lidar_disabled"}
+
         if not bool(cfg("DRIVABLE_RECOVERY_LIDAR_GATE_ENABLED", True)):
             return {"blocked": False, "reason": "lidar_gate_disabled"}
 
@@ -453,12 +456,25 @@ class CarlaLaneDrivingApp:
     def _on_settings_changed(self, values: dict) -> None:
         # All settings are applied by RuntimeSettings in the Qt thread. The
         # control loop only reads scalar config values at its next tick.
-        boundary_settings = {
-            key: value for key, value in values.items()
-            if key.startswith("LIDAR_BOUNDARY_")
-        }
-        if boundary_settings and self.lidar_manager is not None:
-            self.lidar_manager.update_road_geometry_settings(boundary_settings)
+        if "LIDAR_ENABLED" in values:
+            enabled = bool(values["LIDAR_ENABLED"])
+            try:
+                if self.lidar_manager is not None:
+                    self.lidar_manager.set_enabled(enabled)
+                if self.control_panel is not None:
+                    state = "enabled" if enabled else "disabled"
+                    self.control_panel.set_lidar_enabled(
+                        enabled, f"LiDAR sensor {state} live."
+                    )
+            except Exception as exc:
+                self.settings.apply({"LIDAR_ENABLED": False})
+                self.settings.persist_values({"LIDAR_ENABLED": False})
+                if self.lidar_manager is not None:
+                    self.lidar_manager.set_enabled(False)
+                if self.control_panel is not None:
+                    self.control_panel.set_lidar_enabled(
+                        False, f"Could not enable LiDAR: {exc}"
+                    )
         if (
             "LIDAR_DISPLAY_RANGE_M" in values
             and self.control_panel is not None
@@ -560,7 +576,8 @@ class CarlaLaneDrivingApp:
         self.camera_manager = CameraManager(self.world, self.vehicle)
         self.camera_manager.start()
         self.lidar_manager = LidarManager(self.world, self.vehicle)
-        self.lidar_manager.start()
+        if bool(cfg("LIDAR_ENABLED", False)):
+            self.lidar_manager.start()
 
         self.planner = RoutePlanner(self.world)
         self._apply_goal_to_planner()
