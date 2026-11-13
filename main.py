@@ -14,7 +14,6 @@ from carla_manager import CarlaManager
 from controllers.controller import FixedSpeedPIDController
 from controllers.input_manager import InputManager
 from driving.auto_driver import AutoDriver
-from navigation.intersection_detector import IntersectionModel
 from navigation.intersection_manager import IntersectionManager
 from navigation.global_planner import RoutePlanner
 from navigation.lane_change_manager import LaneChangeManager
@@ -103,6 +102,8 @@ class CarlaLaneDrivingApp:
         self._intersection_result = False
         self._intersection_result_completed_at = 0.0
         self._intersection_result_source_frame_id = -1
+        self._roi_junction_armed = True
+        self._roi_line_clear_frames = 0
 
         self.control_metrics = ControlMetrics(window_seconds=1.0)
         self.display_metrics = DisplayMetrics(window_seconds=1.0)
@@ -116,12 +117,21 @@ class CarlaLaneDrivingApp:
 
         self.settings = RuntimeSettings()
         self.control_panel: Optional[ControlPanel] = None
+        self.junction_detection_mode = str(
+            cfg("JUNCTION_DETECTION_MODE", "model")
+        ).strip().lower()
+        if self.junction_detection_mode not in {"model", "crosswalk_roi"}:
+            self.junction_detection_mode = "model"
 
-        # These models are created before the inference worker, but after this
-        # point each model is accessed by only one execution thread.
-        self.intersection_model = IntersectionModel(
-            "models_and_datasets/models/junction_model_resnet18.pt"
-        )
+        # Load PyTorch/torchvision only when the classifier mode is selected.
+        # StableV2 uses the lightweight OpenCV crosswalk-ROI detector instead.
+        self.intersection_model = None
+        if self.junction_detection_mode == "model":
+            from navigation.intersection_detector import IntersectionModel
+
+            self.intersection_model = IntersectionModel(
+                "models_and_datasets/models/junction_model_resnet18.pt"
+            )
 
     def _metrics_for_panel(self) -> dict[str, Any]:
         control = self.control_metrics.snapshot()
@@ -204,19 +214,20 @@ class CarlaLaneDrivingApp:
                     self._last_trajectory_submit_at = now
                     self._last_trajectory_frame_id = frame_id
 
-        intersection_interval = max(
-            0.05, float(cfg("INTERSECTION_CHECK_INTERVAL_SECONDS", 0.25))
-        )
-        if frame_id != self._last_intersection_frame_id and (
-            now - self._last_intersection_submit_at >= intersection_interval
-        ):
-            request_id = self.inference_worker.submit_intersection(
-                source_frame_id=frame_id,
-                frame_bgr=rgb_packet.bgr,
+        if self.junction_detection_mode == "model":
+            intersection_interval = max(
+                0.05, float(cfg("INTERSECTION_CHECK_INTERVAL_SECONDS", 0.25))
             )
-            if request_id:
-                self._last_intersection_submit_at = now
-                self._last_intersection_frame_id = frame_id
+            if frame_id != self._last_intersection_frame_id and (
+                now - self._last_intersection_submit_at >= intersection_interval
+            ):
+                request_id = self.inference_worker.submit_intersection(
+                    source_frame_id=frame_id,
+                    frame_bgr=rgb_packet.bgr,
+                )
+                if request_id:
+                    self._last_intersection_submit_at = now
+                    self._last_intersection_frame_id = frame_id
 
     def _accept_inference_results(self) -> tuple[Any, Any]:
         trajectory = None
@@ -240,6 +251,35 @@ class CarlaLaneDrivingApp:
             ):
                 self._accepted_vision_request = vision.request_id
                 self._vision_result = vision.result
+
+                if self.junction_detection_mode == "crosswalk_roi":
+                    roi_info = (
+                        vision.result.get("junction_roi")
+                        if isinstance(vision.result, dict)
+                        else None
+                    )
+                    if isinstance(roi_info, dict):
+                        line_present = bool(roi_info.get("line_present", False))
+                        if line_present:
+                            self._roi_line_clear_frames = 0
+                        else:
+                            self._roi_line_clear_frames += 1
+                            clear_required = max(
+                                4,
+                                int(cfg("JUNCTION_ROI_CONFIRM_FRAMES", 2)) + 2,
+                            )
+                            if self._roi_line_clear_frames >= clear_required:
+                                self._roi_junction_armed = True
+
+                        if (
+                            bool(roi_info.get("detected", False))
+                            and self._roi_junction_armed
+                        ):
+                            # Keep the event pending until the existing planner
+                            # accepts it; do not lose a short-lived line detection.
+                            self._intersection_result = True
+                            self._intersection_result_completed_at = vision.completed_at
+                            self._intersection_result_source_frame_id = vision.source_frame_id
 
             inter, _, _, _ = self.inference_worker.intersection_snapshot()
             if (
@@ -802,6 +842,9 @@ class CarlaLaneDrivingApp:
             )
             if started:
                 self._intersection_result = False
+                if self.junction_detection_mode == "crosswalk_roi":
+                    self._roi_junction_armed = False
+                    self._roi_line_clear_frames = 0
 
         current_command = (
             self.next_maneuver if self.intersection_sequence else "LANE_FOLLOW"
