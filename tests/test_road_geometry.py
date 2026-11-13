@@ -154,10 +154,19 @@ class RoadGeometryAnalyzerTests(unittest.TestCase):
             expected = 0.003 * points[:, 0] ** 2 + side * 3.0
             self.assertLess(float(np.median(np.abs(points[:, 1] - expected))), 0.45)
 
-    def test_tall_vertical_walls_are_not_mistaken_for_road_edges(self) -> None:
+    def test_parallel_vertical_roadside_faces_are_detected(self) -> None:
+        # The wall is flush with the road edge and runs parallel to the vehicle.
+        # Its large within-cell height span must count as edge evidence.
         result = self.analyzer.analyze(self.make_wall_only())
-        self.assertEqual(len(result["left_edge_points"]), 0)
-        self.assertEqual(len(result["right_edge_points"]), 0)
+
+        for key, side in (("left_edge_points", -1.0), ("right_edge_points", 1.0)):
+            points = result[key]
+            points = points[np.isfinite(points[:, 0])]
+            self.assertGreater(len(points), 20)
+            self.assertLess(
+                float(np.median(np.abs(points[:, 1] - side * 3.25))),
+                0.35,
+            )
 
     def test_short_occlusion_gap_is_curve_interpolated(self) -> None:
         anchors = [(1.0, 0.0), (1.6, 0.2), (4.6, 1.8), (5.2, 2.0)]
