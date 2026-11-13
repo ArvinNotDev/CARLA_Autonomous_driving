@@ -124,6 +124,11 @@ def _coerce_setting(spec, value):
         if isinstance(value, str):
             value = json.loads(value)
         return value
+    elif kind == "choice":
+        result = str(value)
+        if limits and result not in limits:
+            raise ValueError(f"unsupported choice for {_key}: {result}")
+        return result
     else:
         return str(value)
     if limits:
