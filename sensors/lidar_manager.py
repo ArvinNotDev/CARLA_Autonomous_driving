@@ -14,7 +14,7 @@ from sensors.road_geometry import RoadGeometryAnalyzer
 
 
 class LidarManager:
-    """Own a visualization-only roof LiDAR and publish one full scan at a time."""
+    """Collect roof LiDAR sweeps and publish scan plus road-geometry snapshots."""
 
     def __init__(self, world, vehicle) -> None:
         self.world = world
