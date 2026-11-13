@@ -335,6 +335,19 @@ function renderRuntimeSettings(){
       input = document.createElement('input');
       input.type = 'checkbox';
       input.checked = !!runtimeValues[key];
+    } else if(kind === 'choice'){
+      input = document.createElement('select');
+      for(const value of (limits || [])){
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = value === 'model'
+          ? 'Junction model (ResNet18)'
+          : value === 'crosswalk_roi'
+            ? 'Crosswalk ROI — horizontal line'
+            : value;
+        input.appendChild(option);
+      }
+      input.value = runtimeValues[key] ?? '';
     } else if(kind === 'sequence'){
       input = document.createElement('textarea');
       input.rows = 3;
