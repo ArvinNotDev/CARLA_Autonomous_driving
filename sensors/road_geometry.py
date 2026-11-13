@@ -17,6 +17,7 @@ class RoadGeometryAnalyzer:
         self.x_max_m = 35.0
         self.y_limit_m = 12.0
         self.station_step_m = 1.0
+        self.station_half_width_m = 1.0
         self.road_start_distance_m = 1.25
         self.road_surface_tolerance_m = 0.22
         self.edge_step_m = 0.13
@@ -101,13 +102,15 @@ class RoadGeometryAnalyzer:
             row_start = max(
                 0,
                 int(np.floor(
-                    (station_x - 0.5 - self.x_min_m) / self.resolution_m
+                    (station_x - self.station_half_width_m - self.x_min_m)
+                    / self.resolution_m
                 )),
             )
             row_end = min(
                 x_count,
                 int(np.ceil(
-                    (station_x + 0.5 - self.x_min_m) / self.resolution_m
+                    (station_x + self.station_half_width_m - self.x_min_m)
+                    / self.resolution_m
                 )),
             )
             if row_end <= row_start:
