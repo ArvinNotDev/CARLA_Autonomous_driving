@@ -40,6 +40,7 @@ def make_manager(direction="left"):
     manager.phase = "CHANGE"
     manager.direction = direction
     manager._segment_start_location = Location(0)
+    manager._baseline_line_angles = {"left": -15.0, "right": 15.0}
     return manager
 
 
@@ -49,7 +50,7 @@ def test_lane_change_keeps_steering_override_after_initial_distance():
     manager.update(
         Location(2.1),
         None,
-        line_angles={"left": 2.0, "right": -1.0},
+        line_angles={"left": -13.0, "right": 14.0},
         lane_type="only_left",
         source_frame_id=10,
     )
@@ -67,7 +68,7 @@ def test_lane_change_releases_only_after_angle_transition_and_stable_frames():
     manager.update(
         Location(0.5),
         None,
-        line_angles={"left": 13.0, "right": -2.0},
+        line_angles={"left": -27.0, "right": 16.0},
         lane_type="only_right",
         source_frame_id=10,
     )
@@ -77,7 +78,7 @@ def test_lane_change_releases_only_after_angle_transition_and_stable_frames():
     manager.update(
         Location(2.0),
         None,
-        line_angles={"left": 3.0, "right": -2.0},
+        line_angles={"left": -18.0, "right": 17.0},
         lane_type="only_right",
         source_frame_id=11,
     )
@@ -88,7 +89,7 @@ def test_lane_change_releases_only_after_angle_transition_and_stable_frames():
     manager.update(
         Location(2.1),
         None,
-        line_angles={"left": 3.0, "right": -2.0},
+        line_angles={"left": -15.0, "right": 15.0},
         lane_type="only_right",
         source_frame_id=11,
     )
@@ -149,6 +150,29 @@ def test_lane_change_does_not_confirm_from_angle_without_transition():
     assert manager.control_override() is not None
 
 
+def test_unconfirmed_lane_change_fails_safe_to_full_brake(monkeypatch):
+    monkeypatch.setattr(conf, "LANE_CHANGE_CONFIRM_TIMEOUT_SECONDS", 1.0, raising=False)
+    manager = make_manager("left")
+    manager.phase = "SETTLE"
+    manager._steering_distance_reached = True
+    manager._angle_transition_seen = True
+    manager._settle_started_at = __import__("time").monotonic() - 2.0
+
+    manager.update(
+        Location(2.1),
+        None,
+        line_angles={"left": -13.0, "right": 14.0},
+        lane_type="only_left",
+        source_frame_id=50,
+    )
+
+    control = manager.control_override()
+    assert manager.phase_name() == "SETTLE"
+    assert manager.movement_active()
+    assert control.throttle == 0.0
+    assert control.brake == 1.0
+
+
 def test_auto_driver_does_not_return_steering_to_lane_pid_during_settle(monkeypatch):
     # AutoDriver is intentionally loaded with lightweight CARLA/utility stubs.
     uv = types.ModuleType("utils.vehicle_utils")
@@ -203,8 +227,8 @@ def test_auto_driver_does_not_return_steering_to_lane_pid_during_settle(monkeypa
                 "_source_frame_id": frame_id,
                 "debug": {
                     "combined": None,
-                    "left_line_angle_deg": 2.0,
-                    "right_line_angle_deg": -2.0,
+                    "left_line_angle_deg": -15.0,
+                    "right_line_angle_deg": 15.0,
                 },
             },
             Location(2.0),
