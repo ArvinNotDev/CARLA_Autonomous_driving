@@ -38,6 +38,12 @@ Junction handling is intentionally one pipeline:
 
 The planner may run asynchronously, but no junction worker calls `vehicle.apply_control()`. The control thread is the sole owner of vehicle commands during normal driving, lane changes, static junction lead-ins, and trajectory takeover. There is no blocking render-loop sleep and no legacy full-left recovery command.
 
+## Junction detection modes
+
+The runtime setting **Junction detection method** selects either the trained ResNet18 junction classifier or **Crosswalk ROI — horizontal line**. The ROI mode uses the normalized `CW_TOP_ROI`, `CW_BOTTOM_ROI`, `CW_LEFT_ROI`, and `CW_RIGHT_ROI` values edited in the Flask ROI editor. It searches the camera image inside that rectangle for a sufficiently long, near-horizontal edge using OpenCV, then confirms it across consecutive vision frames. A confirmed line enters the same junction-planning and full-brake `CROSSWALK` state used by the existing controller. The detected segment is highlighted in the debug image.
+
+The detector exposes minimum line-length ratio, angle tolerance, confirmation frames, and a clear-time re-arm delay in the **Junction detection** settings tab. The re-arm delay prevents adjacent zebra stripes from repeatedly triggering stops. Changing between the two detection modes requires a runtime restart; in ROI mode the PyTorch junction classifier is not imported or loaded. The included `StableV2` profile uses ROI detection, while the other bundled profiles retain the model-based method.
+
 ## Optional LiDAR radar
 
 LiDAR is disabled by default in the application and every included runtime profile. Use the **LiDAR: OFF/ON** button beside the radar in the runtime panel to start or completely stop the CARLA sensor while the simulation is running. When enabled, the radar displays the point cloud; the optional recovery safety check can also use LiDAR to avoid steering corrections toward detected side obstacles. LiDAR is not used to detect road edges or road shoulders. The radar zoom is available under **LiDAR display**, while **LiDAR sensor range** is under **Hardware (reset)** and requires a run restart.
