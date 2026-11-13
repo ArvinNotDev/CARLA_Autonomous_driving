@@ -241,23 +241,48 @@ class RoadGeometryAnalyzer:
             and station["right"]["height_m"] is not None
         ]
 
-        road_width = (
-            float(np.median(road_widths))
+        required_road_stations = max(
+            6, int(np.ceil(len(station_positions) * 0.20))
+        )
+        road_width_candidate = (
+            float(np.median(road_widths)) if road_widths else None
+        )
+        road_width_spread = (
+            float(np.percentile(road_widths, 90) - np.percentile(road_widths, 10))
             if len(road_widths) >= 4
-            and 2.5 <= float(np.median(road_widths)) <= 24.0
             else None
         )
+        road_width = (
+            road_width_candidate
+            if len(road_widths) >= required_road_stations
+            and road_width_candidate is not None
+            and 2.5 <= road_width_candidate <= 24.0
+            and road_width_spread is not None
+            and road_width_spread <= 2.0
+            else None
+        )
+        required_side_stations = max(
+            4, int(np.ceil(len(station_positions) * 0.12))
+        )
         left_width = (
-            float(np.median(left_widths)) if len(left_widths) >= 3 else None
+            float(np.median(left_widths))
+            if len(left_widths) >= required_side_stations
+            else None
         )
         right_width = (
-            float(np.median(right_widths)) if len(right_widths) >= 3 else None
+            float(np.median(right_widths))
+            if len(right_widths) >= required_side_stations
+            else None
         )
         left_height = (
-            float(np.median(left_heights)) if len(left_heights) >= 3 else None
+            float(np.median(left_heights))
+            if len(left_heights) >= required_side_stations
+            else None
         )
         right_height = (
-            float(np.median(right_heights)) if len(right_heights) >= 3 else None
+            float(np.median(right_heights))
+            if len(right_heights) >= required_side_stations
+            else None
         )
 
         left_length = self._longest_station_run(
@@ -277,7 +302,8 @@ class RoadGeometryAnalyzer:
             ]
         )
         shoulder_lengths = [
-            value for value in (left_length, right_length) if value is not None
+            value for value in (left_length, right_length)
+            if value is not None and value >= 4.0
         ]
         shoulder_length = max(shoulder_lengths) if shoulder_lengths else None
 
@@ -311,6 +337,16 @@ class RoadGeometryAnalyzer:
             "shoulder_length_m": shoulder_length,
             "edge_station_count": len(both_sides),
             "station_count": len(station_positions),
+            "road_width_confidence": (
+                float(len(road_widths) / len(station_positions))
+                if len(station_positions) else 0.0
+            ),
+            "shoulder_left_confidence": float(
+                len(left_widths) / len(station_positions)
+            ) if len(station_positions) else 0.0,
+            "shoulder_right_confidence": float(
+                len(right_widths) / len(station_positions)
+            ) if len(station_positions) else 0.0,
             "ground_point_count": int(cloud.shape[0]),
             "surface_resolution_m": self.resolution_m,
             "surface_cells": surface_cells,
@@ -351,12 +387,8 @@ class RoadGeometryAnalyzer:
 
             if not np.isfinite(z_value):
                 missing += 1
-                if missing >= 3 and road_last is not None:
-                    edge_distance = road_last + self.resolution_m * 0.5
-                    shoulder_start_position = self._next_valid_position(
-                        profile, indices, order_position + 1, max_steps=5
-                    )
-                    break
+                if missing >= 3:
+                    return None
                 continue
 
             missing = 0
@@ -427,7 +459,7 @@ class RoadGeometryAnalyzer:
             value = float(profile[ordered_indices[next_position]])
             if np.isfinite(value):
                 next_values.append(value)
-        if len(next_values) < 2:
+        if len(next_values) < 3:
             return False
         return abs(float(np.median(next_values[:3])) - first_height) <= 0.16
 
@@ -553,6 +585,9 @@ class RoadGeometryAnalyzer:
             "shoulder_length_m": None,
             "edge_station_count": 0,
             "station_count": 0,
+            "road_width_confidence": 0.0,
+            "shoulder_left_confidence": 0.0,
+            "shoulder_right_confidence": 0.0,
             "ground_point_count": 0,
             "surface_resolution_m": self.resolution_m,
             "surface_cells": empty_cells,
