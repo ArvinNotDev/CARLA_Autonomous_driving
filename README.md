@@ -34,6 +34,14 @@ Junction handling is intentionally one pipeline:
 
 The planner may run asynchronously, but no junction worker calls `vehicle.apply_control()`. The control thread is the sole owner of vehicle commands during normal driving, lane changes, static junction lead-ins, and trajectory takeover. There is no blocking render-loop sleep and no legacy full-left recovery command.
 
+## LiDAR road and shoulder geometry
+
+The LiDAR radar reconstructs a local surface grid from each completed scan. Points from the sweep are transformed into the first sensor pose of that sweep before the geometry analysis, reducing distortion caused by vehicle movement during one rotation.
+
+The analyzer samples lateral road profiles in front of the vehicle and looks for persistent height transitions. It overlays connected road-surface cells in blue and detected shoulder cells in orange, with cyan road-edge lines and orange outer-shoulder boundaries. The radar reports the observed carriageway width, left/right shoulder widths, signed shoulder height relative to the road surface, and the visible longitudinal shoulder run on each side.
+
+Measurements are limited to the visible LiDAR region (currently 3–35 m forward and 12 m to either side). They describe only the detected portion, not the total physical road length. LiDAR cannot distinguish a coplanar shoulder from the carriageway when there is no geometric boundary or other sensor evidence; in that case the related measurement is left unavailable rather than guessed. Curbs, raised shoulders, and clear surface discontinuities are the intended first CARLA validation cases.
+
 ## Requirements
 
 - CARLA 0.9.x server running on `localhost:2000`.
