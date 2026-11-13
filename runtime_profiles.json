@@ -112,7 +112,8 @@
           "steering_value": 0
         }
       ]
-    }
+    },
+    "LIDAR_ENABLED": false
   },
   "_active_profile": "StableV2",
   "stableV1": {
@@ -216,7 +217,8 @@
           "steering_value": 0
         }
       ]
-    }
+    },
+    "LIDAR_ENABLED": false
   },
   "test": {
     "AUTO_MODE_DEFAULT": true,
@@ -331,7 +333,8 @@
           "steering_value": 0
         }
       ]
-    }
+    },
+    "LIDAR_ENABLED": false
   },
   "StableV2": {
     "AUTO_MODE_DEFAULT": true,
@@ -448,14 +451,6 @@
       ]
     },
     "TRAJECTORY_MODEL_ENABLED": false,
-    "LIDAR_BOUNDARY_ENABLED": true,
-    "LIDAR_BOUNDARY_MIN_FORWARD_M": 0.5,
-    "LIDAR_BOUNDARY_FORWARD_RANGE_M": 60,
-    "LIDAR_BOUNDARY_SIDE_RANGE_M": 12,
-    "LIDAR_BOUNDARY_MIN_SIDE_M": 0.75,
-    "LIDAR_BOUNDARY_HEIGHT_STEP_M": 0.1,
-    "LIDAR_BOUNDARY_SURFACE_TOLERANCE_M": 0.22,
-    "LIDAR_BOUNDARY_MIN_FRONT_SPAN_M": 3,
-    "LIDAR_BOUNDARY_MIN_FRONT_POINTS": 8
+    "LIDAR_ENABLED": false
   }
 }
