@@ -189,6 +189,12 @@ class ControlPanel(QMainWindow):
         self.lidar_radar = LidarRadarWidget(lidar_manager)
         self.metrics_provider = metrics_provider
         self.widgets: dict[str, QWidget] = {}
+        self.lidar_toggle = QPushButton()
+        self.lidar_toggle.setCheckable(True)
+        self.lidar_toggle.setToolTip("Start or completely stop the CARLA roof LiDAR sensor.")
+        self.lidar_toggle.toggled.connect(self._update_lidar_toggle_text)
+        self.lidar_toggle.clicked.connect(lambda _checked=False: self._emit("LIDAR_ENABLED"))
+        self.widgets["LIDAR_ENABLED"] = self.lidar_toggle
         self._last_frame_sequence = 0
         self._last_scaled_size = None
         self._last_qimage: Optional[QImage] = None
@@ -209,6 +215,7 @@ class ControlPanel(QMainWindow):
         lidar_layout = QVBoxLayout(lidar_panel)
         lidar_layout.setContentsMargins(0, 0, 0, 0)
         lidar_controls = QHBoxLayout()
+        lidar_controls.addWidget(self.lidar_toggle)
         zoom_in_button = QPushButton("Zoom +")
         zoom_in_button.setToolTip("Zoom in; show a shorter LiDAR distance range")
         zoom_in_button.clicked.connect(self.lidar_radar.zoom_in)
@@ -275,7 +282,7 @@ class ControlPanel(QMainWindow):
                 "DEBUG_SHOW_TRAJECTORY", "DEBUG_SHOW_FPS", "DEBUG_SHOW_GPS",
                 "DEBUG_SHOW_TEXT",
             },
-            "Drivable recovery + LiDAR": {
+            "Recovery + obstacle safety": {
                 "DRIVABLE_RECOVERY_ENABLED", "DRIVABLE_RECOVERY_ERROR_THRESHOLD",
                 "DRIVABLE_RECOVERY_WINDOW_SECONDS", "DRIVABLE_RECOVERY_STEER",
                 "DRIVABLE_RECOVERY_THROTTLE", "DRIVABLE_RECOVERY_LIDAR_GATE_ENABLED",
@@ -284,12 +291,8 @@ class ControlPanel(QMainWindow):
                 "DRIVABLE_RECOVERY_LIDAR_REAR_EXTENT_M", "DRIVABLE_RECOVERY_LIDAR_MAX_FORWARD_DISTANCE_M",
                 "DRIVABLE_RECOVERY_LIDAR_MIN_POINTS", "DRIVABLE_RECOVERY_LIDAR_MAX_SCAN_AGE_SECONDS",
             },
-            "Road boundaries": {
-                "LIDAR_BOUNDARY_ENABLED", "LIDAR_BOUNDARY_MIN_FORWARD_M",
-                "LIDAR_BOUNDARY_FORWARD_RANGE_M", "LIDAR_BOUNDARY_SIDE_RANGE_M",
-                "LIDAR_BOUNDARY_MIN_SIDE_M", "LIDAR_BOUNDARY_HEIGHT_STEP_M",
-                "LIDAR_BOUNDARY_SURFACE_TOLERANCE_M", "LIDAR_BOUNDARY_MIN_FRONT_SPAN_M",
-                "LIDAR_BOUNDARY_MIN_FRONT_POINTS", "LIDAR_DISPLAY_RANGE_M",
+            "LiDAR display": {
+                "LIDAR_DISPLAY_RANGE_M",
             },
             "Camera": {
                 "CAMERA_X", "CAMERA_Y", "CAMERA_Z", "CAMERA_FOV",
@@ -523,7 +526,7 @@ class ControlPanel(QMainWindow):
         widget = self.widgets[key]
         if isinstance(widget, JunctionSequenceEditor):
             return widget.sequences()
-        if isinstance(widget, QCheckBox):
+        if isinstance(widget, (QCheckBox, QPushButton)):
             return widget.isChecked()
         if isinstance(widget, QComboBox):
             return widget.currentText()
@@ -540,8 +543,10 @@ class ControlPanel(QMainWindow):
                 widget.set_sequences(value)
                 continue
             widget.blockSignals(True)
-            if isinstance(widget, QCheckBox):
+            if isinstance(widget, (QCheckBox, QPushButton)):
                 widget.setChecked(bool(value))
+                if key == "LIDAR_ENABLED":
+                    self._update_lidar_toggle_text(bool(value))
             elif isinstance(widget, QComboBox):
                 widget.setCurrentText(str(value))
             elif isinstance(widget, QSpinBox):
@@ -570,6 +575,18 @@ class ControlPanel(QMainWindow):
         if key == "DEBUG_PANEL_HZ":
             self._set_refresh_rate(float(value))
         self.settings_changed.emit({key: value})
+
+    def _update_lidar_toggle_text(self, enabled: bool) -> None:
+        self.lidar_toggle.setText("LiDAR: ON" if enabled else "LiDAR: OFF")
+
+    def set_lidar_enabled(self, enabled: bool, status: str | None = None) -> None:
+        """Synchronize the live LiDAR button without emitting another setting change."""
+        self.lidar_toggle.blockSignals(True)
+        self.lidar_toggle.setChecked(bool(enabled))
+        self.lidar_toggle.blockSignals(False)
+        self._update_lidar_toggle_text(bool(enabled))
+        if status:
+            self.status.setText(status)
 
     def _emit_stream_toggle(self, enabled: bool) -> None:
         self.stream_toggle.setText("Flask editor: ON" if enabled else "Flask editor: OFF")
