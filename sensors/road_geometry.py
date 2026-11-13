@@ -413,12 +413,6 @@ class RoadGeometryAnalyzer:
         )
 
         step = np.abs(outer_z - inner_z)
-        edge_y = 0.5 * (
-            self._y_centers[ordered[positions - 1]]
-            + self._y_centers[ordered[positions]]
-        )
-        offset = np.abs(edge_y - center_y)
-        continuity_error = np.abs(edge_y - predicted_edge)
 
         stable_height_check = (
             (stable_valid >= 1)
@@ -446,6 +440,27 @@ class RoadGeometryAnalyzer:
             & (inner_span <= self.max_cell_vertical_span_m)
             & (np.abs(outer_z - inner_z) <= self.max_curb_step_m)
         )
+
+        # For a vertical face, place the edge at the face's near side instead
+        # of the earlier coarse profile-window boundary. This avoids a lateral
+        # bias when a parallel wall occupies only one LiDAR elevation cell.
+        span_windows = np.column_stack(
+            [spans[positions + offset] for offset in range(3)]
+        )
+        span_windows = np.nan_to_num(span_windows, nan=-np.inf)
+        face_offset = np.argmax(span_windows, axis=1)
+        face_positions = positions + face_offset
+        vertical_edge_y = 0.5 * (
+            self._y_centers[ordered[face_positions - 1]]
+            + self._y_centers[ordered[face_positions]]
+        )
+        coarse_edge_y = 0.5 * (
+            self._y_centers[ordered[positions - 1]]
+            + self._y_centers[ordered[positions]]
+        )
+        edge_y = np.where(vertical_face_edge, vertical_edge_y, coarse_edge_y)
+        offset = np.abs(edge_y - center_y)
+        continuity_error = np.abs(edge_y - predicted_edge)
 
         valid = (
             (inner_valid >= 2)
