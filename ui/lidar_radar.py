@@ -232,7 +232,7 @@ class LidarRadarWidget(QWidget):
         road_text = (
             f"Road width: {metric(road_width)}"
             if road_width is not None
-            else "Road width: boundary not reliably detected"
+            else "Road width: —"
         )
         shoulder_text = (
             f"Shoulder L/R: {metric(left_width)} / {metric(right_width)}"
@@ -241,11 +241,14 @@ class LidarRadarWidget(QWidget):
             f"Shoulder height L/R: {metric(left_height, signed=True)} / {metric(right_height, signed=True)}"
         )
         length_text = (
-            "visible shoulder run L/R: "
+            "Run L/R: "
             f"{metric(shoulder_length_left)} / {metric(shoulder_length_right)}"
         )
         coverage = float(geometry.get("road_width_confidence", 0.0))
         status = str(geometry.get("status", "waiting_for_scan"))
+        metrics_font = painter.font()
+        metrics_font.setPointSize(8)
+        painter.setFont(metrics_font)
         painter.setPen(QColor("#dce7ee"))
         painter.drawText(
             QRectF(12, 32, width - 24, 20),
