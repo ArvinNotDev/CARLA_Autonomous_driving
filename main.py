@@ -482,6 +482,15 @@ class CarlaLaneDrivingApp:
                 f"Junction phase: trajectory ({self.next_maneuver or 'LANE_FOLLOW'})"
             )
 
+        if self.lane_change_manager is not None:
+            lane_change_phase = self.lane_change_manager.phase_name()
+            if lane_change_phase != "IDLE":
+                direction = self.lane_change_manager.direction or "unknown"
+                lines.append(
+                    f"Lane change: {lane_change_phase} ({direction}) — "
+                    "lane-follow steering locked"
+                )
+
         composed = self.renderer.compose(screen, {"lines": lines})
         conf.debug_frame_buffer = np.ascontiguousarray(composed)
         self.frame_store.publish(composed)
