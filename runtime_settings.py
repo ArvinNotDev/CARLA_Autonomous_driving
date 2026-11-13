@@ -19,6 +19,7 @@ SETTING_SPECS = [
     ("STEER_LIMIT", "Steer limit", "float", (0.0, 1.0, 0.01), True),
     ("MAX_STEER_STEP", "Max steer step", "float", (0.0, 1.0, 0.01), True),
     ("TARGET_SPEED_KMH", "Target speed (km/h)", "float", (0.0, 120.0, 1.0), True),
+    ("TRAJECTORY_MODEL_ENABLED", "Enable trajectory model", "bool", None, False),
     ("TRAJECTORY_INFERENCE_INTERVAL_SECONDS", "Trajectory inference interval (s)", "float", (0.03, 2.0, 0.01), True),
     ("VISION_INFERENCE_INTERVAL_SECONDS", "Line model interval (s)", "float", (0.01, 2.0, 0.005), True),
     ("TRAJECTORY_STEER_GAIN", "Trajectory steer gain", "float", (0.0, 3.0, 0.05), True),

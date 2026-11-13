@@ -256,7 +256,7 @@ class ControlPanel(QMainWindow):
                 "STEER_LIMIT", "MAX_STEER_STEP", "TARGET_SPEED_KMH", "CONTROL_LOOP_HZ",
             },
             "Trajectory + junction lead-in": {
-                "TRAJECTORY_INFERENCE_INTERVAL_SECONDS", "TRAJECTORY_STEER_GAIN",
+                "TRAJECTORY_MODEL_ENABLED", "TRAJECTORY_INFERENCE_INTERVAL_SECONDS", "TRAJECTORY_STEER_GAIN",
                 "TRAJECTORY_MAX_STEER", "TRAJECTORY_DEBUG_SCALE",
                 "JUNCTION_STATIC_THROTTLE", "JUNCTION_STATIC_TIMEOUT_SECONDS",
                 "JUNCTION_ENTRY_DISTANCE_M", "JUNCTION_TRAJECTORY_WINDOW_SECONDS",
@@ -452,7 +452,7 @@ class ControlPanel(QMainWindow):
     def _add_setting(self, form: QFormLayout, spec) -> None:
         key, label, kind, limits, realtime = spec
         if not realtime:
-            label = f"{label} [car/sensor reset required]"
+            label = f"{label} [restart required]"
         if kind == "bool":
             widget = QCheckBox()
             widget.stateChanged.connect(lambda _state, k=key: self._emit(k))
@@ -572,10 +572,21 @@ class ControlPanel(QMainWindow):
     def _load_profile(self) -> None:
         values = self.settings.profiles.get(self.profile_combo.currentText())
         if values:
+            requires_restart = any(
+                key in values and getattr(conf, key, None) != values[key]
+                for key, _label, _kind, _limits, realtime in SETTING_SPECS
+                if not realtime
+            )
             self.settings.apply(values)
             self._load_values(values)
             self.settings_changed.emit(values)
-            self.status.setText(f"Loaded profile: {self.profile_combo.currentText()}")
+            if requires_restart:
+                self.status.setText(
+                    f"Loaded profile: {self.profile_combo.currentText()} — restart required."
+                )
+                self.reset_requested.emit()
+            else:
+                self.status.setText(f"Loaded profile: {self.profile_combo.currentText()}")
 
     def _save_profile(self) -> None:
         name = self.profile_name.text().strip() or "default"

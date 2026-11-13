@@ -129,7 +129,9 @@ class InferenceWorker:
         command: Optional[str] = None,
     ) -> int:
         with self._condition:
-            if self._stop:
+            if self._stop or (
+                kind == "trajectory" and self.trajectory_agent is None
+            ):
                 return 0
             self._next_request_id += 1
             request_id = self._next_request_id
@@ -146,6 +148,15 @@ class InferenceWorker:
             self._latest_submitted[kind] = request_id
             self._condition.notify()
             return request_id
+
+    def set_trajectory_agent(self, agent) -> None:
+        """Replace or release the trajectory model without interrupting other tasks."""
+        with self._condition:
+            self.trajectory_agent = agent
+            self._pending["trajectory"] = None
+            self._latest_trajectory = None
+            self._last_error["trajectory"] = None
+            self._condition.notify_all()
 
     def submit_vision(
         self,
@@ -231,18 +242,20 @@ class InferenceWorker:
     def _run_trajectory(self, task: _Task) -> None:
         completed = time.perf_counter()
         command = str(task.command or "LANE_FOLLOW")
-        try:
-            if self.trajectory_agent is None or task.frame_a is None:
-                raise RuntimeError("Trajectory model is unavailable")
+        with self._condition:
+            agent = self.trajectory_agent
+        if agent is None or task.frame_a is None:
+            return
 
+        try:
             # Mutable agent state is accessed only from this worker.
-            if getattr(self.trajectory_agent, "_worker_command", None) != command:
-                self.trajectory_agent.prev_steer = 0.0
-                self.trajectory_agent._worker_command = command
+            if getattr(agent, "_worker_command", None) != command:
+                agent.prev_steer = 0.0
+                agent._worker_command = command
 
             # CameraManager exposes OpenCV BGR frames. Convert exactly once here.
             frame_bgr = task.frame_a
-            steer, pred = self.trajectory_agent.get_steering_and_pred(
+            steer, pred = agent.get_steering_and_pred(
                 frame_bgr,
                 command_name=command,
             )
@@ -260,17 +273,20 @@ class InferenceWorker:
                 valid=True,
             )
             with self._condition:
-                # Do not let an older task overwrite a result already completed
-                # for a newer request.
-                if task.request_id >= self._latest_completed["trajectory"]:
+                # A result from a model released while inference was running is stale.
+                if (
+                    self.trajectory_agent is agent
+                    and task.request_id >= self._latest_completed["trajectory"]
+                ):
                     self._latest_completed["trajectory"] = task.request_id
                     self._latest_trajectory = result
                     self._last_error["trajectory"] = None
         except Exception as exc:
             completed = time.perf_counter()
             with self._condition:
-                self._last_error["trajectory"] = str(exc)
-                # Deliberately retain the previous valid result on failure.
+                if self.trajectory_agent is agent:
+                    self._last_error["trajectory"] = str(exc)
+                # Keep failures from a released model out of the active diagnostics.
 
     def _run_vision(self, task: _Task) -> None:
         completed = time.perf_counter()

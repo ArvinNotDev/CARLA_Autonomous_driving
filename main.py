@@ -28,7 +28,6 @@ from utils.vehicle_utils import blank_frame, make_stop_control
 from vision.city_vision_processing import VisionProcessor
 from vision.drivable_area_debugger import DrivableAreaDebugger
 from sensors.lidar_obstacle_filter import inspect_lidar_obstacle_on_side
-from trajectory.steering_agent import TrajectorySteeringAgent
 from trajectory.visualize import draw_waypoints
 from trajectory.worker import InferenceWorker
 from runtime_metrics import ControlMetrics, DisplayMetrics
@@ -68,7 +67,8 @@ class CarlaLaneDrivingApp:
         self.lane_change_manager: Optional[LaneChangeManager] = None
         self.intersection_manager: Optional[IntersectionManager] = None
         self.intersection_model = None
-        self.trajectory_steering_agent: Optional[TrajectorySteeringAgent] = None
+        self.trajectory_steering_agent = None
+        self._trajectory_runtime_enabled = False
         self.inference_worker: Optional[InferenceWorker] = None
 
         self.auto_mode = bool(cfg("AUTO_MODE_DEFAULT", True))
@@ -180,25 +180,28 @@ class CarlaLaneDrivingApp:
                 self._last_vision_submit_at = now
                 self._last_vision_frame_id = frame_id
 
-        command = self.next_maneuver if self.intersection_sequence else "LANE_FOLLOW"
-        if command not in getattr(conf, "COMMANDS", ("LANE_FOLLOW",)):
-            command = "LANE_FOLLOW"
-        self._last_traj_command = command
-
-        trajectory_interval = max(
-            0.03, float(cfg("TRAJECTORY_INFERENCE_INTERVAL_SECONDS", 0.10))
-        )
-        if frame_id != self._last_trajectory_frame_id and (
-            now - self._last_trajectory_submit_at >= trajectory_interval
-        ):
-            request_id = self.inference_worker.submit_trajectory(
-                source_frame_id=frame_id,
-                bgr_frame=rgb_packet.bgr,
-                command=command,
+        if self._trajectory_runtime_enabled:
+            command = (
+                self.next_maneuver if self.intersection_sequence else "LANE_FOLLOW"
             )
-            if request_id:
-                self._last_trajectory_submit_at = now
-                self._last_trajectory_frame_id = frame_id
+            if command not in getattr(conf, "COMMANDS", ("LANE_FOLLOW",)):
+                command = "LANE_FOLLOW"
+            self._last_traj_command = command
+
+            trajectory_interval = max(
+                0.03, float(cfg("TRAJECTORY_INFERENCE_INTERVAL_SECONDS", 0.10))
+            )
+            if frame_id != self._last_trajectory_frame_id and (
+                now - self._last_trajectory_submit_at >= trajectory_interval
+            ):
+                request_id = self.inference_worker.submit_trajectory(
+                    source_frame_id=frame_id,
+                    bgr_frame=rgb_packet.bgr,
+                    command=command,
+                )
+                if request_id:
+                    self._last_trajectory_submit_at = now
+                    self._last_trajectory_frame_id = frame_id
 
         intersection_interval = max(
             0.05, float(cfg("INTERSECTION_CHECK_INTERVAL_SECONDS", 0.25))
@@ -217,15 +220,16 @@ class CarlaLaneDrivingApp:
     def _accept_inference_results(self) -> tuple[Any, Any]:
         trajectory = None
         if self.inference_worker is not None:
-            traj, _, _, _ = self.inference_worker.trajectory_snapshot()
-            if (
-                traj is not None
-                and traj.valid
-                and traj.request_id > self._accepted_trajectory_request
-            ):
-                # Immutable result object; no worker can mutate this after publish.
-                self._accepted_trajectory_request = traj.request_id
-                trajectory = traj
+            if self._trajectory_runtime_enabled:
+                traj, _, _, _ = self.inference_worker.trajectory_snapshot()
+                if (
+                    traj is not None
+                    and traj.valid
+                    and traj.request_id > self._accepted_trajectory_request
+                ):
+                    # Immutable result object; no worker can mutate this after publish.
+                    self._accepted_trajectory_request = traj.request_id
+                    trajectory = traj
 
             vision, _, _, _ = self.inference_worker.vision_snapshot()
             if (
@@ -343,7 +347,7 @@ class CarlaLaneDrivingApp:
             self._out_checker_started_at = None
 
     def _trajectory_for_control(self, current_command: str):
-        if self.inference_worker is None:
+        if not self._trajectory_runtime_enabled or self.inference_worker is None:
             return None
         result, _, _, _ = self.inference_worker.trajectory_snapshot()
         if result is None or not result.valid:
@@ -424,9 +428,34 @@ class CarlaLaneDrivingApp:
         conf.debug_frame_buffer = np.ascontiguousarray(composed)
         self.frame_store.publish(composed)
 
+    def _disable_trajectory_model(self) -> None:
+        self._trajectory_runtime_enabled = False
+        self.intersection_sequence = False
+        self.next_maneuver = None
+        self.trajectory_takeover_until = 0.0
+        self._last_trajectory_frame_id = -1
+        self._last_trajectory_submit_at = 0.0
+        self._accepted_trajectory_request = 0
+
+        if self.inference_worker is not None:
+            self.inference_worker.set_trajectory_agent(None)
+
+        # The worker retains a local reference only if one inference was already
+        # executing; that reference is released as soon as the call returns.
+        self.trajectory_steering_agent = None
+
     def _on_settings_changed(self, values: dict) -> None:
         # All settings are applied by RuntimeSettings in the Qt thread. The
         # control loop only reads scalar config values at its next tick.
+        if "TRAJECTORY_MODEL_ENABLED" in values:
+            if bool(values["TRAJECTORY_MODEL_ENABLED"]):
+                if not self._trajectory_runtime_enabled and self.control_panel is not None:
+                    self.control_panel.status.setText(
+                        "Trajectory model enabled — restart the run to load its checkpoint."
+                    )
+            else:
+                self._disable_trajectory_model()
+
         if "AUTO_MODE_DEFAULT" in values:
             with self._state_lock:
                 self.auto_mode = bool(values["AUTO_MODE_DEFAULT"])
@@ -446,8 +475,8 @@ class CarlaLaneDrivingApp:
             return
         QMessageBox.information(
             self.control_panel,
-            "Car reset required",
-            "This setting changes a CARLA sensor/model resource. Restart the run to apply it.",
+            "Restart required",
+            "This setting changes a model or sensor resource. Restart the run to apply it.",
         )
 
     def _safe_vehicle_apply_control(self, control: carla.VehicleControl) -> None:
@@ -553,11 +582,19 @@ class CarlaLaneDrivingApp:
             intersection_manager=self.intersection_manager,
         )
 
-        self.trajectory_steering_agent = TrajectorySteeringAgent(
-            "models_and_datasets/models/trajectory_modelV2.pt",
-            conf,
-            "LANE_FOLLOW",
+        self._trajectory_runtime_enabled = bool(
+            cfg("TRAJECTORY_MODEL_ENABLED", True)
         )
+        self.trajectory_steering_agent = None
+        if self._trajectory_runtime_enabled:
+            # Import PyTorch and load the checkpoint only when this model is enabled.
+            from trajectory.steering_agent import TrajectorySteeringAgent
+
+            self.trajectory_steering_agent = TrajectorySteeringAgent(
+                "models_and_datasets/models/trajectory_modelV2.pt",
+                conf,
+                "LANE_FOLLOW",
+            )
 
         self.inference_worker = InferenceWorker(
             vision_processor=self.vision_processor,
@@ -688,7 +725,10 @@ class CarlaLaneDrivingApp:
 
             if phase_before == "STATIC" and self.intersection_manager.phase_name() == "IDLE":
                 maneuver = self.intersection_manager.next_maneuver
-                if maneuver in getattr(conf, "COMMANDS", ()):
+                if (
+                    self._trajectory_runtime_enabled
+                    and maneuver in getattr(conf, "COMMANDS", ())
+                ):
                     self.next_maneuver = maneuver
                     self.intersection_sequence = True
                     self.seq_timeout = time.monotonic()
@@ -697,6 +737,12 @@ class CarlaLaneDrivingApp:
                         + float(cfg("JUNCTION_TRAJECTORY_WINDOW_SECONDS", 6.0))
                     )
                     command_changed = True
+                else:
+                    # Keep the distance-based junction lead-in, then return
+                    # directly to lane-line control when trajectory is disabled.
+                    self.intersection_sequence = False
+                    self.next_maneuver = None
+                    self.trajectory_takeover_until = 0.0
 
         if command_changed and self.inference_worker is not None:
             # Do not wait for the normal inference interval after a junction
@@ -756,7 +802,8 @@ class CarlaLaneDrivingApp:
                 control = static_control
                 self.intersection_sequence = False
             elif (
-                self.intersection_sequence
+                self._trajectory_runtime_enabled
+                and self.intersection_sequence
                 and time.monotonic() < self.trajectory_takeover_until
             ):
                 speed_kmh = 0.0
@@ -814,7 +861,8 @@ class CarlaLaneDrivingApp:
             )
 
         if (
-            cfg("DEBUG_SHOW_TRAJECTORY", True)
+            self._trajectory_runtime_enabled
+            and cfg("DEBUG_SHOW_TRAJECTORY", True)
             and self.inference_worker is not None
         ):
             traj_snapshot, _, _, _ = self.inference_worker.trajectory_snapshot()
@@ -839,8 +887,11 @@ class CarlaLaneDrivingApp:
             self._control_thread.join(timeout=2.0)
 
         if self.inference_worker is not None:
+            self.inference_worker.set_trajectory_agent(None)
             self.inference_worker.stop()
             self.inference_worker = None
+        self.trajectory_steering_agent = None
+        self._trajectory_runtime_enabled = False
 
         if self.intersection_manager is not None:
             try:
