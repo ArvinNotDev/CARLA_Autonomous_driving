@@ -248,8 +248,8 @@ def test_auto_driver_does_not_return_steering_to_lane_pid_during_settle(monkeypa
             "_source_frame_id": 22,
             "debug": {
                 "combined": None,
-                "left_line_angle_deg": 2.0,
-                "right_line_angle_deg": -2.0,
+                "left_line_angle_deg": -15.0,
+                "right_line_angle_deg": 15.0,
             },
         },
         Location(2.0),
