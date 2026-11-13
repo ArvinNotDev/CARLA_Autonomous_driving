@@ -171,11 +171,11 @@ class LidarRadarWidget(QWidget):
         width = self.width()
         height = self.height()
         max_range = self._display_range()
-        diameter = max(80, int(min(width - 160, height - 70)))
-        diameter = min(diameter, int(height - 48))
+        diameter = max(80, int(min(width - 160, height - 100)))
+        diameter = min(diameter, int(height - 88))
         radius = diameter / 2.0
         center_x = max(radius + 16, (width - 96) / 2.0)
-        center_y = height / 2.0
+        center_y = height / 2.0 + 24.0
         image = self._point_image(diameter, radius)
         target = QRectF(center_x - radius, center_y - radius, diameter, diameter)
         painter.drawImage(target, image)
@@ -219,7 +219,8 @@ class LidarRadarWidget(QWidget):
         right_width = geometry.get("shoulder_width_right_m")
         left_height = geometry.get("shoulder_height_left_m")
         right_height = geometry.get("shoulder_height_right_m")
-        shoulder_length = geometry.get("shoulder_length_m")
+        shoulder_length_left = geometry.get("shoulder_length_left_m")
+        shoulder_length_right = geometry.get("shoulder_length_right_m")
 
         def metric(value, suffix="m", signed=False):
             if value is None:
@@ -239,8 +240,11 @@ class LidarRadarWidget(QWidget):
         height_text = (
             f"Shoulder height L/R: {metric(left_height, signed=True)} / {metric(right_height, signed=True)}"
         )
-        length_text = f"visible shoulder run: {metric(shoulder_length)}"
-        confidence = float(geometry.get("road_width_confidence", 0.0))
+        length_text = (
+            "visible shoulder run L/R: "
+            f"{metric(shoulder_length_left)} / {metric(shoulder_length_right)}"
+        )
+        coverage = float(geometry.get("road_width_confidence", 0.0))
         status = str(geometry.get("status", "waiting_for_scan"))
         painter.setPen(QColor("#dce7ee"))
         painter.drawText(
@@ -251,7 +255,12 @@ class LidarRadarWidget(QWidget):
         painter.drawText(
             QRectF(12, 51, width - 24, 20),
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            f"{height_text}   |   {length_text}   |   confidence: {confidence:.0%} ({status})",
+            f"{height_text}   |   {length_text}",
+        )
+        painter.drawText(
+            QRectF(12, 70, width - 24, 18),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            f"Edge coverage: {coverage:.0%} • {status} • Blue: road | Orange: shoulder",
         )
         painter.end()
 
