@@ -113,7 +113,11 @@
         }
       ]
     },
-    "LIDAR_ENABLED": false
+    "LIDAR_ENABLED": false,
+    "JUNCTION_DETECTION_MODE": "model",
+    "JUNCTION_ROI_MIN_LINE_LENGTH_RATIO": 0.35,
+    "JUNCTION_ROI_MAX_LINE_ANGLE_DEG": 12,
+    "JUNCTION_ROI_CONFIRM_FRAMES": 2
   },
   "_active_profile": "StableV2",
   "stableV1": {
@@ -218,7 +222,11 @@
         }
       ]
     },
-    "LIDAR_ENABLED": false
+    "LIDAR_ENABLED": false,
+    "JUNCTION_DETECTION_MODE": "model",
+    "JUNCTION_ROI_MIN_LINE_LENGTH_RATIO": 0.35,
+    "JUNCTION_ROI_MAX_LINE_ANGLE_DEG": 12,
+    "JUNCTION_ROI_CONFIRM_FRAMES": 2
   },
   "test": {
     "AUTO_MODE_DEFAULT": true,
@@ -334,7 +342,11 @@
         }
       ]
     },
-    "LIDAR_ENABLED": false
+    "LIDAR_ENABLED": false,
+    "JUNCTION_DETECTION_MODE": "model",
+    "JUNCTION_ROI_MIN_LINE_LENGTH_RATIO": 0.35,
+    "JUNCTION_ROI_MAX_LINE_ANGLE_DEG": 12,
+    "JUNCTION_ROI_CONFIRM_FRAMES": 2
   },
   "StableV2": {
     "AUTO_MODE_DEFAULT": true,
@@ -451,6 +463,10 @@
       ]
     },
     "TRAJECTORY_MODEL_ENABLED": false,
-    "LIDAR_ENABLED": false
+    "LIDAR_ENABLED": false,
+    "JUNCTION_DETECTION_MODE": "crosswalk_roi",
+    "JUNCTION_ROI_MIN_LINE_LENGTH_RATIO": 0.35,
+    "JUNCTION_ROI_MAX_LINE_ANGLE_DEG": 12,
+    "JUNCTION_ROI_CONFIRM_FRAMES": 2
   }
 }
