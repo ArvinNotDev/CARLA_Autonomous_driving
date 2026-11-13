@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import threading
 import time
 from typing import Optional, Dict
@@ -11,8 +12,10 @@ class LaneChangeManager:
     """
     Nonblocking lane-change state machine.
 
-    Planner queries may run asynchronously, but vehicle control always stays in
-    the main control thread. No sleep() or apply_control() occurs here.
+    Steering remains owned by this manager through VERIFY, CHANGE and SETTLE.
+    The ordinary lane-follow controller is released only after the camera has
+    observed a lane-change angle transition followed by stable lane markings
+    in the destination lane over distinct vision frames.
     """
 
     def __init__(
@@ -30,7 +33,7 @@ class LaneChangeManager:
         self.line_angles: Dict[str, Optional[float]] = {"left": None, "right": None}
         self.angle_cooldown_until = 0.0
 
-        self.phase = "IDLE"  # IDLE / VERIFY / CHANGE
+        self.phase = "IDLE"  # IDLE / VERIFY / CHANGE / SETTLE
         self.direction: Optional[str] = None
         self._segment_start_location = None
         self._state_lock = threading.Lock()
@@ -40,12 +43,21 @@ class LaneChangeManager:
         self._request_id = 0
         self._latest_planner_result: Optional[tuple[int, str]] = None
 
+        self._last_confirmation_frame_id: Optional[int] = None
+        self._angle_transition_seen = False
+        self._stable_angle_frames = 0
+        self._steering_distance_reached = False
+
     def _movement_active(self) -> bool:
         with self._state_lock:
-            return self.phase in {"VERIFY", "CHANGE"}
+            return self.phase in {"VERIFY", "CHANGE", "SETTLE"}
 
     def movement_active(self) -> bool:
         return self._movement_active()
+
+    def phase_name(self) -> str:
+        with self._state_lock:
+            return self.phase
 
     def _angle_guard_triggered(self) -> bool:
         threshold = float(getattr(conf, "LANE_CHANGE_LINE_ANGLE_THRESHOLD_DEG", 20.0))
@@ -54,7 +66,15 @@ class LaneChangeManager:
             for angle in self.line_angles.values()
         )
 
+    def _reset_completion_evidence(self) -> None:
+        self._last_confirmation_frame_id = None
+        self._angle_transition_seen = False
+        self._stable_angle_frames = 0
+        self._steering_distance_reached = False
+
     def _apply_planner_result(self, current_location) -> None:
+        if current_location is None:
+            return
         with self._state_lock:
             result = self._latest_planner_result
             if result is None or self.phase != "IDLE":
@@ -64,12 +84,74 @@ class LaneChangeManager:
             self.direction = direction
             self.phase = "VERIFY"
             self._segment_start_location = current_location
+            self._reset_completion_evidence()
+
+    def _record_angle_evidence(
+        self,
+        line_angles: Dict[str, Optional[float]],
+        lane_type: Optional[str],
+        source_frame_id: Optional[int],
+    ) -> None:
+        # Vision results are held between inference completions. Only count
+        # distinct source frames, otherwise a single result could satisfy the
+        # multi-frame confirmation merely because the control loop runs faster.
+        if source_frame_id is not None:
+            try:
+                frame_id = int(source_frame_id)
+            except (TypeError, ValueError):
+                return
+            if frame_id == self._last_confirmation_frame_id:
+                return
+            self._last_confirmation_frame_id = frame_id
+
+        valid_angles = []
+        for angle in line_angles.values():
+            if angle is None:
+                continue
+            try:
+                value = float(angle)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                valid_angles.append(abs(value))
+
+        line_available = bool(valid_angles) and lane_type not in {None, "", "none"}
+        if not line_available:
+            self._stable_angle_frames = 0
+            return
+
+        peak_angle = max(valid_angles)
+        enter_angle = max(
+            1.0, float(getattr(conf, "LANE_CHANGE_ANGLE_ENTER_DEG", 10.0))
+        )
+        settle_angle = max(
+            0.5, float(getattr(conf, "LANE_CHANGE_ANGLE_SETTLE_DEG", 6.0))
+        )
+        if peak_angle >= enter_angle:
+            self._angle_transition_seen = True
+            self._stable_angle_frames = 0
+            return
+
+        if self._angle_transition_seen and peak_angle <= settle_angle:
+            self._stable_angle_frames += 1
+        else:
+            self._stable_angle_frames = 0
+
+    def _completion_confirmed(self) -> bool:
+        if not self._steering_distance_reached or not self._angle_transition_seen:
+            return False
+        required_frames = max(
+            2, int(getattr(conf, "LANE_CHANGE_CONFIRM_FRAMES", 3))
+        )
+        return self._stable_angle_frames >= required_frames
 
     def update(
         self,
         current_location,
         goal_location,
         line_angles: Optional[Dict[str, Optional[float]]] = None,
+        lane_type: Optional[str] = None,
+        source_frame_id: Optional[int] = None,
     ) -> None:
         if self.vehicle is None:
             return
@@ -84,38 +166,56 @@ class LaneChangeManager:
 
         with self._state_lock:
             phase = self.phase
-            direction = self.direction
             segment_start = self._segment_start_location
 
         now = time.monotonic()
-        if phase == "VERIFY" and segment_start is not None:
-            try:
-                traveled = float(current_location.distance(segment_start))
-            except Exception:
-                traveled = 0.0
-
-            if traveled >= 1.0:
-                with self._state_lock:
-                    self.phase = "CHANGE"
-                    self._segment_start_location = current_location
+        if phase == "VERIFY":
+            if segment_start is not None and current_location is not None:
+                try:
+                    traveled = float(current_location.distance(segment_start))
+                except Exception:
+                    traveled = 0.0
+                verify_distance = max(
+                    0.1, float(getattr(conf, "LANE_CHANGE_VERIFY_DISTANCE_M", 1.0))
+                )
+                if traveled >= verify_distance:
+                    with self._state_lock:
+                        if self.phase == "VERIFY":
+                            self.phase = "CHANGE"
+                            self._segment_start_location = current_location
+                            self._reset_completion_evidence()
             return
 
-        if phase == "CHANGE" and segment_start is not None:
-            try:
-                traveled = float(current_location.distance(segment_start))
-            except Exception:
-                traveled = 0.0
-            if traveled >= 2.0:
-                self.lane_change_attempts += 1
-                if (
-                    self.lane_change_attempts
-                    % max(1, int(getattr(conf, "LANE_CHANGE_ANGLE_CHECK_EVERY", 2)))
-                    == 0
-                    and self._angle_guard_triggered()
-                ):
-                    self.angle_cooldown_until = now + float(
-                        getattr(conf, "LANE_CHANGE_ANGLE_COOLDOWN_SECONDS", 5.0)
-                    )
+        if phase in {"CHANGE", "SETTLE"}:
+            self._record_angle_evidence(
+                self.line_angles, lane_type, source_frame_id
+            )
+
+            if phase == "CHANGE" and segment_start is not None and current_location is not None:
+                try:
+                    traveled = float(current_location.distance(segment_start))
+                except Exception:
+                    traveled = 0.0
+                steering_distance = max(
+                    0.25, float(getattr(conf, "LANE_CHANGE_STEER_DISTANCE_M", 2.0))
+                )
+                if traveled >= steering_distance:
+                    with self._state_lock:
+                        if self.phase == "CHANGE":
+                            self._steering_distance_reached = True
+                            self.phase = "SETTLE"
+                    self.lane_change_attempts += 1
+                    if (
+                        self.lane_change_attempts
+                        % max(1, int(getattr(conf, "LANE_CHANGE_ANGLE_CHECK_EVERY", 2)))
+                        == 0
+                        and self._angle_guard_triggered()
+                    ):
+                        self.angle_cooldown_until = now + float(
+                            getattr(conf, "LANE_CHANGE_ANGLE_COOLDOWN_SECONDS", 5.0)
+                        )
+
+            if self._completion_confirmed():
                 self._finish()
             return
 
@@ -166,7 +266,7 @@ class LaneChangeManager:
         ).start()
 
     def control_override(self):
-        """Return the special lane-change control, or None."""
+        """Return a lane-change command until destination-lane stability is confirmed."""
         import carla
 
         with self._state_lock:
@@ -174,28 +274,32 @@ class LaneChangeManager:
             direction = self.direction
 
         if phase == "VERIFY":
-            return carla.VehicleControl(
-                throttle=0.08,
-                steer=0.0,
-                brake=0.0,
-                reverse=False,
-                hand_brake=False,
-                manual_gear_shift=False,
-            )
-        if phase == "CHANGE":
+            throttle = 0.08
+            steer = 0.0
+        elif phase == "CHANGE":
+            throttle = 0.10
             steer = -0.2 if direction == "left" else 0.2
-            return carla.VehicleControl(
-                throttle=0.10,
-                steer=steer,
-                brake=0.0,
-                reverse=False,
-                hand_brake=False,
-                manual_gear_shift=False,
+        elif phase == "SETTLE":
+            throttle = 0.10
+            settle_steer = max(
+                0.0, min(0.2, float(getattr(conf, "LANE_CHANGE_SETTLE_STEER", 0.08)))
             )
-        return None
+            steer = -settle_steer if direction == "left" else settle_steer
+        else:
+            return None
+
+        return carla.VehicleControl(
+            throttle=throttle,
+            steer=steer,
+            brake=0.0,
+            reverse=False,
+            hand_brake=False,
+            manual_gear_shift=False,
+        )
 
     def _finish(self) -> None:
         with self._state_lock:
             self.phase = "IDLE"
             self.direction = None
             self._segment_start_location = None
+            self._reset_completion_evidence()
