@@ -951,7 +951,11 @@ class CarlaLaneDrivingApp:
             control = manual_control or make_stop_control()
 
         self._safe_vehicle_apply_control(control)
-        if auto_mode and static_control is None:
+        lane_change_active = (
+            self.lane_change_manager is not None
+            and self.lane_change_manager.movement_active()
+        )
+        if auto_mode and static_control is None and not lane_change_active:
             self._update_out_checker_logic(
                 candidate_out_checker=candidate_out_checker,
                 drive_info=self._last_drivable_info,
