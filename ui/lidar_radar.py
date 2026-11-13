@@ -173,6 +173,7 @@ class LidarRadarWidget(QWidget):
     ) -> None:
         geometry = self._road_geometry
         edge_color = QColor("#35d9e8")
+        painter.setPen(QPen(edge_color, 2.5))
         for key in ("left_edge_points", "right_edge_points", "front_edge_points"):
             points = np.asarray(
                 geometry.get(key, np.empty((0, 2))), dtype=np.float32
@@ -180,16 +181,18 @@ class LidarRadarWidget(QWidget):
             if points.ndim != 2 or points.shape[0] < 2:
                 continue
 
-            painter.setPen(QPen(edge_color, 2.5))
-            mapped = [
-                QPointF(
+            previous: QPointF | None = None
+            for point in points:
+                if not np.all(np.isfinite(point[:2])):
+                    previous = None
+                    continue
+                current = QPointF(
                     center_x + float(point[1]) * radius / max_range,
                     center_y - float(point[0]) * radius / max_range,
                 )
-                for point in points
-            ]
-            for first, second in zip(mapped, mapped[1:]):
-                painter.drawLine(first, second)
+                if previous is not None:
+                    painter.drawLine(previous, current)
+                previous = current
 
     def _display_range(self) -> float:
         self.display_range_m = min(self._sensor_range(), max(5.0, self.display_range_m))
@@ -226,4 +229,3 @@ class LidarRadarWidget(QWidget):
                 ]
             )
         )
-
