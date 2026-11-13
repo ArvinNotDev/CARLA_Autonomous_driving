@@ -47,9 +47,13 @@ class RoadGeometryAnalyzer:
 
         self.enabled = bool(current["LIDAR_BOUNDARY_ENABLED"])
         self.x_min_m = max(0.1, min(10.0, float(current["LIDAR_BOUNDARY_MIN_FORWARD_M"])))
+        sensor_range_m = min(
+            float(getattr(conf, "LIDAR_MAX_RANGE_M", 200.0)),
+            max(1.0, float(getattr(conf, "LIDAR_RANGE_M", 100.0))),
+        )
         self.x_max_m = max(
             self.x_min_m + 8.0,
-            min(200.0, float(current["LIDAR_BOUNDARY_FORWARD_RANGE_M"])),
+            min(sensor_range_m, float(current["LIDAR_BOUNDARY_FORWARD_RANGE_M"])),
         )
         self.y_limit_m = max(3.0, min(50.0, float(current["LIDAR_BOUNDARY_SIDE_RANGE_M"])))
         self.road_start_distance_m = max(

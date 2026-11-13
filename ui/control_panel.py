@@ -295,7 +295,7 @@ class ControlPanel(QMainWindow):
                 "CAMERA_X", "CAMERA_Y", "CAMERA_Z", "CAMERA_FOV",
             },
             "Hardware (reset)": {
-                "CAMERA_IMAGE_WIDTH", "CAMERA_IMAGE_HEIGHT", "CAMERA_SENSOR_TICK", "MODEL_PATH",
+                "CAMERA_IMAGE_WIDTH", "CAMERA_IMAGE_HEIGHT", "CAMERA_SENSOR_TICK", "LIDAR_RANGE_M", "MODEL_PATH",
                 "ENABLE_SEMANTIC_CAMERA", "ENABLE_ALT_CAMERA",
             },
         }
@@ -544,7 +544,9 @@ class ControlPanel(QMainWindow):
                 widget.setChecked(bool(value))
             elif isinstance(widget, QComboBox):
                 widget.setCurrentText(str(value))
-            elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+            elif isinstance(widget, QSpinBox):
+                widget.setValue(int(value))
+            elif isinstance(widget, QDoubleSpinBox):
                 widget.setValue(float(value))
             else:
                 widget.setText(str(value))

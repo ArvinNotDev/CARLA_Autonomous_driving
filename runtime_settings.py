@@ -63,6 +63,7 @@ SETTING_SPECS = [
     ("LIDAR_BOUNDARY_SURFACE_TOLERANCE_M", "Road surface height tolerance (m)", "float", (0.05, 1.5, 0.01), True),
     ("LIDAR_BOUNDARY_MIN_FRONT_SPAN_M", "Minimum front boundary span (m)", "float", (1.0, 30.0, 0.5), True),
     ("LIDAR_BOUNDARY_MIN_FRONT_POINTS", "Minimum front boundary points", "int", (3, 128, 1), True),
+    ("LIDAR_RANGE_M", "LiDAR sensor range (restart required)", "float", (10.0, 200.0, 5.0), False),
     ("RL_TOP_ROI", "Right ROI top", "float", (0.0, 1.0, 0.01), True),
     ("RL_BOTTOM_ROI", "Right ROI bottom", "float", (0.0, 1.0, 0.01), True),
     ("RL_LEFT_ROI", "Right ROI left", "float", (0.0, 1.0, 0.01), True),

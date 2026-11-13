@@ -175,7 +175,7 @@ class LidarManager:
             return self._latest_complete_scan_raw, self._latest_complete_received_at
 
     def road_edge_snapshot(self) -> dict:
-        """Return only the latest connected left/right road-edge points."""
+        """Return the latest connected left, right, and forward road edges."""
         with self._lock:
             return self._latest_road_geometry or self._geometry_analyzer._empty_result()
 
