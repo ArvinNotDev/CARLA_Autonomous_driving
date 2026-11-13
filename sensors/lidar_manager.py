@@ -117,6 +117,8 @@ class LidarManager:
             return
 
         with self._lock:
+            if not self.enabled:
+                return
             if self._scan_started_at is None:
                 self._scan_started_at = timestamp
                 self._scan_reference_inverse = np.linalg.inv(matrix).astype(
