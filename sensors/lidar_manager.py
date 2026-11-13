@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 import threading
-from collections import deque
 import time
 from typing import Optional
 
@@ -14,7 +13,7 @@ from sensors.road_geometry import RoadGeometryAnalyzer
 
 
 class LidarManager:
-    """Collect roof LiDAR sweeps and publish scan plus road-geometry snapshots."""
+    """Collect roof LiDAR sweeps and publish points plus road-edge polylines."""
 
     def __init__(self, world, vehicle) -> None:
         self.world = world
@@ -23,8 +22,6 @@ class LidarManager:
 
         self._lock = threading.Lock()
         self._scan_chunks: list[np.ndarray] = []
-        self._scan_world_chunks: list[np.ndarray] = []
-        self._world_scan_history: deque[np.ndarray] = deque(maxlen=3)
         self._latest_complete_scan: Optional[np.ndarray] = None  # downsampled GUI scan
         self._latest_complete_scan_raw: Optional[np.ndarray] = None  # full-resolution control scan
         self._latest_complete_received_at: Optional[float] = None
@@ -52,8 +49,7 @@ class LidarManager:
             "lower_fov": float(conf.LIDAR_LOWER_FOV_DEG),
             "range": lidar_range_m,
             "noise_stddev": float(conf.LIDAR_NOISE_STDDEV_M),
-            # Capture every simulation step so the client can accumulate each
-            # 10 Hz rotation from its per-step partial sweeps.
+            # Capture every simulation step to assemble one rotation locally.
             "sensor_tick": 0.0,
         }
         for name, value in attributes.items():
@@ -97,8 +93,9 @@ class LidarManager:
 
         xyz = raw.reshape(-1, 4)[:, :3]
         try:
-            matrix = np.asarray(measurement.transform.get_matrix(), dtype=np.float32)
-            world_xyz = xyz @ matrix[:3, :3].T + matrix[:3, 3]
+            matrix = np.asarray(
+                measurement.transform.get_matrix(), dtype=np.float32
+            )
             heading_deg = float(measurement.transform.rotation.yaw) % 360.0
             timestamp = float(measurement.timestamp)
         except (AttributeError, TypeError, ValueError):
@@ -110,21 +107,20 @@ class LidarManager:
                 self._scan_reference_inverse = np.linalg.inv(matrix).astype(
                     np.float32, copy=False
                 )
-            reference_inverse = self._scan_reference_inverse.copy()
+            relative_matrix = self._scan_reference_inverse @ matrix
 
         reference_xyz = (
-            world_xyz @ reference_inverse[:3, :3].T
-            + reference_inverse[:3, 3]
-        )
-        height_above_road = (
-            reference_xyz[:, 2] + self._road_height_below_sensor_m
+            xyz @ relative_matrix[:3, :3].T + relative_matrix[:3, 3]
         )
         points = np.column_stack(
-            (reference_xyz[:, 0], reference_xyz[:, 1], height_above_road)
+            (
+                reference_xyz[:, 0],
+                reference_xyz[:, 1],
+                reference_xyz[:, 2] + self._road_height_below_sensor_m,
+            )
         ).astype(np.float32, copy=False)
 
         completed_scan = None
-        analysis_world_xyz = None
         with self._lock:
             revolution_seconds = 1.0 / float(conf.LIDAR_ROTATION_FREQUENCY_HZ)
             completed_revolution = (
@@ -142,45 +138,19 @@ class LidarManager:
                 self._latest_complete_scan = self._sample_for_display(raw_complete_scan)
                 self._latest_complete_received_at = time.monotonic()
                 completed_scan = raw_complete_scan
-
-                world_complete_scan = np.ascontiguousarray(
-                    np.concatenate((*self._scan_world_chunks, world_xyz), axis=0),
-                    dtype=np.float32,
-                )
-                world_complete_scan.setflags(write=False)
-                self._world_scan_history.append(world_complete_scan)
-                analysis_world_xyz = np.ascontiguousarray(
-                    np.concatenate(tuple(self._world_scan_history), axis=0),
-                    dtype=np.float32,
-                )
-
                 self._scan_chunks = []
-                self._scan_world_chunks = []
                 self._scan_started_at = timestamp
                 self._scan_reference_inverse = np.linalg.inv(matrix).astype(
                     np.float32, copy=False
                 )
             else:
                 self._scan_chunks.append(points)
-                self._scan_world_chunks.append(world_xyz)
 
-        if completed_scan is not None and analysis_world_xyz is not None:
-            analysis_reference_xyz = (
-                analysis_world_xyz @ reference_inverse[:3, :3].T
-                + reference_inverse[:3, 3]
-            )
-            analysis_points = np.column_stack(
-                (
-                    analysis_reference_xyz[:, 0],
-                    analysis_reference_xyz[:, 1],
-                    analysis_reference_xyz[:, 2]
-                    + self._road_height_below_sensor_m,
-                )
-            ).astype(np.float32, copy=False)
-            geometry = self._geometry_analyzer.analyze(analysis_points)
+        if completed_scan is not None:
+            edge_points = self._geometry_analyzer.analyze(completed_scan)
             with self._lock:
                 if self._latest_complete_scan_raw is completed_scan:
-                    self._latest_road_geometry = geometry
+                    self._latest_road_geometry = edge_points
 
     def snapshot(self) -> tuple[Optional[np.ndarray], float, bool]:
         with self._lock:
@@ -202,8 +172,8 @@ class LidarManager:
         with self._lock:
             return self._latest_complete_scan_raw, self._latest_complete_received_at
 
-    def road_geometry_snapshot(self) -> dict:
-        """Return the most recently analyzed road and shoulder geometry."""
+    def road_edge_snapshot(self) -> dict:
+        """Return only the latest connected left/right road-edge points."""
         with self._lock:
             return self._latest_road_geometry or self._geometry_analyzer._empty_result()
 
@@ -222,8 +192,6 @@ class LidarManager:
             pass
         with self._lock:
             self._scan_chunks.clear()
-            self._scan_world_chunks.clear()
-            self._world_scan_history.clear()
             self._latest_complete_scan = None
             self._latest_complete_scan_raw = None
             self._latest_complete_received_at = None

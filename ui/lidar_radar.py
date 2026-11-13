@@ -56,7 +56,7 @@ class LidarRadarWidget(QWidget):
         if self.lidar_manager is None:
             return
         points, heading_deg, complete = self.lidar_manager.snapshot()
-        geometry = self.lidar_manager.road_geometry_snapshot()
+        geometry = self.lidar_manager.road_edge_snapshot()
         if (
             points is self._points
             and heading_deg == self._heading_deg
@@ -108,53 +108,6 @@ class LidarRadarWidget(QWidget):
             colors = self._height_colors(points[inside, 2])
             canvas[py[inside], px[inside]] = colors
 
-        cells = np.asarray(
-            self._road_geometry.get("surface_cells", np.empty((0, 3))),
-            dtype=np.float32,
-        )
-        if cells.ndim == 2 and cells.shape[1] >= 3 and len(cells):
-            cell_size = max(
-                1,
-                int(round(
-                    float(self._road_geometry.get("surface_resolution_m", 0.25))
-                    * diameter / (2.0 * max_range)
-                )),
-            )
-            cell_px = (
-                diameter / 2.0 + cells[:, 1] * radius / max_range
-            ).astype(np.int32)
-            cell_py = (
-                diameter / 2.0 - cells[:, 0] * radius / max_range
-            ).astype(np.int32)
-            cell_labels = cells[:, 2].astype(np.uint8)
-            for label, rgb in (
-                (1, np.asarray((35, 115, 215), dtype=np.float32)),
-                (2, np.asarray((238, 145, 42), dtype=np.float32)),
-            ):
-                selected = cell_labels == label
-                if not np.any(selected):
-                    continue
-                cx = cell_px[selected]
-                cy = cell_py[selected]
-                for offset_y in range(cell_size):
-                    for offset_x in range(cell_size):
-                        draw_x = cx + offset_x
-                        draw_y = cy + offset_y
-                        valid_cells = (
-                            (draw_x >= 0)
-                            & (draw_x < diameter)
-                            & (draw_y >= 0)
-                            & (draw_y < diameter)
-                        )
-                        if not np.any(valid_cells):
-                            continue
-                        target = canvas[
-                            draw_y[valid_cells], draw_x[valid_cells]
-                        ].astype(np.float32)
-                        canvas[
-                            draw_y[valid_cells], draw_x[valid_cells]
-                        ] = (target * 0.28 + rgb * 0.72).astype(np.uint8)
-
         return QImage(
             canvas.data,
             diameter,
@@ -168,21 +121,20 @@ class LidarRadarWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QColor("#101418"))
 
-        width = self.width()
-        height = self.height()
         max_range = self._display_range()
-        diameter = max(80, int(min(width - 160, height - 100)))
-        diameter = min(diameter, int(height - 88))
+        diameter = max(80, int(min(self.width() - 24, self.height() - 24)))
         radius = diameter / 2.0
-        center_x = max(radius + 16, (width - 96) / 2.0)
-        center_y = height / 2.0 + 24.0
+        center_x = self.width() / 2.0
+        center_y = self.height() / 2.0
+
         image = self._point_image(diameter, radius)
         target = QRectF(center_x - radius, center_y - radius, diameter, diameter)
         painter.drawImage(target, image)
+
         painter.save()
-        geometry_clip = QPainterPath()
-        geometry_clip.addEllipse(QPointF(center_x, center_y), radius, radius)
-        painter.setClipPath(geometry_clip)
+        clip = QPainterPath()
+        clip.addEllipse(QPointF(center_x, center_y), radius, radius)
+        painter.setClipPath(clip)
         self._draw_geometry_boundaries(
             painter, center_x, center_y, radius, max_range
         )
@@ -191,80 +143,19 @@ class LidarRadarWidget(QWidget):
         painter.setPen(QPen(QColor("#52616b"), 1))
         for distance in self._ring_distances(max_range):
             ring_radius = radius * distance / max_range
-            painter.drawEllipse(QPointF(center_x, center_y), ring_radius, ring_radius)
-            painter.setPen(QColor("#a9b7c0"))
-            painter.drawText(
-                QPointF(center_x + 4, center_y - ring_radius - 3),
-                f"{distance:g} m",
+            painter.drawEllipse(
+                QPointF(center_x, center_y), ring_radius, ring_radius
             )
-            painter.setPen(QPen(QColor("#52616b"), 1))
 
-        painter.drawLine(QPointF(center_x - radius, center_y), QPointF(center_x + radius, center_y))
-        painter.drawLine(QPointF(center_x, center_y - radius), QPointF(center_x, center_y + radius))
+        painter.drawLine(
+            QPointF(center_x - radius, center_y),
+            QPointF(center_x + radius, center_y),
+        )
+        painter.drawLine(
+            QPointF(center_x, center_y - radius),
+            QPointF(center_x, center_y + radius),
+        )
         self._draw_vehicle(painter, center_x, center_y)
-        self._draw_height_legend(painter, center_x + radius + 22, center_y, height)
-
-        state = "360° scan" if self._complete else "Accumulating 360° scan"
-        if self.lidar_manager is None:
-            state = "LiDAR unavailable"
-        painter.setPen(QColor("#e6edf3"))
-        painter.drawText(
-            QRectF(12, 8, width - 24, 24),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            f"CARLA LiDAR • {state} • heading {self._heading_deg:.1f}° • range {max_range:g} m",
-        )
-        geometry = self._road_geometry
-        road_width = geometry.get("road_width_m")
-        left_width = geometry.get("shoulder_width_left_m")
-        right_width = geometry.get("shoulder_width_right_m")
-        left_height = geometry.get("shoulder_height_left_m")
-        right_height = geometry.get("shoulder_height_right_m")
-        shoulder_length_left = geometry.get("shoulder_length_left_m")
-        shoulder_length_right = geometry.get("shoulder_length_right_m")
-
-        def metric(value, suffix="m", signed=False):
-            if value is None:
-                return "—"
-            number = float(value)
-            rendered = f"{number:+.2f}" if signed else f"{number:.2f}"
-            return f"{rendered} {suffix}"
-
-        road_text = (
-            f"Road width: {metric(road_width)}"
-            if road_width is not None
-            else "Road width: —"
-        )
-        shoulder_text = (
-            f"Shoulder L/R: {metric(left_width)} / {metric(right_width)}"
-        )
-        height_text = (
-            f"Shoulder height L/R: {metric(left_height, signed=True)} / {metric(right_height, signed=True)}"
-        )
-        length_text = (
-            "Run L/R: "
-            f"{metric(shoulder_length_left)} / {metric(shoulder_length_right)}"
-        )
-        coverage = float(geometry.get("road_width_confidence", 0.0))
-        status = str(geometry.get("status", "waiting_for_scan"))
-        metrics_font = painter.font()
-        metrics_font.setPointSize(8)
-        painter.setFont(metrics_font)
-        painter.setPen(QColor("#dce7ee"))
-        painter.drawText(
-            QRectF(12, 32, width - 24, 20),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            f"{road_text}   |   {shoulder_text}",
-        )
-        painter.drawText(
-            QRectF(12, 51, width - 24, 20),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            f"{height_text}   |   {length_text}",
-        )
-        painter.drawText(
-            QRectF(12, 70, width - 24, 18),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            f"Edge coverage: {coverage:.0%} • {status} • Blue: road | Orange: shoulder",
-        )
         painter.end()
 
     def _draw_geometry_boundaries(
@@ -276,19 +167,15 @@ class LidarRadarWidget(QWidget):
         max_range: float,
     ) -> None:
         geometry = self._road_geometry
-        lines = (
-            ("left_edge_points", QColor("#5bd7ff"), 2),
-            ("right_edge_points", QColor("#5bd7ff"), 2),
-            ("left_shoulder_outer_points", QColor("#ffad42"), 2),
-            ("right_shoulder_outer_points", QColor("#ffad42"), 2),
-        )
-        for key, color, line_width in lines:
+        edge_color = QColor("#35d9e8")
+        for key in ("left_edge_points", "right_edge_points"):
             points = np.asarray(
                 geometry.get(key, np.empty((0, 2))), dtype=np.float32
             )
             if points.ndim != 2 or points.shape[0] < 2:
                 continue
-            painter.setPen(QPen(color, line_width))
+
+            painter.setPen(QPen(edge_color, 2.5))
             mapped = [
                 QPointF(
                     center_x + float(point[1]) * radius / max_range,
@@ -335,20 +222,3 @@ class LidarRadarWidget(QWidget):
             )
         )
 
-    @classmethod
-    def _draw_height_legend(
-        cls, painter: QPainter, x: float, center_y: float, canvas_height: int
-    ) -> None:
-        legend_height = min(240.0, max(120.0, canvas_height - 100.0))
-        top = center_y - legend_height / 2.0
-        rect = QRectF(x, top, 18, legend_height)
-        gradient = QLinearGradient(QPointF(x, top), QPointF(x, top + legend_height))
-        for height_m, rgb in reversed(cls._height_stops):
-            position = 1.0 - (height_m + 2.0) / 8.0
-            gradient.setColorAt(position, QColor(*rgb))
-        painter.fillRect(rect, gradient)
-        painter.setPen(QColor("#e6edf3"))
-        painter.drawText(QPointF(x - 3, top - 8), "Height above road (m)")
-        for height_m in (-2, 0, 2, 4, 6):
-            y = top + (6.0 - height_m) / 8.0 * legend_height
-            painter.drawText(QPointF(x + 24, y + 4), f"{height_m:+d}")
