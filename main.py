@@ -486,10 +486,16 @@ class CarlaLaneDrivingApp:
             lane_change_phase = self.lane_change_manager.phase_name()
             if lane_change_phase != "IDLE":
                 direction = self.lane_change_manager.direction or "unknown"
-                lines.append(
-                    f"Lane change: {lane_change_phase} ({direction}) — "
-                    "lane-follow steering locked"
-                )
+                if self.lane_change_manager.confirmation_timed_out():
+                    lines.append(
+                        f"Lane change: {lane_change_phase} ({direction}) — "
+                        "safety brake active; waiting for lane confirmation"
+                    )
+                else:
+                    lines.append(
+                        f"Lane change: {lane_change_phase} ({direction}) — "
+                        "lane-follow steering locked"
+                    )
 
         composed = self.renderer.compose(screen, {"lines": lines})
         conf.debug_frame_buffer = np.ascontiguousarray(composed)
