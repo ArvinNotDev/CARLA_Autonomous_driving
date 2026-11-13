@@ -321,6 +321,15 @@ class ControlPanel(QMainWindow):
             for spec in SETTING_SPECS:
                 if spec[0] in keys and spec[2] != "sequence":
                     self._add_setting(form, spec)
+            if title == "Lane change":
+                handoff_help = QLabel(
+                    "Lane-follow steering stays locked during the maneuver. "
+                    "The handoff requires an angle change from the starting lane "
+                    "followed by stable lane markings across distinct camera frames. "
+                    "If confirmation times out, the vehicle holds full brake."
+                )
+                handoff_help.setWordWrap(True)
+                form.addRow("Steering ownership", handoff_help)
             if title == "Hardware (reset)":
                 form.addRow("ONNX model input", QLabel("512 × 512 (fixed by model)"))
             self.tabs.addTab(self._scroll(page), title)
