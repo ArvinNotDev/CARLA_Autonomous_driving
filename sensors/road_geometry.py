@@ -301,9 +301,10 @@ class RoadGeometryAnalyzer:
                 and station["right"]["width_m"] is not None
             ]
         )
+        left_length = left_length if left_length is not None and left_length >= 4.0 else None
+        right_length = right_length if right_length is not None and right_length >= 4.0 else None
         shoulder_lengths = [
-            value for value in (left_length, right_length)
-            if value is not None and value >= 4.0
+            value for value in (left_length, right_length) if value is not None
         ]
         shoulder_length = max(shoulder_lengths) if shoulder_lengths else None
 
@@ -335,6 +336,8 @@ class RoadGeometryAnalyzer:
             "shoulder_height_left_m": left_height,
             "shoulder_height_right_m": right_height,
             "shoulder_length_m": shoulder_length,
+            "shoulder_length_left_m": left_length,
+            "shoulder_length_right_m": right_length,
             "edge_station_count": len(both_sides),
             "station_count": len(station_positions),
             "road_width_confidence": (
@@ -583,6 +586,8 @@ class RoadGeometryAnalyzer:
             "shoulder_height_left_m": None,
             "shoulder_height_right_m": None,
             "shoulder_length_m": None,
+            "shoulder_length_left_m": None,
+            "shoulder_length_right_m": None,
             "edge_station_count": 0,
             "station_count": 0,
             "road_width_confidence": 0.0,
