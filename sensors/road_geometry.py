@@ -72,10 +72,11 @@ class RoadGeometryAnalyzer:
         y_indices = y_indices[valid_indices]
         ground_z = cloud[valid_indices, 2]
 
-        height_grid = np.full((x_count, y_count), np.nan, dtype=np.float32)
+        height_grid = np.full((x_count, y_count), np.inf, dtype=np.float32)
         point_counts = np.zeros((x_count, y_count), dtype=np.uint16)
         np.minimum.at(height_grid, (x_indices, y_indices), ground_z)
         np.add.at(point_counts, (x_indices, y_indices), 1)
+        height_grid[point_counts == 0] = np.nan
 
         occupied = point_counts > 0
         connected_occupancy = self._fill_single_cell_holes(occupied)
