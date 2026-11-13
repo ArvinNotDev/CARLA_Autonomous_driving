@@ -44,9 +44,12 @@ class LaneChangeManager:
         self._latest_planner_result: Optional[tuple[int, str]] = None
 
         self._last_confirmation_frame_id: Optional[int] = None
+        self._baseline_line_angles: Dict[str, float] = {}
         self._angle_transition_seen = False
         self._stable_angle_frames = 0
         self._steering_distance_reached = False
+        self._settle_started_at: Optional[float] = None
+        self._settle_timed_out = False
 
     def _movement_active(self) -> bool:
         with self._state_lock:
@@ -68,9 +71,12 @@ class LaneChangeManager:
 
     def _reset_completion_evidence(self) -> None:
         self._last_confirmation_frame_id = None
+        self._baseline_line_angles = {}
         self._angle_transition_seen = False
         self._stable_angle_frames = 0
         self._steering_distance_reached = False
+        self._settle_started_at = None
+        self._settle_timed_out = False
 
     def _apply_planner_result(self, current_location) -> None:
         if current_location is None:
@@ -85,6 +91,19 @@ class LaneChangeManager:
             self.phase = "VERIFY"
             self._segment_start_location = current_location
             self._reset_completion_evidence()
+
+    def _capture_baseline_angles(self) -> None:
+        baseline: Dict[str, float] = {}
+        for side, angle in self.line_angles.items():
+            if angle is None:
+                continue
+            try:
+                value = float(angle)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                baseline[side] = value
+        self._baseline_line_angles = baseline
 
     def _record_angle_evidence(
         self,
@@ -104,8 +123,8 @@ class LaneChangeManager:
                 return
             self._last_confirmation_frame_id = frame_id
 
-        valid_angles = []
-        for angle in line_angles.values():
+        current_angles: Dict[str, float] = {}
+        for side, angle in line_angles.items():
             if angle is None:
                 continue
             try:
@@ -113,26 +132,39 @@ class LaneChangeManager:
             except (TypeError, ValueError):
                 continue
             if math.isfinite(value):
-                valid_angles.append(abs(value))
+                current_angles[side] = value
 
-        line_available = bool(valid_angles) and lane_type not in {None, "", "none"}
+        line_available = bool(current_angles) and lane_type not in {None, "", "none"}
         if not line_available:
             self._stable_angle_frames = 0
             return
 
-        peak_angle = max(valid_angles)
         enter_angle = max(
             1.0, float(getattr(conf, "LANE_CHANGE_ANGLE_ENTER_DEG", 10.0))
         )
         settle_angle = max(
             0.5, float(getattr(conf, "LANE_CHANGE_ANGLE_SETTLE_DEG", 6.0))
         )
-        if peak_angle >= enter_angle:
-            self._angle_transition_seen = True
+
+        # Compare each visible lane boundary to its pre-maneuver angle. This
+        # works on curved roads too; requiring angles near zero would only work
+        # for a perfectly straight road and could leave the override stuck.
+        common_sides = self._baseline_line_angles.keys() & current_angles.keys()
+        if not common_sides:
             self._stable_angle_frames = 0
             return
 
-        if self._angle_transition_seen and peak_angle <= settle_angle:
+        deltas = {
+            side: current_angles[side] - self._baseline_line_angles[side]
+            for side in common_sides
+        }
+        if not self._angle_transition_seen:
+            if any(abs(delta) >= enter_angle for delta in deltas.values()):
+                self._angle_transition_seen = True
+            self._stable_angle_frames = 0
+            return
+
+        if all(abs(delta) <= settle_angle for delta in deltas.values()):
             self._stable_angle_frames += 1
         else:
             self._stable_angle_frames = 0
@@ -184,6 +216,7 @@ class LaneChangeManager:
                             self.phase = "CHANGE"
                             self._segment_start_location = current_location
                             self._reset_completion_evidence()
+                            self._capture_baseline_angles()
             return
 
         if phase in {"CHANGE", "SETTLE"}:
@@ -204,6 +237,7 @@ class LaneChangeManager:
                         if self.phase == "CHANGE":
                             self._steering_distance_reached = True
                             self.phase = "SETTLE"
+                            self._settle_started_at = now
                     self.lane_change_attempts += 1
                     if (
                         self.lane_change_attempts
@@ -217,6 +251,15 @@ class LaneChangeManager:
 
             if self._completion_confirmed():
                 self._finish()
+                return
+
+            if (
+                self.phase == "SETTLE"
+                and self._settle_started_at is not None
+                and now - self._settle_started_at
+                >= max(1.0, float(getattr(conf, "LANE_CHANGE_CONFIRM_TIMEOUT_SECONDS", 8.0)))
+            ):
+                self._settle_timed_out = True
             return
 
         if phase != "IDLE":
@@ -280,6 +323,15 @@ class LaneChangeManager:
             throttle = 0.10
             steer = -0.2 if direction == "left" else 0.2
         elif phase == "SETTLE":
+            if self._settle_timed_out:
+                return carla.VehicleControl(
+                    throttle=0.0,
+                    steer=0.0,
+                    brake=1.0,
+                    reverse=False,
+                    hand_brake=False,
+                    manual_gear_shift=False,
+                )
             throttle = 0.10
             settle_steer = max(
                 0.0, min(0.2, float(getattr(conf, "LANE_CHANGE_SETTLE_STEER", 0.08)))
