@@ -32,6 +32,10 @@ class VisionProcessor:
         self.min_side_pixels = getattr(conf, "MIN_SIDE_PIXELS", 80)
 
         self.active_side = None
+        self.crosswalk_junction_enabled = (
+            str(getattr(conf, "JUNCTION_DETECTION_MODE", "model")).strip().lower()
+            == "crosswalk_roi"
+        )
         self.crosswalk_junction_detector = CrosswalkRoiJunctionDetector()
 
         self.session = None
@@ -504,7 +508,7 @@ class VisionProcessor:
             }
 
         junction_roi_info = None
-        if str(getattr(conf, "JUNCTION_DETECTION_MODE", "model")) == "crosswalk_roi":
+        if self.crosswalk_junction_enabled:
             junction_roi_info = self.crosswalk_junction_detector.detect(base_frame)
 
         if self.mode == "segmentation":
