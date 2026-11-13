@@ -38,9 +38,9 @@ Junction handling is intentionally one pipeline:
 
 The planner may run asynchronously, but no junction worker calls `vehicle.apply_control()`. The control thread is the sole owner of vehicle commands during normal driving, lane changes, static junction lead-ins, and trajectory takeover. There is no blocking render-loop sleep and no legacy full-left recovery command.
 
-## LiDAR road boundaries
+## Optional LiDAR radar
 
-The radar displays the LiDAR point cloud and connects detected left, right, and forward road boundaries in turquoise. Boundary extraction uses one completed sweep and compact height profiles in both lateral and forward directions, so a boundary crossing the area directly ahead of the vehicle can also be drawn. The default search and radar view reach 80 m forward, with a 20 m search range to each side; the GUI's **Road boundaries** tab exposes live controls for both ranges and the height-transition thresholds. The forward analysis limit is capped by the configured sensor range; **LiDAR sensor range** is available under **Hardware (reset)** and requires a run restart. The analyzer does not build a road/shoulder surface map, accumulate multiple sweeps, or calculate road and shoulder dimensions.
+LiDAR is disabled by default in the application and every included runtime profile. Use the **LiDAR: OFF/ON** button beside the radar in the runtime panel to start or completely stop the CARLA sensor while the simulation is running. When enabled, the radar displays the point cloud; the optional recovery safety check can also use LiDAR to avoid steering corrections toward detected side obstacles. LiDAR is not used to detect road edges or road shoulders. The radar zoom is available under **LiDAR display**, while **LiDAR sensor range** is under **Hardware (reset)** and requires a run restart.
 
 ## Requirements
 
@@ -87,7 +87,7 @@ carla_manager.py           CARLA connection, spawn, and cleanup
 controllers/               PID and keyboard control
 driving/                   Autonomous driving orchestration
 navigation/                Route, junction, lane-side, and lane-change logic
-sensors/                   RGB, semantic, and trajectory cameras
+sensors/                   RGB/semantic cameras and optional LiDAR
 trajectory/                Waypoint model, steering agent, visualization
 vision/                    ONNX/segmentation perception and debug views
 ui/                        Spawn/goal picker, renderer, runtime control panel
