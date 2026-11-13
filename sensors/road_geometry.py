@@ -20,7 +20,8 @@ class RoadGeometryAnalyzer:
         self.road_start_distance_m = 1.25
         self.road_surface_tolerance_m = 0.22
         self.edge_step_m = 0.13
-        self.max_ground_height_m = 1.4
+        self.min_ground_height_m = -4.0
+        self.max_ground_height_m = 4.0
         self.max_shoulder_width_m = 5.0
 
     def analyze(self, points: np.ndarray | None) -> dict:
@@ -38,7 +39,7 @@ class RoadGeometryAnalyzer:
             & (cloud[:, 0] >= self.x_min_m)
             & (cloud[:, 0] <= self.x_max_m)
             & (np.abs(cloud[:, 1]) <= self.y_limit_m)
-            & (cloud[:, 2] >= -0.8)
+            & (cloud[:, 2] >= self.min_ground_height_m)
             & (cloud[:, 2] <= self.max_ground_height_m)
         )
         cloud = cloud[in_roi, :3]
@@ -301,8 +302,16 @@ class RoadGeometryAnalyzer:
                 and station["right"]["width_m"] is not None
             ]
         )
-        left_length = left_length if left_length is not None and left_length >= 4.0 else None
-        right_length = right_length if right_length is not None and right_length >= 4.0 else None
+        left_length = (
+            left_length
+            if left_length is not None and left_length >= 4.0
+            else None
+        )
+        right_length = (
+            right_length
+            if right_length is not None and right_length >= 4.0
+            else None
+        )
         shoulder_lengths = [
             value for value in (left_length, right_length) if value is not None
         ]
@@ -465,20 +474,6 @@ class RoadGeometryAnalyzer:
         if len(next_values) < 3:
             return False
         return abs(float(np.median(next_values[:3])) - first_height) <= 0.16
-
-    @staticmethod
-    def _next_valid_position(
-        profile: np.ndarray,
-        ordered_indices: np.ndarray,
-        start_position: int,
-        *,
-        max_steps: int,
-    ) -> int | None:
-        end = min(len(ordered_indices), start_position + max_steps)
-        for position in range(start_position, end):
-            if np.isfinite(profile[ordered_indices[position]]):
-                return position
-        return None
 
     def _measure_shoulder(
         self,
