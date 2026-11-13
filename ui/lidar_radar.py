@@ -26,6 +26,7 @@ class LidarRadarWidget(QWidget):
         self._points: np.ndarray | None = None
         self._heading_deg = 0.0
         self._complete = False
+        self._road_geometry: dict = {}
         sensor_range = min(
             float(conf.LIDAR_MAX_RANGE_M), max(1.0, float(conf.LIDAR_RANGE_M))
         )
@@ -47,11 +48,17 @@ class LidarRadarWidget(QWidget):
         if self.lidar_manager is None:
             return
         points, heading_deg, complete = self.lidar_manager.snapshot()
-        if points is self._points and heading_deg == self._heading_deg:
+        geometry = self.lidar_manager.road_geometry_snapshot()
+        if (
+            points is self._points
+            and heading_deg == self._heading_deg
+            and geometry is self._road_geometry
+        ):
             return
         self._points = points
         self._heading_deg = heading_deg
         self._complete = complete
+        self._road_geometry = geometry
         self.update()
 
     @classmethod
@@ -92,6 +99,54 @@ class LidarRadarWidget(QWidget):
         if np.any(inside):
             colors = self._height_colors(points[inside, 2])
             canvas[py[inside], px[inside]] = colors
+
+        cells = np.asarray(
+            self._road_geometry.get("surface_cells", np.empty((0, 3))),
+            dtype=np.float32,
+        )
+        if cells.ndim == 2 and cells.shape[1] >= 3 and len(cells):
+            cell_size = max(
+                1,
+                int(round(
+                    float(self._road_geometry.get("surface_resolution_m", 0.25))
+                    * diameter / (2.0 * max_range)
+                )),
+            )
+            cell_px = (
+                diameter / 2.0 + cells[:, 1] * radius / max_range
+            ).astype(np.int32)
+            cell_py = (
+                diameter / 2.0 - cells[:, 0] * radius / max_range
+            ).astype(np.int32)
+            cell_labels = cells[:, 2].astype(np.uint8)
+            for label, rgb in (
+                (1, np.asarray((35, 115, 215), dtype=np.float32)),
+                (2, np.asarray((238, 145, 42), dtype=np.float32)),
+            ):
+                selected = cell_labels == label
+                if not np.any(selected):
+                    continue
+                cx = cell_px[selected]
+                cy = cell_py[selected]
+                for offset_y in range(cell_size):
+                    for offset_x in range(cell_size):
+                        draw_x = cx + offset_x
+                        draw_y = cy + offset_y
+                        valid_cells = (
+                            (draw_x >= 0)
+                            & (draw_x < diameter)
+                            & (draw_y >= 0)
+                            & (draw_y < diameter)
+                        )
+                        if not np.any(valid_cells):
+                            continue
+                        target = canvas[
+                            draw_y[valid_cells], draw_x[valid_cells]
+                        ].astype(np.float32)
+                        canvas[
+                            draw_y[valid_cells], draw_x[valid_cells]
+                        ] = (target * 0.28 + rgb * 0.72).astype(np.uint8)
+
         return QImage(
             canvas.data,
             diameter,
@@ -116,6 +171,9 @@ class LidarRadarWidget(QWidget):
         image = self._point_image(diameter, radius)
         target = QRectF(center_x - radius, center_y - radius, diameter, diameter)
         painter.drawImage(target, image)
+        self._draw_geometry_boundaries(
+            painter, center_x, center_y, radius, max_range
+        )
 
         painter.setPen(QPen(QColor("#52616b"), 1))
         for distance in self._ring_distances(max_range):
@@ -142,7 +200,73 @@ class LidarRadarWidget(QWidget):
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
             f"CARLA LiDAR • {state} • heading {self._heading_deg:.1f}° • range {max_range:g} m",
         )
+        geometry = self._road_geometry
+        road_width = geometry.get("road_width_m")
+        left_width = geometry.get("shoulder_width_left_m")
+        right_width = geometry.get("shoulder_width_right_m")
+        left_height = geometry.get("shoulder_height_left_m")
+        right_height = geometry.get("shoulder_height_right_m")
+        shoulder_length = geometry.get("shoulder_length_m")
+
+        def metric(value, suffix="m"):
+            return "—" if value is None else f"{float(value):.2f} {suffix}"
+
+        road_text = (
+            f"Road width: {metric(road_width)}"
+            if road_width is not None
+            else "Road width: boundary not reliably detected"
+        )
+        shoulder_text = (
+            f"Shoulder L/R: {metric(left_width)} / {metric(right_width)}"
+        )
+        height_text = (
+            f"Shoulder height L/R: {metric(left_height)} / {metric(right_height)}"
+        )
+        length_text = f"visible length: {metric(shoulder_length)}"
+        painter.setPen(QColor("#dce7ee"))
+        painter.drawText(
+            QRectF(12, 32, width - 24, 20),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            f"{road_text}   |   {shoulder_text}",
+        )
+        painter.drawText(
+            QRectF(12, 51, width - 24, 20),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            f"{height_text}   |   {length_text}",
+        )
         painter.end()
+
+    def _draw_geometry_boundaries(
+        self,
+        painter: QPainter,
+        center_x: float,
+        center_y: float,
+        radius: float,
+        max_range: float,
+    ) -> None:
+        geometry = self._road_geometry
+        lines = (
+            ("left_edge_points", QColor("#5bd7ff"), 2),
+            ("right_edge_points", QColor("#5bd7ff"), 2),
+            ("left_shoulder_outer_points", QColor("#ffad42"), 2),
+            ("right_shoulder_outer_points", QColor("#ffad42"), 2),
+        )
+        for key, color, line_width in lines:
+            points = np.asarray(
+                geometry.get(key, np.empty((0, 2))), dtype=np.float32
+            )
+            if points.ndim != 2 or points.shape[0] < 2:
+                continue
+            painter.setPen(QPen(color, line_width))
+            mapped = [
+                QPointF(
+                    center_x + float(point[1]) * radius / max_range,
+                    center_y - float(point[0]) * radius / max_range,
+                )
+                for point in points
+            ]
+            for first, second in zip(mapped, mapped[1:]):
+                painter.drawLine(first, second)
 
     def _display_range(self) -> float:
         self.display_range_m = min(self._sensor_range(), max(5.0, self.display_range_m))

@@ -9,6 +9,7 @@ import carla
 import numpy as np
 
 import config_city as conf
+from sensors.road_geometry import RoadGeometryAnalyzer
 
 
 class LidarManager:
@@ -25,8 +26,11 @@ class LidarManager:
         self._latest_complete_scan_raw: Optional[np.ndarray] = None  # full-resolution control scan
         self._latest_complete_received_at: Optional[float] = None
         self._scan_started_at: Optional[float] = None
+        self._scan_reference_inverse: Optional[np.ndarray] = None
         self._road_height_below_sensor_m = 2.0
         self._heading_deg = 0.0
+        self._geometry_analyzer = RoadGeometryAnalyzer()
+        self._latest_road_geometry: Optional[dict] = None
 
     def start(self) -> None:
         blueprint = self.world.get_blueprint_library().find(
@@ -92,21 +96,32 @@ class LidarManager:
         try:
             matrix = np.asarray(measurement.transform.get_matrix(), dtype=np.float32)
             world_xyz = xyz @ matrix[:3, :3].T + matrix[:3, 3]
-            road_z = (
-                float(measurement.transform.location.z)
-                - self._road_height_below_sensor_m * float(matrix[2, 2])
-            )
-            height_above_road = world_xyz[:, 2] - road_z
-            points = np.column_stack((xyz[:, 0], xyz[:, 1], height_above_road))
             heading_deg = float(measurement.transform.rotation.yaw) % 360.0
             timestamp = float(measurement.timestamp)
         except (AttributeError, TypeError, ValueError):
             return
 
-        points = points.astype(np.float32, copy=False)
         with self._lock:
             if self._scan_started_at is None:
                 self._scan_started_at = timestamp
+                self._scan_reference_inverse = np.linalg.inv(matrix).astype(
+                    np.float32, copy=False
+                )
+            reference_inverse = self._scan_reference_inverse.copy()
+
+        reference_xyz = (
+            world_xyz @ reference_inverse[:3, :3].T
+            + reference_inverse[:3, 3]
+        )
+        height_above_road = (
+            reference_xyz[:, 2] + self._road_height_below_sensor_m
+        )
+        points = np.column_stack(
+            (reference_xyz[:, 0], reference_xyz[:, 1], height_above_road)
+        ).astype(np.float32, copy=False)
+
+        completed_scan = None
+        with self._lock:
             revolution_seconds = 1.0 / float(conf.LIDAR_ROTATION_FREQUENCY_HZ)
             completed_revolution = (
                 timestamp - self._scan_started_at >= revolution_seconds * 0.95
@@ -122,10 +137,20 @@ class LidarManager:
                 self._latest_complete_scan_raw = raw_complete_scan
                 self._latest_complete_scan = self._sample_for_display(raw_complete_scan)
                 self._latest_complete_received_at = time.monotonic()
+                completed_scan = raw_complete_scan
                 self._scan_chunks = []
                 self._scan_started_at = timestamp
+                self._scan_reference_inverse = np.linalg.inv(matrix).astype(
+                    np.float32, copy=False
+                )
             else:
                 self._scan_chunks.append(points)
+
+        if completed_scan is not None:
+            geometry = self._geometry_analyzer.analyze(completed_scan)
+            with self._lock:
+                if self._latest_complete_scan_raw is completed_scan:
+                    self._latest_road_geometry = geometry
 
     def snapshot(self) -> tuple[Optional[np.ndarray], float, bool]:
         with self._lock:
@@ -147,6 +172,11 @@ class LidarManager:
         with self._lock:
             return self._latest_complete_scan_raw, self._latest_complete_received_at
 
+    def road_geometry_snapshot(self) -> dict:
+        """Return the most recently analyzed road and shoulder geometry."""
+        with self._lock:
+            return self._latest_road_geometry or self._geometry_analyzer._empty_result()
+
     def cleanup(self) -> None:
         sensor = self.sensor
         self.sensor = None
@@ -166,3 +196,5 @@ class LidarManager:
             self._latest_complete_scan_raw = None
             self._latest_complete_received_at = None
             self._scan_started_at = None
+            self._scan_reference_inverse = None
+            self._latest_road_geometry = None
