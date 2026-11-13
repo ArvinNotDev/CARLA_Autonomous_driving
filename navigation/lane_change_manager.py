@@ -118,14 +118,15 @@ class LaneChangeManager:
         # Vision results are held between inference completions. Only count
         # distinct source frames, otherwise a single result could satisfy the
         # multi-frame confirmation merely because the control loop runs faster.
-        if source_frame_id is not None:
-            try:
-                frame_id = int(source_frame_id)
-            except (TypeError, ValueError):
-                return
-            if frame_id == self._last_confirmation_frame_id:
-                return
-            self._last_confirmation_frame_id = frame_id
+        if source_frame_id is None:
+            return
+        try:
+            frame_id = int(source_frame_id)
+        except (TypeError, ValueError):
+            return
+        if frame_id == self._last_confirmation_frame_id:
+            return
+        self._last_confirmation_frame_id = frame_id
 
         current_angles: Dict[str, float] = {}
         for side, angle in line_angles.items():
