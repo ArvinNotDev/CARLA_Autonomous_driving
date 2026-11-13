@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPen, QPolygonF
+from PySide6.QtGui import (
+    QColor,
+    QImage,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPolygonF,
+)
 from PySide6.QtWidgets import QWidget
 
 import config_city as conf
@@ -171,9 +179,14 @@ class LidarRadarWidget(QWidget):
         image = self._point_image(diameter, radius)
         target = QRectF(center_x - radius, center_y - radius, diameter, diameter)
         painter.drawImage(target, image)
+        painter.save()
+        geometry_clip = QPainterPath()
+        geometry_clip.addEllipse(QPointF(center_x, center_y), radius, radius)
+        painter.setClipPath(geometry_clip)
         self._draw_geometry_boundaries(
             painter, center_x, center_y, radius, max_range
         )
+        painter.restore()
 
         painter.setPen(QPen(QColor("#52616b"), 1))
         for distance in self._ring_distances(max_range):
@@ -208,8 +221,12 @@ class LidarRadarWidget(QWidget):
         right_height = geometry.get("shoulder_height_right_m")
         shoulder_length = geometry.get("shoulder_length_m")
 
-        def metric(value, suffix="m"):
-            return "—" if value is None else f"{float(value):.2f} {suffix}"
+        def metric(value, suffix="m", signed=False):
+            if value is None:
+                return "—"
+            number = float(value)
+            rendered = f"{number:+.2f}" if signed else f"{number:.2f}"
+            return f"{rendered} {suffix}"
 
         road_text = (
             f"Road width: {metric(road_width)}"
@@ -220,9 +237,11 @@ class LidarRadarWidget(QWidget):
             f"Shoulder L/R: {metric(left_width)} / {metric(right_width)}"
         )
         height_text = (
-            f"Shoulder height L/R: {metric(left_height)} / {metric(right_height)}"
+            f"Shoulder height L/R: {metric(left_height, signed=True)} / {metric(right_height, signed=True)}"
         )
-        length_text = f"visible length: {metric(shoulder_length)}"
+        length_text = f"visible shoulder run: {metric(shoulder_length)}"
+        confidence = float(geometry.get("road_width_confidence", 0.0))
+        status = str(geometry.get("status", "waiting_for_scan"))
         painter.setPen(QColor("#dce7ee"))
         painter.drawText(
             QRectF(12, 32, width - 24, 20),
@@ -232,7 +251,7 @@ class LidarRadarWidget(QWidget):
         painter.drawText(
             QRectF(12, 51, width - 24, 20),
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            f"{height_text}   |   {length_text}",
+            f"{height_text}   |   {length_text}   |   confidence: {confidence:.0%} ({status})",
         )
         painter.end()
 
