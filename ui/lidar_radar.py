@@ -6,7 +6,6 @@ from PySide6.QtGui import (
     QColor,
     QImage,
     QPainter,
-    QPainterPath,
     QPen,
     QPolygonF,
 )
@@ -32,8 +31,6 @@ class LidarRadarWidget(QWidget):
         self.lidar_manager = lidar_manager
         self._points: np.ndarray | None = None
         self._heading_deg = 0.0
-        self._complete = False
-        self._road_geometry: dict = {}
         sensor_range = min(
             float(conf.LIDAR_MAX_RANGE_M), max(1.0, float(conf.LIDAR_RANGE_M))
         )
@@ -60,18 +57,11 @@ class LidarRadarWidget(QWidget):
     def refresh_scan(self) -> None:
         if self.lidar_manager is None:
             return
-        points, heading_deg, complete = self.lidar_manager.snapshot()
-        geometry = self.lidar_manager.road_edge_snapshot()
-        if (
-            points is self._points
-            and heading_deg == self._heading_deg
-            and geometry is self._road_geometry
-        ):
+        points, heading_deg, _complete = self.lidar_manager.snapshot()
+        if points is self._points and heading_deg == self._heading_deg:
             return
         self._points = points
         self._heading_deg = heading_deg
-        self._complete = complete
-        self._road_geometry = geometry
         self.update()
 
     @classmethod
@@ -136,15 +126,6 @@ class LidarRadarWidget(QWidget):
         target = QRectF(center_x - radius, center_y - radius, diameter, diameter)
         painter.drawImage(target, image)
 
-        painter.save()
-        clip = QPainterPath()
-        clip.addEllipse(QPointF(center_x, center_y), radius, radius)
-        painter.setClipPath(clip)
-        self._draw_geometry_boundaries(
-            painter, center_x, center_y, radius, max_range
-        )
-        painter.restore()
-
         painter.setPen(QPen(QColor("#52616b"), 1))
         for distance in self._ring_distances(max_range):
             ring_radius = radius * distance / max_range
@@ -162,37 +143,6 @@ class LidarRadarWidget(QWidget):
         )
         self._draw_vehicle(painter, center_x, center_y)
         painter.end()
-
-    def _draw_geometry_boundaries(
-        self,
-        painter: QPainter,
-        center_x: float,
-        center_y: float,
-        radius: float,
-        max_range: float,
-    ) -> None:
-        geometry = self._road_geometry
-        edge_color = QColor("#35d9e8")
-        painter.setPen(QPen(edge_color, 2.5))
-        for key in ("left_edge_points", "right_edge_points", "front_edge_points"):
-            points = np.asarray(
-                geometry.get(key, np.empty((0, 2))), dtype=np.float32
-            )
-            if points.ndim != 2 or points.shape[0] < 2:
-                continue
-
-            previous: QPointF | None = None
-            for point in points:
-                if not np.all(np.isfinite(point[:2])):
-                    previous = None
-                    continue
-                current = QPointF(
-                    center_x + float(point[1]) * radius / max_range,
-                    center_y - float(point[0]) * radius / max_range,
-                )
-                if previous is not None:
-                    painter.drawLine(previous, current)
-                previous = current
 
     def _display_range(self) -> float:
         self.display_range_m = min(self._sensor_range(), max(5.0, self.display_range_m))
