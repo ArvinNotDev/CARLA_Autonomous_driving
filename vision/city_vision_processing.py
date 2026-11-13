@@ -7,6 +7,7 @@ import onnxruntime as ort
 
 import config_city as conf
 from vision.color_extractor import HSVColorThresholdExtractor
+from navigation.crosswalk_junction_detector import CrosswalkRoiJunctionDetector
 
 
 class VisionProcessor:
@@ -31,6 +32,7 @@ class VisionProcessor:
         self.min_side_pixels = getattr(conf, "MIN_SIDE_PIXELS", 80)
 
         self.active_side = None
+        self.crosswalk_junction_detector = CrosswalkRoiJunctionDetector()
 
         self.session = None
         self.input_name = None
@@ -485,6 +487,10 @@ class VisionProcessor:
             return {
                 "error": 0.0,
                 "lane_type": "none",
+                "junction_roi": {
+                    "line_present": False, "detected": False,
+                    "line": None, "length_ratio": 0.0,
+                },
                 "debug": {
                     "combined": None,
                     "drivable_mask": None,
@@ -516,6 +522,10 @@ class VisionProcessor:
         else:
             if rgb_frame is None or rgb_frame.size == 0:
                 rgb_frame = base_frame
+
+        junction_roi_info = None
+        if str(getattr(conf, "JUNCTION_DETECTION_MODE", "model")) == "crosswalk_roi":
+            junction_roi_info = self.crosswalk_junction_detector.detect(base_frame)
 
         height, width = base_frame.shape[:2]
         frame_center = width / 2.0
@@ -587,9 +597,32 @@ class VisionProcessor:
         else:
             combined = np.ascontiguousarray(base_frame[:, :, :3]).copy()
 
+        if junction_roi_info is not None:
+            line = junction_roi_info.get("line")
+            if line is not None:
+                cv2.line(
+                    combined,
+                    (int(line[0]), int(line[1])),
+                    (int(line[2]), int(line[3])),
+                    (0, 200, 255),
+                    3,
+                    cv2.LINE_AA,
+                )
+                cv2.putText(
+                    combined,
+                    "JUNCTION LINE",
+                    (int(line[0]), max(18, int(line[1]) - 8)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (0, 200, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+
         return {
             "error": error,
             "lane_type": lane_type,
+            "junction_roi": junction_roi_info,
             "debug": {
                 "combined": combined,
                 "drivable_mask": drivable_mask,
