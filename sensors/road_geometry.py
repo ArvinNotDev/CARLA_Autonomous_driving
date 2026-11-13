@@ -46,10 +46,14 @@ class RoadGeometryAnalyzer:
         current.update(values or {})
 
         self.enabled = bool(current["LIDAR_BOUNDARY_ENABLED"])
-        self.x_min_m = max(0.1, min(10.0, float(current["LIDAR_BOUNDARY_MIN_FORWARD_M"])))
         sensor_range_m = min(
             float(getattr(conf, "LIDAR_MAX_RANGE_M", 200.0)),
             max(1.0, float(getattr(conf, "LIDAR_RANGE_M", 100.0))),
+        )
+        requested_min_forward = float(current["LIDAR_BOUNDARY_MIN_FORWARD_M"])
+        self.x_min_m = max(
+            0.1,
+            min(10.0, sensor_range_m - 8.0, requested_min_forward),
         )
         self.x_max_m = max(
             self.x_min_m + 8.0,

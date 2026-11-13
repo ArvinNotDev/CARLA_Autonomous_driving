@@ -459,6 +459,13 @@ class CarlaLaneDrivingApp:
         }
         if boundary_settings and self.lidar_manager is not None:
             self.lidar_manager.update_road_geometry_settings(boundary_settings)
+        if (
+            "LIDAR_DISPLAY_RANGE_M" in values
+            and self.control_panel is not None
+        ):
+            self.control_panel.lidar_radar.set_display_range(
+                float(values["LIDAR_DISPLAY_RANGE_M"])
+            )
         if "TRAJECTORY_MODEL_ENABLED" in values:
             if bool(values["TRAJECTORY_MODEL_ENABLED"]):
                 if not self._trajectory_runtime_enabled and self.control_panel is not None:

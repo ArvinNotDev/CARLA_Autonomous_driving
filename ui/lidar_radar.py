@@ -43,6 +43,12 @@ class LidarRadarWidget(QWidget):
         )
         self.setMinimumSize(320, 320)
 
+    def set_display_range(self, value: float) -> None:
+        self.display_range_m = max(
+            5.0, min(self._sensor_range(), float(value))
+        )
+        self.update()
+
     def zoom_in(self) -> None:
         self.display_range_m = max(5.0, self.display_range_m - 5.0)
         self.update()

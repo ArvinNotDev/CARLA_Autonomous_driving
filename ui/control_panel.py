@@ -289,7 +289,7 @@ class ControlPanel(QMainWindow):
                 "LIDAR_BOUNDARY_FORWARD_RANGE_M", "LIDAR_BOUNDARY_SIDE_RANGE_M",
                 "LIDAR_BOUNDARY_MIN_SIDE_M", "LIDAR_BOUNDARY_HEIGHT_STEP_M",
                 "LIDAR_BOUNDARY_SURFACE_TOLERANCE_M", "LIDAR_BOUNDARY_MIN_FRONT_SPAN_M",
-                "LIDAR_BOUNDARY_MIN_FRONT_POINTS",
+                "LIDAR_BOUNDARY_MIN_FRONT_POINTS", "LIDAR_DISPLAY_RANGE_M",
             },
             "Camera": {
                 "CAMERA_X", "CAMERA_Y", "CAMERA_Z", "CAMERA_FOV",
