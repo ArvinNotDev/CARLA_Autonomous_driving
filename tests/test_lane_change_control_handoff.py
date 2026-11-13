@@ -44,6 +44,26 @@ def make_manager(direction="left"):
     return manager
 
 
+def test_verify_phase_captures_pre_change_lane_angle_baseline():
+    manager = LaneChangeManager(vehicle=object(), planner=object())
+    manager.phase = "VERIFY"
+    manager.direction = "left"
+    manager._segment_start_location = Location(0)
+
+    manager.update(
+        Location(1.0),
+        None,
+        line_angles={"left": -18.0, "right": 17.0},
+        lane_type="only_left",
+        source_frame_id=1,
+    )
+
+    assert manager.phase_name() == "CHANGE"
+    assert manager._baseline_line_angles == {"left": -18.0, "right": 17.0}
+    control = manager.control_override()
+    assert control.steer == pytest.approx(-0.2)
+
+
 def test_lane_change_keeps_steering_override_after_initial_distance():
     manager = make_manager("left")
 
