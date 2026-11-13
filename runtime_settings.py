@@ -34,6 +34,7 @@ SETTING_SPECS = [
     ("JUNCTION_ROI_MIN_LINE_LENGTH_RATIO", "ROI line minimum width ratio", "float", (0.10, 0.95, 0.05), True),
     ("JUNCTION_ROI_MAX_LINE_ANGLE_DEG", "ROI line angle tolerance (deg)", "float", (1.0, 30.0, 1.0), True),
     ("JUNCTION_ROI_CONFIRM_FRAMES", "ROI line confirmation frames", "int", (1, 3, 1), True),
+    ("JUNCTION_ROI_REARM_CLEAR_SECONDS", "Clear time before next junction (s)", "float", (0.2, 5.0, 0.1), True),
     ("INTERSECTION_CHECK_INTERVAL_SECONDS", "Junction detector interval (s)", "float", (0.05, 5.0, 0.05), True),
     ("LANE_CHANGE_DEBOUNCE_SECONDS", "Lane-change debounce (s)", "float", (0.0, 30.0, 0.5), True),
     ("LANE_CHANGE_LINE_ANGLE_THRESHOLD_DEG", "Lane-change angle threshold", "float", (0.0, 90.0, 1.0), True),
