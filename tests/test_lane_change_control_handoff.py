@@ -170,6 +170,26 @@ def test_lane_change_does_not_confirm_from_angle_without_transition():
     assert manager.control_override() is not None
 
 
+def test_missing_source_frame_ids_cannot_satisfy_confirmation():
+    manager = make_manager("left")
+    manager.phase = "SETTLE"
+    manager._steering_distance_reached = True
+    manager._angle_transition_seen = True
+
+    for _ in range(8):
+        manager.update(
+            Location(2.1),
+            None,
+            line_angles={"left": -15.0, "right": 15.0},
+            lane_type="only_left",
+            source_frame_id=None,
+        )
+
+    assert manager._stable_angle_frames == 0
+    assert manager.phase_name() == "SETTLE"
+    assert manager.control_override() is not None
+
+
 def test_unconfirmed_lane_change_fails_safe_to_full_brake(monkeypatch):
     monkeypatch.setattr(conf, "LANE_CHANGE_CONFIRM_TIMEOUT_SECONDS", 1.0, raising=False)
     manager = make_manager("left")
