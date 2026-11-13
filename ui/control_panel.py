@@ -272,6 +272,7 @@ class ControlPanel(QMainWindow):
                 "JUNCTION_DETECTION_MODE", "INTERSECTION_CHECK_INTERVAL_SECONDS",
                 "CROSSWALK_SLEEP", "JUNCTION_ROI_MIN_LINE_LENGTH_RATIO",
                 "JUNCTION_ROI_MAX_LINE_ANGLE_DEG", "JUNCTION_ROI_CONFIRM_FRAMES",
+                "JUNCTION_ROI_REARM_CLEAR_SECONDS",
             },
             "Vision / debug": {
                 "VISION_INFERENCE_INTERVAL_SECONDS", "DEBUG_PANEL_HZ",
