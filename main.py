@@ -130,6 +130,7 @@ class CarlaLaneDrivingApp:
             "trajectory_fps": 0.0,
             "vision_fps": 0.0,
             "trajectory_age_s": None,
+            "trajectory_enabled": self._trajectory_runtime_enabled,
             "trajectory_busy": False,
             "vision_busy": False,
             "junction_phase": (
@@ -378,15 +379,20 @@ class CarlaLaneDrivingApp:
                 if traj is not None and traj.valid
                 else None
             )
+            if self._trajectory_runtime_enabled:
+                lines.append(
+                    f"Trajectory FPS: {traj_metrics.fps:.1f} | age: {'—' if age is None else f'{age:.2f}s'}"
+                )
+            else:
+                lines.append("Trajectory model: OFF")
             lines.extend(
                 [
-                    f"Trajectory FPS: {traj_metrics.fps:.1f} | age: {'—' if age is None else f'{age:.2f}s'}",
                     f"Vision FPS: {vis_metrics.fps:.1f}",
                     f"Junction: {self.intersection_manager.phase_name() if self.intersection_manager else 'IDLE'}",
-                    f"Workers: trajectory={'busy' if traj_busy else 'idle'} vision={'busy' if vis_busy else 'idle'}",
+                    f"Workers: trajectory={'busy' if traj_busy else 'idle' if self._trajectory_runtime_enabled else 'off'} vision={'busy' if vis_busy else 'idle'}",
                 ]
             )
-            if traj_error:
+            if self._trajectory_runtime_enabled and traj_error:
                 lines.append("Trajectory worker: retaining last valid result")
             if vis_error:
                 lines.append("Vision worker: retaining last valid result")

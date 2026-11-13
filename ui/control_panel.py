@@ -435,12 +435,20 @@ class ControlPanel(QMainWindow):
         phase = str(metrics.get("junction_phase", "IDLE"))
         busy_t = bool(metrics.get("trajectory_busy", False))
         busy_v = bool(metrics.get("vision_busy", False))
+        trajectory_enabled = bool(metrics.get("trajectory_enabled", True))
         age_text = "—" if traj_age is None else f"{float(traj_age):.2f}s"
+        trajectory_text = (
+            f"trajectory FPS: {traj_fps:.1f} | trajectory age: {age_text}"
+            if trajectory_enabled
+            else "trajectory: OFF"
+        )
+        trajectory_worker_state = (
+            "busy" if busy_t else "idle" if trajectory_enabled else "off"
+        )
         self.metrics_label.setText(
             f"display FPS: {display_fps:.1f} | control FPS: {control_fps:.1f} | "
-            f"trajectory FPS: {traj_fps:.1f} | vision FPS: {vision_fps:.1f} | "
-            f"trajectory age: {age_text} | junction: {phase} | "
-            f"workers: T={'busy' if busy_t else 'idle'} V={'busy' if busy_v else 'idle'}"
+            f"{trajectory_text} | vision FPS: {vision_fps:.1f} | junction: {phase} | "
+            f"workers: T={trajectory_worker_state} V={'busy' if busy_v else 'idle'}"
         )
 
     def _scroll(self, widget: QWidget) -> QScrollArea:
@@ -451,7 +459,9 @@ class ControlPanel(QMainWindow):
 
     def _add_setting(self, form: QFormLayout, spec) -> None:
         key, label, kind, limits, realtime = spec
-        if not realtime:
+        if key == "TRAJECTORY_MODEL_ENABLED":
+            label = f"{label} [restart required to enable]"
+        elif not realtime:
             label = f"{label} [restart required]"
         if kind == "bool":
             widget = QCheckBox()
@@ -538,9 +548,14 @@ class ControlPanel(QMainWindow):
         self.settings.apply({key: value})
         self.settings.persist_values({key: value})
         spec = next(s for s in SETTING_SPECS if s[0] == key)
-        if not spec[4]:
-            self.status.setText(f"{spec[1]} changed — reset the car to apply it.")
+        requires_restart = not spec[4] and not (
+            key == "TRAJECTORY_MODEL_ENABLED" and not bool(value)
+        )
+        if requires_restart:
+            self.status.setText(f"{spec[1]} changed — restart the run to apply it.")
             self.reset_requested.emit()
+        elif key == "TRAJECTORY_MODEL_ENABLED":
+            self.status.setText("Trajectory model disabled live; releasing its resources.")
         else:
             self.status.setText(f"{spec[1]} updated live.")
         if key == "DEBUG_PANEL_HZ":
@@ -576,6 +591,10 @@ class ControlPanel(QMainWindow):
                 key in values and getattr(conf, key, None) != values[key]
                 for key, _label, _kind, _limits, realtime in SETTING_SPECS
                 if not realtime
+                and not (
+                    key == "TRAJECTORY_MODEL_ENABLED"
+                    and values.get(key) is False
+                )
             )
             self.settings.apply(values)
             self._load_values(values)

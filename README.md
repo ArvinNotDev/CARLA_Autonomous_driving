@@ -26,7 +26,7 @@ Trajectory output is an immutable, timestamped result. Busy/failed inference nev
 
 ## Optional trajectory model
 
-The trajectory steering model is controlled by the `TRAJECTORY_MODEL_ENABLED` profile setting and the runtime-panel checkbox. When disabled, the application does not import the trajectory PyTorch agent or load `trajectory_modelV2.pt`, and no trajectory inference requests are submitted. The fixed-distance junction lead-in remains active; after its final segment, control returns directly to the lane-line controller instead of entering trajectory takeover. Changing the checkbox requires a runtime restart to load a model; disabling it during a run stops new requests, clears queued work, and releases the model after any already-running inference completes. The `StableV2` profile defaults this option to off.
+The trajectory steering model is controlled by the `TRAJECTORY_MODEL_ENABLED` profile setting and the runtime-panel checkbox. When disabled, the application does not import the trajectory PyTorch agent or load `trajectory_modelV2.pt`, and no trajectory inference requests are submitted. The fixed-distance junction lead-in remains active; after its final segment, control returns directly to the lane-line controller instead of entering trajectory takeover. Disabling the model during a run takes effect immediately: new requests stop, queued work is cleared, and the model is released after any already-running inference completes. Enabling it again requires a runtime restart so the checkpoint can be loaded outside the control loop. The `StableV2` profile defaults this option to off.
 
 ## Junction behavior
 
