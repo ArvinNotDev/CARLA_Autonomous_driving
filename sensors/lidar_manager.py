@@ -135,7 +135,6 @@ class LidarManager:
             )
         ).astype(np.float32, copy=False)
 
-        completed_scan = None
         with self._lock:
             if not self.enabled:
                 return
@@ -154,7 +153,6 @@ class LidarManager:
                 self._latest_complete_scan_raw = raw_complete_scan
                 self._latest_complete_scan = self._sample_for_display(raw_complete_scan)
                 self._latest_complete_received_at = time.monotonic()
-                completed_scan = raw_complete_scan
                 self._scan_chunks = []
                 self._scan_started_at = timestamp
                 self._scan_reference_inverse = np.linalg.inv(matrix).astype(
