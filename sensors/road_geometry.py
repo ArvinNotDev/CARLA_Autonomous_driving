@@ -11,7 +11,7 @@ class RoadGeometryAnalyzer:
         self.x_max_m = 35.0
         self.y_limit_m = 12.0
         self.station_step_m = 1.0
-        self.station_half_width_m = 0.75
+        self.station_half_width_m = 0.5
         self.lateral_resolution_m = 0.25
         self.road_start_distance_m = 1.25
         self.road_surface_tolerance_m = 0.22
