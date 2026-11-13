@@ -62,6 +62,10 @@ class LaneChangeManager:
         with self._state_lock:
             return self.phase
 
+    def confirmation_timed_out(self) -> bool:
+        with self._state_lock:
+            return self.phase == "SETTLE" and self._settle_timed_out
+
     def _angle_guard_triggered(self) -> bool:
         threshold = float(getattr(conf, "LANE_CHANGE_LINE_ANGLE_THRESHOLD_DEG", 20.0))
         return any(
