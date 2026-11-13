@@ -103,7 +103,7 @@ class CarlaLaneDrivingApp:
         self._intersection_result_completed_at = 0.0
         self._intersection_result_source_frame_id = -1
         self._roi_junction_armed = True
-        self._roi_line_clear_frames = 0
+        self._roi_line_clear_since: Optional[float] = None
 
         self.control_metrics = ControlMetrics(window_seconds=1.0)
         self.display_metrics = DisplayMetrics(window_seconds=1.0)
@@ -261,14 +261,23 @@ class CarlaLaneDrivingApp:
                     if isinstance(roi_info, dict):
                         line_present = bool(roi_info.get("line_present", False))
                         if line_present:
-                            self._roi_line_clear_frames = 0
+                            self._roi_line_clear_since = None
                         else:
-                            self._roi_line_clear_frames += 1
-                            clear_required = max(
-                                4,
-                                int(cfg("JUNCTION_ROI_CONFIRM_FRAMES", 2)) + 2,
+                            if self._roi_line_clear_since is None:
+                                self._roi_line_clear_since = vision.completed_at
+                            clear_duration = max(
+                                0.2,
+                                float(cfg("JUNCTION_ROI_REARM_CLEAR_SECONDS", 1.0)),
                             )
-                            if self._roi_line_clear_frames >= clear_required:
+                            manager_idle = (
+                                self.intersection_manager is None
+                                or self.intersection_manager.phase_name() == "IDLE"
+                            )
+                            if (
+                                manager_idle
+                                and vision.completed_at - self._roi_line_clear_since
+                                >= clear_duration
+                            ):
                                 self._roi_junction_armed = True
 
                         if (
@@ -827,8 +836,8 @@ class CarlaLaneDrivingApp:
             self._last_trajectory_submit_at = 0.0
             self._submit_inference(rgb_packet, semantic_packet, now)
 
-        # Accept a fresh intersection classifier result without making it part
-        # of the control-critical inference path.
+        # Accept a fresh result from the selected junction detector without
+        # making it part of the control-critical inference path.
         if (
             self._intersection_result
             and time.perf_counter() - self._intersection_result_completed_at
@@ -844,7 +853,7 @@ class CarlaLaneDrivingApp:
                 self._intersection_result = False
                 if self.junction_detection_mode == "crosswalk_roi":
                     self._roi_junction_armed = False
-                    self._roi_line_clear_frames = 0
+                    self._roi_line_clear_since = None
 
         current_command = (
             self.next_maneuver if self.intersection_sequence else "LANE_FOLLOW"
