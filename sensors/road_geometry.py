@@ -420,25 +420,41 @@ class RoadGeometryAnalyzer:
         offset = np.abs(edge_y - center_y)
         continuity_error = np.abs(edge_y - predicted_edge)
 
-        stable_check = (
+        stable_height_check = (
             (stable_valid >= 1)
             & (stable_support >= 1)
-            & (stable_span <= self.max_cell_vertical_span_m)
             & (
                 np.abs(stable_z - outer_z)
                 <= max(0.18, self.road_surface_tolerance_m)
             )
         )
+
+        # A longitudinal wall can occupy the same lateral bins for an entire
+        # scan section. Its vertical height span is positive edge evidence,
+        # provided the road-side cells remain flat and the wall is near the
+        # predicted road boundary.
+        flat_surface_edge = (
+            (step >= self.edge_step_m)
+            & (step <= self.max_curb_step_m)
+            & (outer_span <= self.max_cell_vertical_span_m)
+            & (stable_span <= self.max_cell_vertical_span_m)
+            & stable_height_check
+        )
+        vertical_face_edge = (
+            (outer_span >= max(0.55, self.max_cell_vertical_span_m))
+            & (outer_support >= 4)
+            & (inner_span <= self.max_cell_vertical_span_m)
+            & (np.abs(outer_z - inner_z) <= self.max_curb_step_m)
+        )
+
         valid = (
             (inner_valid >= 2)
             & (outer_valid >= 2)
             & (inner_support >= 2)
             & (outer_support >= 2)
             & (inner_span <= self.max_cell_vertical_span_m)
-            & (outer_span <= self.max_cell_vertical_span_m)
-            & (step >= self.edge_step_m)
-            & (step <= self.max_curb_step_m)
-            & stable_check
+            & (flat_surface_edge | vertical_face_edge)
+            & (stable_height_check | vertical_face_edge)
             & (continuity_error <= continuity_limit)
         )
         candidate_ids = np.flatnonzero(valid)
