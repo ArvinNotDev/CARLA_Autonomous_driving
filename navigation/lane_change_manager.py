@@ -258,13 +258,14 @@ class LaneChangeManager:
                 self._finish()
                 return
 
-            if (
-                self.phase == "SETTLE"
-                and self._settle_started_at is not None
-                and now - self._settle_started_at
-                >= max(1.0, float(getattr(conf, "LANE_CHANGE_CONFIRM_TIMEOUT_SECONDS", 8.0)))
-            ):
-                self._settle_timed_out = True
+            with self._state_lock:
+                if (
+                    self.phase == "SETTLE"
+                    and self._settle_started_at is not None
+                    and now - self._settle_started_at
+                    >= max(1.0, float(getattr(conf, "LANE_CHANGE_CONFIRM_TIMEOUT_SECONDS", 8.0)))
+                ):
+                    self._settle_timed_out = True
             return
 
         if phase != "IDLE":
@@ -320,6 +321,7 @@ class LaneChangeManager:
         with self._state_lock:
             phase = self.phase
             direction = self.direction
+            settle_timed_out = self._settle_timed_out
 
         if phase == "VERIFY":
             throttle = 0.08
@@ -328,7 +330,7 @@ class LaneChangeManager:
             throttle = 0.10
             steer = -0.2 if direction == "left" else 0.2
         elif phase == "SETTLE":
-            if self._settle_timed_out:
+            if settle_timed_out:
                 return carla.VehicleControl(
                     throttle=0.0,
                     steer=0.0,
