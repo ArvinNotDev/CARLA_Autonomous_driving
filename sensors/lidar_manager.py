@@ -9,16 +9,16 @@ import carla
 import numpy as np
 
 import config_city as conf
-from sensors.road_geometry import RoadGeometryAnalyzer
 
 
 class LidarManager:
-    """Collect roof LiDAR sweeps and publish points plus road-edge polylines."""
+    """Collect optional roof LiDAR sweeps for radar display and obstacle checks."""
 
     def __init__(self, world, vehicle) -> None:
         self.world = world
         self.vehicle = vehicle
         self.sensor = None
+        self.enabled = False
 
         self._lock = threading.Lock()
         self._scan_chunks: list[np.ndarray] = []
@@ -29,11 +29,12 @@ class LidarManager:
         self._scan_reference_inverse: Optional[np.ndarray] = None
         self._road_height_below_sensor_m = 2.0
         self._heading_deg = 0.0
-        self._geometry_analyzer = RoadGeometryAnalyzer()
-        self._geometry_lock = threading.Lock()
-        self._latest_road_geometry: Optional[dict] = None
 
     def start(self) -> None:
+        if self.sensor is not None:
+            self.enabled = True
+            return
+
         blueprint = self.world.get_blueprint_library().find(
             "sensor.lidar.ray_cast"
         )
@@ -70,12 +71,23 @@ class LidarManager:
             carla.Location(x=mount_x, y=mount_y, z=mount_z),
             carla.Rotation(pitch=0.0, yaw=0.0, roll=0.0),
         )
-        self.sensor = self.world.spawn_actor(
+        sensor = self.world.spawn_actor(
             blueprint,
             transform,
             attach_to=self.vehicle,
         )
-        self.sensor.listen(self._on_measurement)
+        self.sensor = sensor
+        self.enabled = True
+        try:
+            sensor.listen(self._on_measurement)
+        except Exception:
+            self.enabled = False
+            self.sensor = None
+            try:
+                sensor.destroy()
+            except Exception:
+                pass
+            raise
 
     @staticmethod
     def _sample_for_display(points: np.ndarray) -> np.ndarray:
@@ -88,6 +100,8 @@ class LidarManager:
         return points
 
     def _on_measurement(self, measurement) -> None:
+        if not self.enabled:
+            return
         raw = np.frombuffer(measurement.raw_data, dtype=np.float32)
         if raw.size % 4:
             return
@@ -123,6 +137,8 @@ class LidarManager:
 
         completed_scan = None
         with self._lock:
+            if not self.enabled:
+                return
             revolution_seconds = 1.0 / float(conf.LIDAR_ROTATION_FREQUENCY_HZ)
             completed_revolution = (
                 timestamp - self._scan_started_at >= revolution_seconds * 0.95
@@ -147,13 +163,6 @@ class LidarManager:
             else:
                 self._scan_chunks.append(points)
 
-        if completed_scan is not None:
-            with self._geometry_lock:
-                edge_points = self._geometry_analyzer.analyze(completed_scan)
-            with self._lock:
-                if self._latest_complete_scan_raw is completed_scan:
-                    self._latest_road_geometry = edge_points
-
     def snapshot(self) -> tuple[Optional[np.ndarray], float, bool]:
         with self._lock:
             if self._latest_complete_scan is not None:
@@ -174,32 +183,27 @@ class LidarManager:
         with self._lock:
             return self._latest_complete_scan_raw, self._latest_complete_received_at
 
-    def road_edge_snapshot(self) -> dict:
-        """Return the latest connected left, right, and forward road edges."""
-        with self._lock:
-            return self._latest_road_geometry or self._geometry_analyzer._empty_result()
-
-    def update_road_geometry_settings(self, values: dict) -> None:
-        """Apply live road-boundary tuning from the runtime control panel."""
-        with self._geometry_lock:
-            self._geometry_analyzer.update_settings(values)
-            empty_geometry = self._geometry_analyzer._empty_result()
-        with self._lock:
-            self._latest_road_geometry = empty_geometry
+    def set_enabled(self, enabled: bool) -> None:
+        """Start or fully stop the CARLA LiDAR actor."""
+        if bool(enabled):
+            self.start()
+        else:
+            self.cleanup()
 
     def cleanup(self) -> None:
+        self.enabled = False
         sensor = self.sensor
         self.sensor = None
-        if sensor is None:
-            return
-        try:
-            sensor.stop()
-        except Exception:
-            pass
-        try:
-            sensor.destroy()
-        except Exception:
-            pass
+        if sensor is not None:
+            try:
+                sensor.stop()
+            except Exception:
+                pass
+            try:
+                sensor.destroy()
+            except Exception:
+                pass
+
         with self._lock:
             self._scan_chunks.clear()
             self._latest_complete_scan = None
@@ -207,4 +211,4 @@ class LidarManager:
             self._latest_complete_received_at = None
             self._scan_started_at = None
             self._scan_reference_inverse = None
-            self._latest_road_geometry = None
+            self._heading_deg = 0.0
