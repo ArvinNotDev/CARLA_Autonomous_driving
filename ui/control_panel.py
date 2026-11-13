@@ -284,6 +284,13 @@ class ControlPanel(QMainWindow):
                 "DRIVABLE_RECOVERY_LIDAR_REAR_EXTENT_M", "DRIVABLE_RECOVERY_LIDAR_MAX_FORWARD_DISTANCE_M",
                 "DRIVABLE_RECOVERY_LIDAR_MIN_POINTS", "DRIVABLE_RECOVERY_LIDAR_MAX_SCAN_AGE_SECONDS",
             },
+            "Road boundaries": {
+                "LIDAR_BOUNDARY_ENABLED", "LIDAR_BOUNDARY_MIN_FORWARD_M",
+                "LIDAR_BOUNDARY_FORWARD_RANGE_M", "LIDAR_BOUNDARY_SIDE_RANGE_M",
+                "LIDAR_BOUNDARY_MIN_SIDE_M", "LIDAR_BOUNDARY_HEIGHT_STEP_M",
+                "LIDAR_BOUNDARY_SURFACE_TOLERANCE_M", "LIDAR_BOUNDARY_MIN_FRONT_SPAN_M",
+                "LIDAR_BOUNDARY_MIN_FRONT_POINTS",
+            },
             "Camera": {
                 "CAMERA_X", "CAMERA_Y", "CAMERA_Z", "CAMERA_FOV",
             },

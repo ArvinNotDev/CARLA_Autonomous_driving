@@ -40,7 +40,7 @@ The planner may run asynchronously, but no junction worker calls `vehicle.apply_
 
 ## LiDAR road boundaries
 
-The radar displays the LiDAR point cloud and connects only the detected left and right road boundaries in turquoise. Boundary extraction uses one completed sweep and compact lateral height profiles; it does not build a road/shoulder surface map, accumulate multiple sweeps, or calculate road and shoulder dimensions.
+The radar displays the LiDAR point cloud and connects detected left, right, and forward road boundaries in turquoise. Boundary extraction uses one completed sweep and compact height profiles in both lateral and forward directions, so a boundary crossing the area directly ahead of the vehicle can also be drawn. The default search reaches 80 m forward and 20 m to each side; the GUI's **Road boundaries** tab exposes live controls for both ranges and the height-transition thresholds. The analyzer does not build a road/shoulder surface map, accumulate multiple sweeps, or calculate road and shoulder dimensions.
 
 ## Requirements
 

@@ -167,7 +167,7 @@ class LidarRadarWidget(QWidget):
     ) -> None:
         geometry = self._road_geometry
         edge_color = QColor("#35d9e8")
-        for key in ("left_edge_points", "right_edge_points"):
+        for key in ("left_edge_points", "right_edge_points", "front_edge_points"):
             points = np.asarray(
                 geometry.get(key, np.empty((0, 2))), dtype=np.float32
             )

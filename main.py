@@ -453,6 +453,12 @@ class CarlaLaneDrivingApp:
     def _on_settings_changed(self, values: dict) -> None:
         # All settings are applied by RuntimeSettings in the Qt thread. The
         # control loop only reads scalar config values at its next tick.
+        boundary_settings = {
+            key: value for key, value in values.items()
+            if key.startswith("LIDAR_BOUNDARY_")
+        }
+        if boundary_settings and self.lidar_manager is not None:
+            self.lidar_manager.update_road_geometry_settings(boundary_settings)
         if "TRAJECTORY_MODEL_ENABLED" in values:
             if bool(values["TRAJECTORY_MODEL_ENABLED"]):
                 if not self._trajectory_runtime_enabled and self.control_panel is not None:

@@ -30,6 +30,7 @@ class LidarManager:
         self._road_height_below_sensor_m = 2.0
         self._heading_deg = 0.0
         self._geometry_analyzer = RoadGeometryAnalyzer()
+        self._geometry_lock = threading.Lock()
         self._latest_road_geometry: Optional[dict] = None
 
     def start(self) -> None:
@@ -147,7 +148,8 @@ class LidarManager:
                 self._scan_chunks.append(points)
 
         if completed_scan is not None:
-            edge_points = self._geometry_analyzer.analyze(completed_scan)
+            with self._geometry_lock:
+                edge_points = self._geometry_analyzer.analyze(completed_scan)
             with self._lock:
                 if self._latest_complete_scan_raw is completed_scan:
                     self._latest_road_geometry = edge_points
@@ -176,6 +178,14 @@ class LidarManager:
         """Return only the latest connected left/right road-edge points."""
         with self._lock:
             return self._latest_road_geometry or self._geometry_analyzer._empty_result()
+
+    def update_road_geometry_settings(self, values: dict) -> None:
+        """Apply live road-boundary tuning from the runtime control panel."""
+        with self._geometry_lock:
+            self._geometry_analyzer.update_settings(values)
+            empty_geometry = self._geometry_analyzer._empty_result()
+        with self._lock:
+            self._latest_road_geometry = empty_geometry
 
     def cleanup(self) -> None:
         sensor = self.sensor
