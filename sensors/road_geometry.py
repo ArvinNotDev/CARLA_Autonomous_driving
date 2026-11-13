@@ -156,6 +156,18 @@ class RoadGeometryAnalyzer:
 
             missing = 0
             if previous_distance is None:
+                if (
+                    abs(current_z - baseline_z) > self.road_surface_tolerance_m
+                    and self._stable_after_step(
+                        profile, indices, position, current_z
+                    )
+                ):
+                    return float(
+                        max(
+                            self.road_start_distance_m,
+                            distance - self.lateral_resolution_m * 0.5,
+                        )
+                    )
                 previous_distance = distance
                 previous_z = current_z
                 continue
