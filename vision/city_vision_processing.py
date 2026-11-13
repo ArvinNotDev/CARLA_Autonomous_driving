@@ -503,11 +503,16 @@ class VisionProcessor:
                 },
             }
 
+        junction_roi_info = None
+        if str(getattr(conf, "JUNCTION_DETECTION_MODE", "model")) == "crosswalk_roi":
+            junction_roi_info = self.crosswalk_junction_detector.detect(base_frame)
+
         if self.mode == "segmentation":
             if semantic_frame is None or semantic_frame.size == 0:
                 return {
                     "error": 0.0,
                     "lane_type": "none",
+                    "junction_roi": junction_roi_info,
                     "debug": {
                         "combined": None,
                         "drivable_mask": None,
@@ -522,10 +527,6 @@ class VisionProcessor:
         else:
             if rgb_frame is None or rgb_frame.size == 0:
                 rgb_frame = base_frame
-
-        junction_roi_info = None
-        if str(getattr(conf, "JUNCTION_DETECTION_MODE", "model")) == "crosswalk_roi":
-            junction_roi_info = self.crosswalk_junction_detector.detect(base_frame)
 
         height, width = base_frame.shape[:2]
         frame_center = width / 2.0
