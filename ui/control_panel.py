@@ -268,6 +268,11 @@ class ControlPanel(QMainWindow):
                 "JUNCTION_STATIC_THROTTLE", "JUNCTION_STATIC_TIMEOUT_SECONDS",
                 "JUNCTION_ENTRY_DISTANCE_M", "JUNCTION_TRAJECTORY_WINDOW_SECONDS",
             },
+            "Junction detection": {
+                "JUNCTION_DETECTION_MODE", "INTERSECTION_CHECK_INTERVAL_SECONDS",
+                "CROSSWALK_SLEEP", "JUNCTION_ROI_MIN_LINE_LENGTH_RATIO",
+                "JUNCTION_ROI_MAX_LINE_ANGLE_DEG", "JUNCTION_ROI_CONFIRM_FRAMES",
+            },
             "Vision / debug": {
                 "VISION_INFERENCE_INTERVAL_SECONDS", "DEBUG_PANEL_HZ",
                 "LANE_PROB_THRESHOLD", "LANE_CENTER_SMOOTH_ALPHA", "DRIVABLE_PROB_THRESHOLD", "LANE_THRESHOLD",
@@ -478,7 +483,11 @@ class ControlPanel(QMainWindow):
             widget.stateChanged.connect(lambda _state, k=key: self._emit(k))
         elif kind == "choice":
             widget = QComboBox()
-            widget.addItems(list(limits))
+            if key == "JUNCTION_DETECTION_MODE":
+                widget.addItem("Junction model (ResNet18)", "model")
+                widget.addItem("Crosswalk ROI — horizontal line", "crosswalk_roi")
+            else:
+                widget.addItems(list(limits))
             widget.currentTextChanged.connect(lambda _text, k=key: self._emit(k))
         elif kind == "int":
             widget = QSpinBox()
@@ -529,7 +538,8 @@ class ControlPanel(QMainWindow):
         if isinstance(widget, (QCheckBox, QPushButton)):
             return widget.isChecked()
         if isinstance(widget, QComboBox):
-            return widget.currentText()
+            data = widget.currentData()
+            return data if data is not None else widget.currentText()
         if isinstance(widget, (QSpinBox, QDoubleSpinBox)):
             return widget.value()
         return widget.text()
@@ -548,7 +558,12 @@ class ControlPanel(QMainWindow):
                 if key == "LIDAR_ENABLED":
                     self._update_lidar_toggle_text(bool(value))
             elif isinstance(widget, QComboBox):
-                widget.setCurrentText(str(value))
+                if widget.currentData() is not None:
+                    index = widget.findData(value)
+                    if index >= 0:
+                        widget.setCurrentIndex(index)
+                else:
+                    widget.setCurrentText(str(value))
             elif isinstance(widget, QSpinBox):
                 widget.setValue(int(value))
             elif isinstance(widget, QDoubleSpinBox):
