@@ -36,7 +36,7 @@ The planner may run asynchronously, but no junction worker calls `vehicle.apply_
 
 ## LiDAR road and shoulder geometry
 
-The LiDAR radar reconstructs a local surface grid from three recent completed sweeps. Each sweep is retained in world coordinates and reprojected into the current sweep's reference pose before analysis, increasing surface coverage while compensating for ego-vehicle translation and rotation. The radar point display still uses the latest full-resolution sweep.
+The LiDAR radar reconstructs a local surface grid from three recent completed sweeps. Each sweep is retained in world coordinates and reprojected into the current sweep's reference pose before analysis, increasing surface coverage while compensating for ego-vehicle translation and rotation. The radar point display uses a downsampled view of the latest sweep; the full-resolution scan remains available to the existing obstacle filter.
 
 The analyzer samples lateral road profiles in front of the vehicle and looks for persistent height transitions. It overlays connected road-surface cells in blue and detected shoulder cells in orange, with cyan road-edge lines and orange outer-shoulder boundaries. The radar reports the observed carriageway width, left/right shoulder widths, signed shoulder height relative to the road surface, and the visible longitudinal shoulder run on each side.
 
