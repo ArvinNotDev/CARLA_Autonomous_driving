@@ -263,12 +263,18 @@ canvas{width:100%;height:auto;border-radius:8px;display:block;background:#000}
         <input type="color" id="color_ll" value="{{ ui.colors.LL }}">
       </div>
       <div class="toggle-row">
-        <label><input type="checkbox" id="vis_cw"> Show Crosswalk</label>
+        <label><input type="checkbox" id="vis_cw"> Show Crosswalk Detection ROI</label>
         <input type="color" id="color_cw" value="{{ ui.colors.CW }}">
       </div>
+      <div class="small-muted" style="margin:-4px 0 8px 24px">
+        Area used by the current crosswalk / junction line detector.
+      </div>
       <div class="toggle-row">
-        <label><input type="checkbox" id="vis_dw"> Show Drivable Width ROI</label>
+        <label><input type="checkbox" id="vis_dw"> Show Drivable-area Width ROI</label>
         <input type="color" id="color_dw" value="{{ ui.colors.DW }}">
+      </div>
+      <div class="small-muted" style="margin:-4px 0 8px 24px">
+        Sampling area reserved for measuring drivable-road width.
       </div>
     </div>
 
@@ -536,11 +542,22 @@ function drawOverlays(){
             ctx.lineWidth = (markerHighlight === key)? 3 : 2;
             ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
 
-            ctx.fillStyle = color;
-            ctx.fillRect(r.x + 6, r.y + 6, key === 'DW' ? 142 : 120, 18);
-            ctx.fillStyle = '#012';
+            const roiLabels = {
+                RL: 'RIGHT LANE ROI',
+                LL: 'LEFT LANE ROI',
+                CW: 'CROSSWALK ROI',
+                DW: 'DRIVABLE WIDTH ROI'
+            };
             ctx.font = '12px Arial';
-            ctx.fillText(key === 'DW' ? 'ROAD WIDTH' : key, r.x + 10, r.y + 19);
+            const label = roiLabels[key] || key;
+            const labelWidth = ctx.measureText(label).width + 14;
+            const labelX = key === 'DW'
+                ? r.x + Math.max(6, r.w - labelWidth - 6)
+                : r.x + 6;
+            ctx.fillStyle = color;
+            ctx.fillRect(labelX, r.y + 6, labelWidth, 18);
+            ctx.fillStyle = '#012';
+            ctx.fillText(label, labelX + 7, r.y + 19);
 
             ctx.fillStyle = '#fff';
             ctx.font = '11px Arial';
