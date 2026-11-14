@@ -286,7 +286,7 @@ class ControlPanel(QMainWindow):
         self.debug_frame.setMinimumSize(360, 250)
         self.debug_frame.setText("Waiting for camera frames…")
         camera_layout.addWidget(self.debug_frame, 1)
-        live_view_row.addWidget(camera_card, 7)
+        live_view_row.addWidget(camera_card)
 
         lidar_card = QFrame()
         lidar_card.setObjectName("surfaceCard")
@@ -322,7 +322,9 @@ class ControlPanel(QMainWindow):
         lidar_controls.addStretch(1)
         lidar_layout.addLayout(lidar_controls)
         lidar_layout.addWidget(self.lidar_radar, 1)
-        live_view_row.addWidget(lidar_card, 3)
+        live_view_row.addWidget(lidar_card)
+        live_view_row.setStretchFactor(0, 7)
+        live_view_row.setStretchFactor(1, 3)
 
         monitor_layout.addWidget(live_view_row, 1)
 
