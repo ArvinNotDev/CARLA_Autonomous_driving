@@ -4,6 +4,8 @@ import threading
 import time
 from typing import Optional
 
+import config_city as conf
+
 
 class LaneChangeManager:
     """
