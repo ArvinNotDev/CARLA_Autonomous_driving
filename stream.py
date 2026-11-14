@@ -20,7 +20,8 @@ _settings_callback = None
 VARIABLES = [
     "RL_TOP_ROI", "RL_BOTTOM_ROI", "RL_LEFT_ROI", "RL_RIGHT_ROI",
     "LL_TOP_ROI", "LL_BOTTOM_ROI", "LL_LEFT_ROI", "LL_RIGHT_ROI",
-    "CW_TOP_ROI", "CW_BOTTOM_ROI", "CW_LEFT_ROI", "CW_RIGHT_ROI"
+    "CW_TOP_ROI", "CW_BOTTOM_ROI", "CW_LEFT_ROI", "CW_RIGHT_ROI",
+    "DW_TOP_ROI", "DW_BOTTOM_ROI", "DW_LEFT_ROI", "DW_RIGHT_ROI"
 ]
 
 # --- Advanced variables (to confirm) ---
@@ -37,21 +38,37 @@ def ui_filename():
     return "roi_config_ui.json"
 
 def load_ui_settings():
+    defaults = {
+        "colors": {
+            "RL": "#ff7b7b",
+            "LL": "#7bffb8",
+            "CW": "#ffd27b",
+            "DW": "#a78bfa",
+        },
+        "visible": {
+            "RL": True,
+            "LL": True,
+            "CW": True,
+            "DW": True,
+        },
+    }
     fname = ui_filename()
     if os.path.exists(fname):
         try:
             with open(fname, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                return {
-                    "colors": data.get("colors", {"RL": "#ff7b7b", "LL": "#7bffb8", "CW": "#ffd27b"}),
-                    "visible": data.get("visible", {"RL": True, "LL": True, "CW": True})
-                }
+            if isinstance(data, dict):
+                for section in ("colors", "visible"):
+                    stored = data.get(section, {})
+                    if isinstance(stored, dict):
+                        defaults[section].update({
+                            key: value
+                            for key, value in stored.items()
+                            if key in defaults[section]
+                        })
         except Exception:
             logger.exception("Failed load UI settings")
-    return {
-        "colors": {"RL": "#ff7b7b", "LL": "#7bffb8", "CW": "#ffd27b"},
-        "visible": {"RL": True, "LL": True, "CW": True}
-    }
+    return defaults
 
 def save_ui_settings(settings):
     fname = ui_filename()
@@ -249,6 +266,10 @@ canvas{width:100%;height:auto;border-radius:8px;display:block;background:#000}
         <label><input type="checkbox" id="vis_cw"> Show Crosswalk</label>
         <input type="color" id="color_cw" value="{{ ui.colors.CW }}">
       </div>
+      <div class="toggle-row">
+        <label><input type="checkbox" id="vis_dw"> Show Drivable Width ROI</label>
+        <input type="color" id="color_dw" value="{{ ui.colors.DW }}">
+      </div>
     </div>
 
     <div class="card">
@@ -428,6 +449,7 @@ function varColorByKey(key){
   if(key === 'RL') return ui.colors.RL;
   if(key === 'LL') return ui.colors.LL;
   if(key === 'CW') return ui.colors.CW;
+  if(key === 'DW') return ui.colors.DW;
   return '#9ad0ff';
 }
 
@@ -449,7 +471,8 @@ function computeRects(){
     return {
         RL: rectFromVars('RL_TOP_ROI','RL_BOTTOM_ROI','RL_LEFT_ROI','RL_RIGHT_ROI', w, h),
         LL: rectFromVars('LL_TOP_ROI','LL_BOTTOM_ROI','LL_LEFT_ROI','LL_RIGHT_ROI', w, h),
-        CW: rectFromVars('CW_TOP_ROI','CW_BOTTOM_ROI','CW_LEFT_ROI','CW_RIGHT_ROI', w, h)
+        CW: rectFromVars('CW_TOP_ROI','CW_BOTTOM_ROI','CW_LEFT_ROI','CW_RIGHT_ROI', w, h),
+        DW: rectFromVars('DW_TOP_ROI','DW_BOTTOM_ROI','DW_LEFT_ROI','DW_RIGHT_ROI', w, h)
     };
 }
 
@@ -500,7 +523,7 @@ function drawOverlays(){
     const rects = computeRects();
     ctx.save();
     if(showRects){
-        for(const key of ['RL','LL','CW']){
+        for(const key of ['RL','LL','CW','DW']){
             if(!ui.visible[key]) continue;
             const r = rects[key];
             if(!r) continue;
@@ -514,10 +537,10 @@ function drawOverlays(){
             ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
 
             ctx.fillStyle = color;
-            ctx.fillRect(r.x + 6, r.y + 6, 120, 18);
+            ctx.fillRect(r.x + 6, r.y + 6, key === 'DW' ? 142 : 120, 18);
             ctx.fillStyle = '#012';
             ctx.font = '12px Arial';
-            ctx.fillText(key, r.x + 10, r.y + 19);
+            ctx.fillText(key === 'DW' ? 'ROAD WIDTH' : key, r.x + 10, r.y + 19);
 
             ctx.fillStyle = '#fff';
             ctx.font = '11px Arial';
@@ -536,7 +559,7 @@ function drawOverlays(){
 
 function hitTest(px, py){
     const rects = computeRects();
-    for(const key of ['RL','LL','CW']){
+    for(const key of ['DW','RL','LL','CW']){
         if(!ui.visible[key]) continue;
         const r = rects[key];
         if(!r) continue;
@@ -616,8 +639,10 @@ canvas.addEventListener('mousemove', (e)=>{
         topVar='RL_TOP_ROI'; bottomVar='RL_BOTTOM_ROI'; leftVar='RL_LEFT_ROI'; rightVar='RL_RIGHT_ROI';
     } else if(group === 'LL'){
         topVar='LL_TOP_ROI'; bottomVar='LL_BOTTOM_ROI'; leftVar='LL_LEFT_ROI'; rightVar='LL_RIGHT_ROI';
-    } else {
+    } else if(group === 'CW'){
         topVar='CW_TOP_ROI'; bottomVar='CW_BOTTOM_ROI'; leftVar='CW_LEFT_ROI'; rightVar='CW_RIGHT_ROI';
+    } else {
+        topVar='DW_TOP_ROI'; bottomVar='DW_BOTTOM_ROI'; leftVar='DW_LEFT_ROI'; rightVar='DW_RIGHT_ROI';
     }
     const orig = dragState.origRect;
     let nx_t = orig.t, nx_b = orig.b, nx_l = orig.l, nx_r = orig.r;
@@ -667,8 +692,10 @@ window.addEventListener('mouseup', ()=>{
         topVar='RL_TOP_ROI'; bottomVar='RL_BOTTOM_ROI'; leftVar='RL_LEFT_ROI'; rightVar='RL_RIGHT_ROI';
     } else if(group === 'LL'){
         topVar='LL_TOP_ROI'; bottomVar='LL_BOTTOM_ROI'; leftVar='LL_LEFT_ROI'; rightVar='LL_RIGHT_ROI';
-    } else {
+    } else if(group === 'CW'){
         topVar='CW_TOP_ROI'; bottomVar='CW_BOTTOM_ROI'; leftVar='CW_LEFT_ROI'; rightVar='CW_RIGHT_ROI';
+    } else {
+        topVar='DW_TOP_ROI'; bottomVar='DW_BOTTOM_ROI'; leftVar='DW_LEFT_ROI'; rightVar='DW_RIGHT_ROI';
     }
     const payload = {};
     payload[topVar]=values[topVar]; payload[bottomVar]=values[bottomVar];
@@ -896,9 +923,20 @@ document.getElementById('vis_cw').addEventListener('change', (e)=>{
     saveUiSettingsLocal();
     drawOverlays();
 });
+document.getElementById('vis_dw').addEventListener('change', (e)=>{
+    ui.visible.DW = e.target.checked;
+    if(!ui.visible.DW && markerHighlight === 'DW'){
+        markerHighlight = null;
+        select.value='NONE';
+        selectedVar='NONE';
+    }
+    saveUiSettingsLocal();
+    drawOverlays();
+});
 document.getElementById('color_rl').addEventListener('input', (e)=>{ ui.colors.RL = e.target.value; saveUiSettingsLocal(); drawOverlays(); });
 document.getElementById('color_ll').addEventListener('input', (e)=>{ ui.colors.LL = e.target.value; saveUiSettingsLocal(); drawOverlays(); });
 document.getElementById('color_cw').addEventListener('input', (e)=>{ ui.colors.CW = e.target.value; saveUiSettingsLocal(); drawOverlays(); });
+document.getElementById('color_dw').addEventListener('input', (e)=>{ ui.colors.DW = e.target.value; saveUiSettingsLocal(); drawOverlays(); });
 
 const advLane = document.getElementById('lane_threshold');
 const advCrossThresh = document.getElementById('cross_thresh');
@@ -964,9 +1002,11 @@ function refreshInit(){
     document.getElementById('vis_rl').checked = ui.visible.RL;
     document.getElementById('vis_ll').checked = ui.visible.LL;
     document.getElementById('vis_cw').checked = ui.visible.CW;
+    document.getElementById('vis_dw').checked = ui.visible.DW;
     document.getElementById('color_rl').value = ui.colors.RL;
     document.getElementById('color_ll').value = ui.colors.LL;
     document.getElementById('color_cw').value = ui.colors.CW;
+    document.getElementById('color_dw').value = ui.colors.DW;
 }
 refreshInit();
 setInterval(refreshValues, 3000);
@@ -977,12 +1017,14 @@ function updateValuesPre(){
 function groupFromVar(varname){
     if(varname.startsWith('RL_')) return 'RL';
     if(varname.startsWith('LL_')) return 'LL';
-    return 'CW';
+    if(varname.startsWith('CW_')) return 'CW';
+    return 'DW';
 }
 function mapGroupToDefaultVar(group){
     if(group === 'RL') return 'RL_TOP_ROI';
     if(group === 'LL') return 'LL_TOP_ROI';
-    return 'CW_TOP_ROI';
+    if(group === 'CW') return 'CW_TOP_ROI';
+    return 'DW_TOP_ROI';
 }
 </script>
 </body>
