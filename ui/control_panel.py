@@ -235,9 +235,9 @@ class ControlPanel(QMainWindow):
         root_layout.addWidget(self.metrics_label)
 
         stream_row = QHBoxLayout()
-        self.stream_toggle = QPushButton("Flask editor: ON")
+        self.stream_toggle = QPushButton("Flask editor: OFF")
         self.stream_toggle.setCheckable(True)
-        self.stream_toggle.setChecked(True)
+        self.stream_toggle.setChecked(False)
         self.stream_toggle.clicked.connect(self._emit_stream_toggle)
         stream_row.addWidget(self.stream_toggle)
         stream_row.addWidget(QLabel("Use the Flask editor for live settings and ROI editing."))
@@ -622,6 +622,17 @@ class ControlPanel(QMainWindow):
     def _emit_stream_toggle(self, enabled: bool) -> None:
         self.stream_toggle.setText("Flask editor: ON" if enabled else "Flask editor: OFF")
         self.stream_toggle_requested.emit(bool(enabled))
+
+    def set_flask_stream_state(self, enabled: bool, status: str | None = None) -> None:
+        """Synchronize the Flask server toggle after a start/stop request."""
+        self.stream_toggle.blockSignals(True)
+        self.stream_toggle.setChecked(bool(enabled))
+        self.stream_toggle.setText(
+            "Flask editor: ON" if enabled else "Flask editor: OFF"
+        )
+        self.stream_toggle.blockSignals(False)
+        if status:
+            self.status.setText(status)
 
     def _emit_movement_sequences(self, value: dict[str, Any]) -> None:
         self.settings.apply({"JUNCTION_MOVEMENT_SEQUENCES": value})
