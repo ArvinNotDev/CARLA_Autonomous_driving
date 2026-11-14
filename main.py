@@ -151,7 +151,41 @@ class CarlaLaneDrivingApp:
                 if self.intersection_manager is not None
                 else "IDLE"
             ),
+            "driving_mode": "AUTO" if self.auto_mode else "MANUAL",
+            "lane_change_phase": (
+                self.lane_change_manager.phase_name()
+                if self.lane_change_manager is not None
+                else "IDLE"
+            ),
+            "lane_change_direction": (
+                self.lane_change_manager.direction
+                if self.lane_change_manager is not None
+                else None
+            ),
         }
+
+        drive_info = self._last_drivable_info or {}
+        for key in (
+            "road_width_index_px", "road_width_ratio", "road_valid_rows", "roi",
+        ):
+            source_key = "road_roi" if key == "roi" else key
+            data[source_key] = drive_info.get(key)
+
+        vision_result = self._vision_result if isinstance(self._vision_result, dict) else {}
+        debug = vision_result.get("debug", {})
+        if not isinstance(debug, dict):
+            debug = {}
+        data["lane_type"] = vision_result.get("lane_type")
+        data["lane_error_px"] = vision_result.get("error")
+        data["lane_center_x"] = debug.get("lane_center")
+        data["lane_left_x"] = debug.get("left_x")
+        data["lane_right_x"] = debug.get("right_x")
+
+        location = self.current_location
+        if location is not None:
+            data["gps"] = (
+                float(location.x), float(location.y), float(location.z)
+            )
 
         if self.inference_worker is not None:
             traj, traj_busy, _, _ = self.inference_worker.trajectory_snapshot()
@@ -417,85 +451,9 @@ class CarlaLaneDrivingApp:
         if screen is None:
             return
 
-        lines = []
-        if cfg("DEBUG_SHOW_FPS", True):
-            lines.append(
-                f"Display FPS: {self.display_metrics.fps():.1f} | "
-                f"Control FPS: {self.control_metrics.snapshot().fps:.1f}"
-            )
-
-        if self.inference_worker is not None:
-            traj, traj_busy, traj_error, _ = self.inference_worker.trajectory_snapshot()
-            _, vis_busy, vis_error, _ = self.inference_worker.vision_snapshot()
-            traj_metrics = self.inference_worker.metrics["trajectory"].snapshot()
-            vis_metrics = self.inference_worker.metrics["vision"].snapshot()
-
-            age = (
-                max(0.0, time.perf_counter() - traj.completed_at)
-                if traj is not None and traj.valid
-                else None
-            )
-            if self._trajectory_runtime_enabled:
-                lines.append(
-                    f"Trajectory FPS: {traj_metrics.fps:.1f} | age: {'—' if age is None else f'{age:.2f}s'}"
-                )
-            else:
-                lines.append("Trajectory model: OFF")
-            lines.extend(
-                [
-                    f"Vision FPS: {vis_metrics.fps:.1f}",
-                    f"Junction: {self.intersection_manager.phase_name() if self.intersection_manager else 'IDLE'}",
-                    f"Workers: trajectory={'busy' if traj_busy else 'idle' if self._trajectory_runtime_enabled else 'off'} vision={'busy' if vis_busy else 'idle'}",
-                ]
-            )
-            if self._trajectory_runtime_enabled and traj_error:
-                lines.append("Trajectory worker: retaining last valid result")
-            if vis_error:
-                lines.append("Vision worker: retaining last valid result")
-
-        if cfg("DEBUG_SHOW_GPS", True) and self.vehicle is not None:
-            try:
-                loc = self.current_location
-                if loc is None:
-                    loc = self.vehicle.get_location()
-                lines.append(f"GPS: {loc.x:.1f}, {loc.y:.1f}, {loc.z:.1f}")
-            except Exception:
-                pass
-
-        drive_info = self._last_drivable_info
-        if drive_info.get("error") is not None:
-            lines.append(f"Drivable recovery error: {float(drive_info['error']):.1f}px")
-        lidar_info = self._last_recovery_lidar_info
-        if lidar_info:
-            if lidar_info.get("blocked"):
-                lines.append(
-                    f"Recovery suppressed: LiDAR object on {lidar_info.get('side', 'side')} "
-                    f"({lidar_info.get('point_count', 0)} points)"
-                )
-            else:
-                lines.append(f"Recovery LiDAR: {lidar_info.get('reason', 'idle')}")
-
-        if self.intersection_manager is not None:
-            phase = self.intersection_manager.phase_name()
-        else:
-            phase = "IDLE"
-        if phase == "STATIC":
-            lines.append("Junction phase: static lead-in")
-        elif self.intersection_sequence:
-            lines.append(
-                f"Junction phase: trajectory ({self.next_maneuver or 'LANE_FOLLOW'})"
-            )
-
-        if self.lane_change_manager is not None:
-            lane_change_phase = self.lane_change_manager.phase_name()
-            if lane_change_phase != "IDLE":
-                direction = self.lane_change_manager.direction or "unknown"
-                lines.append(
-                    f"Lane change: {lane_change_phase} ({direction}) — "
-                    "lane-follow steering locked"
-                )
-
-        composed = self.renderer.compose(screen, {"lines": lines})
+        # Telemetry belongs in the Qt side panel; keep the camera image free of
+        # per-frame text rendering and duplicated status strings.
+        composed = self.renderer.compose(screen)
         conf.debug_frame_buffer = np.ascontiguousarray(composed)
         self.frame_store.publish(composed)
 

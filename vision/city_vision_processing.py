@@ -613,16 +613,6 @@ class VisionProcessor:
                     3,
                     cv2.LINE_AA,
                 )
-                cv2.putText(
-                    combined,
-                    "JUNCTION LINE",
-                    (int(line[0]), max(18, int(line[1]) - 8)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55,
-                    (0, 200, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
 
         return {
             "error": error,

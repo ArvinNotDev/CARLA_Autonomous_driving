@@ -19,6 +19,27 @@ from ui.frame_store import DebugFrameStore
 from ui.lidar_radar import LidarRadarWidget
 
 
+class NoWheelSpinBox(QSpinBox):
+    """A numeric field that never changes value when the mouse wheel scrolls."""
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
+class NoWheelDoubleSpinBox(QDoubleSpinBox):
+    """A floating-point field that never changes value on mouse-wheel scroll."""
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
+class NoWheelComboBox(QComboBox):
+    """A dropdown that does not change selection while the user scrolls."""
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
 class DebugFrameLabel(QLabel):
     """Counts each newly submitted pixmap once, when it is actually painted."""
 
@@ -96,12 +117,12 @@ class JunctionSequenceEditor(QWidget):
                 grid.addWidget(QLabel(text), 0, col)
             actions = self._sequences[maneuver]
             for index, action in enumerate(actions):
-                distance = QDoubleSpinBox()
+                distance = NoWheelDoubleSpinBox()
                 distance.setRange(0.01, 1000.0)
                 distance.setSingleStep(0.5)
                 distance.setDecimals(2)
                 distance.setValue(action["distance_m"])
-                steering = QDoubleSpinBox()
+                steering = NoWheelDoubleSpinBox()
                 steering.setRange(-1.0, 1.0)
                 steering.setSingleStep(0.05)
                 steering.setDecimals(3)
@@ -199,7 +220,7 @@ class ControlPanel(QMainWindow):
         self._last_scaled_size = None
         self._last_qimage: Optional[QImage] = None
         self.setWindowTitle("CARLA Runtime Control Panel")
-        self.resize(1120, 900)
+        self.resize(1500, 1000)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
 
         root = QWidget()
@@ -262,6 +283,7 @@ class ControlPanel(QMainWindow):
 
         camera_card = QFrame()
         camera_card.setObjectName("surfaceCard")
+        camera_card.setMinimumWidth(470)
         camera_layout = QVBoxLayout(camera_card)
         camera_layout.setContentsMargins(12, 10, 12, 12)
         camera_layout.setSpacing(8)
@@ -270,7 +292,7 @@ class ControlPanel(QMainWindow):
         camera_title_column.setSpacing(2)
         camera_title = QLabel("Perception camera")
         camera_title.setObjectName("sectionTitle")
-        camera_subtitle = QLabel("Live camera output with perception and debug overlays")
+        camera_subtitle = QLabel("Live image · visual overlays only")
         camera_subtitle.setObjectName("mutedLabel")
         camera_title_column.addWidget(camera_title)
         camera_title_column.addWidget(camera_subtitle)
@@ -283,13 +305,14 @@ class ControlPanel(QMainWindow):
         self.debug_frame = DebugFrameLabel(self.display_metrics)
         self.debug_frame.setObjectName("cameraViewport")
         self.debug_frame.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.debug_frame.setMinimumSize(360, 250)
+        self.debug_frame.setMinimumSize(360, 220)
         self.debug_frame.setText("Waiting for camera frames…")
         camera_layout.addWidget(self.debug_frame, 1)
         live_view_row.addWidget(camera_card)
 
         lidar_card = QFrame()
         lidar_card.setObjectName("surfaceCard")
+        lidar_card.setMinimumWidth(245)
         lidar_layout = QVBoxLayout(lidar_card)
         lidar_layout.setContentsMargins(12, 10, 12, 12)
         lidar_layout.setSpacing(8)
@@ -323,9 +346,89 @@ class ControlPanel(QMainWindow):
         lidar_layout.addLayout(lidar_controls)
         lidar_layout.addWidget(self.lidar_radar, 1)
         live_view_row.addWidget(lidar_card)
-        live_view_row.setStretchFactor(0, 7)
-        live_view_row.setStretchFactor(1, 3)
 
+        live_info_card = QFrame()
+        live_info_card.setObjectName("surfaceCard")
+        live_info_card.setMinimumWidth(285)
+        live_info_card.setMaximumWidth(390)
+        live_info_layout = QVBoxLayout(live_info_card)
+        live_info_layout.setContentsMargins(12, 10, 12, 10)
+        live_info_layout.setSpacing(7)
+        live_info_title = QLabel("Live intelligence")
+        live_info_title.setObjectName("sectionTitle")
+        live_info_subtitle = QLabel("Continuously updated · no image text")
+        live_info_subtitle.setObjectName("mutedLabel")
+        live_info_layout.addWidget(live_info_title)
+        live_info_layout.addWidget(live_info_subtitle)
+
+        info_scroll = QScrollArea()
+        info_scroll.setWidgetResizable(True)
+        info_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        info_content = QWidget()
+        info_content_layout = QVBoxLayout(info_content)
+        info_content_layout.setContentsMargins(2, 4, 2, 4)
+        info_content_layout.setSpacing(8)
+        self.live_values: dict[str, QLabel] = {}
+
+        road_group = QGroupBox("Road span · DW ROI")
+        road_group_layout = QVBoxLayout(road_group)
+        road_group_layout.setContentsMargins(10, 10, 10, 9)
+        road_value = QLabel("— px")
+        road_value.setObjectName("roadSpanValue")
+        road_value.setToolTip("Median horizontal drivable-mask span across valid rows in the DW ROI. This is a comparison index, not metres.")
+        road_meta = QLabel("Waiting for a valid drivable-area mask")
+        road_meta.setObjectName("telemetryHint")
+        road_meta.setWordWrap(True)
+        road_group_layout.addWidget(road_value)
+        road_group_layout.addWidget(road_meta)
+        self.live_values["road_width"] = road_value
+        self.live_values["road_width_meta"] = road_meta
+
+        def add_live_group(title: str, fields: tuple[tuple[str, str, str], ...]) -> None:
+            group = QGroupBox(title)
+            form = QFormLayout(group)
+            form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+            form.setHorizontalSpacing(10)
+            form.setVerticalSpacing(6)
+            for key, label_text, initial in fields:
+                label = QLabel(label_text)
+                label.setObjectName("telemetryLabel")
+                value = QLabel(initial)
+                value.setObjectName("telemetryValue")
+                value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                value.setWordWrap(True)
+                self.live_values[key] = value
+                form.addRow(label, value)
+            info_content_layout.addWidget(group)
+
+        info_content_layout.addWidget(road_group)
+        add_live_group("ROI measurement", (
+            ("road_ratio", "Frame ratio", "—"),
+            ("road_rows", "Valid scan rows", "0"),
+            ("road_roi", "ROI bounds (px)", "—"),
+        ))
+        add_live_group("Perception", (
+            ("lane_type", "Detected lane", "—"),
+            ("lane_error", "Lateral error", "—"),
+            ("lane_center", "Lane centre", "—"),
+            ("lane_bounds", "Lane boundaries", "—"),
+        ))
+        add_live_group("Vehicle / navigation", (
+            ("mode", "Driving mode", "—"),
+            ("junction", "Junction phase", "IDLE"),
+            ("lane_change", "Lane change", "IDLE"),
+            ("gps", "GPS · x / y / z", "—"),
+            ("trajectory", "Trajectory worker", "OFF"),
+        ))
+        info_content_layout.addStretch(1)
+        info_scroll.setWidget(info_content)
+        live_info_layout.addWidget(info_scroll, 1)
+        live_view_row.addWidget(live_info_card)
+
+        live_view_row.setStretchFactor(0, 6)
+        live_view_row.setStretchFactor(1, 3)
+        live_view_row.setStretchFactor(2, 3)
+        live_view_row.setSizes([780, 330, 350])
         monitor_layout.addWidget(live_view_row, 1)
 
         metrics_row = QHBoxLayout()
@@ -336,15 +439,13 @@ class ControlPanel(QMainWindow):
             ("CONTROL FPS", "control", "0.0"),
             ("VISION FPS", "vision", "0.0"),
             ("TRAJECTORY FPS", "trajectory", "0.0"),
-            ("JUNCTION PHASE", "junction", "IDLE"),
-            ("INFERENCE WORKERS", "workers", "T idle  ·  V idle"),
         )
         for caption, key, initial in metric_specs:
             card = QFrame()
             card.setObjectName("metricCard")
             card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(11, 8, 11, 8)
-            card_layout.setSpacing(3)
+            card_layout.setContentsMargins(11, 7, 11, 7)
+            card_layout.setSpacing(2)
             caption_label = QLabel(caption)
             caption_label.setObjectName("metricCaption")
             value_label = QLabel(initial)
@@ -355,11 +456,6 @@ class ControlPanel(QMainWindow):
             metrics_row.addWidget(card, 1)
             self.metric_values[key] = value_label
         monitor_layout.addLayout(metrics_row)
-
-        self.metrics_label = QLabel("Diagnostics will appear when runtime telemetry is available.")
-        self.metrics_label.setObjectName("diagnosticsLine")
-        self.metrics_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        monitor_layout.addWidget(self.metrics_label)
 
         settings_surface = QFrame()
         settings_surface.setObjectName("settingsSurface")
@@ -403,9 +499,9 @@ class ControlPanel(QMainWindow):
 
         self.workspace_splitter.addWidget(monitor)
         self.workspace_splitter.addWidget(settings_surface)
-        self.workspace_splitter.setStretchFactor(0, 6)
-        self.workspace_splitter.setStretchFactor(1, 5)
-        self.workspace_splitter.setSizes([540, 420])
+        self.workspace_splitter.setStretchFactor(0, 4)
+        self.workspace_splitter.setStretchFactor(1, 6)
+        self.workspace_splitter.setSizes([420, 650])
         root_layout.addWidget(self.workspace_splitter, 1)
 
         self.status = QLabel("READY  ·  Live settings apply immediately.")
@@ -415,8 +511,8 @@ class ControlPanel(QMainWindow):
         self.setCentralWidget(root)
 
         self.setWindowTitle("CARLA Runtime Command Center")
-        self.setMinimumSize(1040, 760)
-        self.resize(1480, 1020)
+        self.setMinimumSize(1180, 860)
+        self.resize(1660, 1120)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
         self.setStyleSheet("""
             QMainWindow, QWidget#runtimeRoot {
@@ -522,8 +618,9 @@ class ControlPanel(QMainWindow):
                 background: #142239;
                 color: #9db2c8;
                 border: 1px solid #263a53;
-                padding: 8px 12px;
-                margin-right: 4px;
+                padding: 10px 15px;
+                margin-right: 5px;
+                font-weight: 650;
                 border-top-left-radius: 7px;
                 border-top-right-radius: 7px;
                 min-height: 22px;
@@ -554,10 +651,30 @@ class ControlPanel(QMainWindow):
                 background: #091321;
                 color: #e5edf7;
                 border: 1px solid #30455e;
-                border-radius: 6px;
-                padding: 6px 8px;
-                min-height: 22px;
+                border-radius: 7px;
+                padding: 7px 10px;
+                min-height: 32px;
+                min-width: 150px;
                 selection-background-color: #1f6680;
+            }
+            QLabel#telemetryLabel {
+                color: #8fa3ba;
+                font-size: 8pt;
+            }
+            QLabel#telemetryValue {
+                color: #e5eef8;
+                font-size: 9pt;
+                font-weight: 650;
+            }
+            QLabel#telemetryHint {
+                color: #8fa3ba;
+                font-size: 8pt;
+            }
+            QLabel#roadSpanValue {
+                color: #79d9ef;
+                font-size: 25pt;
+                font-weight: 800;
+                padding: 2px 0;
             }
             QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
                 border: 1px solid #55b8d4;
@@ -662,10 +779,10 @@ class ControlPanel(QMainWindow):
                 "RL_TOP_ROI", "RL_BOTTOM_ROI", "RL_LEFT_ROI", "RL_RIGHT_ROI",
                 "LL_TOP_ROI", "LL_BOTTOM_ROI", "LL_LEFT_ROI", "LL_RIGHT_ROI",
                 "CW_TOP_ROI", "CW_BOTTOM_ROI", "CW_LEFT_ROI", "CW_RIGHT_ROI",
+                "DW_TOP_ROI", "DW_BOTTOM_ROI", "DW_LEFT_ROI", "DW_RIGHT_ROI",
                 "CROSSWALK_THRESHOLD",
                 "VISION_DEBUG", "DEBUG_SHOW_ROIS", "DEBUG_SHOW_LANE_MASK", "DEBUG_SHOW_DRIVABLE_AREA",
-                "DEBUG_SHOW_TRAJECTORY", "DEBUG_SHOW_FPS", "DEBUG_SHOW_GPS",
-                "DEBUG_SHOW_TEXT",
+                "DEBUG_SHOW_TRAJECTORY",
             },
             "Recovery + obstacle safety": {
                 "DRIVABLE_RECOVERY_ENABLED", "DRIVABLE_RECOVERY_ERROR_THRESHOLD",
@@ -697,9 +814,9 @@ class ControlPanel(QMainWindow):
             if title == "Lane change":
                 handoff_help = QLabel(
                     "Lane-follow steering stays locked during the maneuver. "
-                    "The handoff requires an angle change from the starting lane "
-                    "followed by stable lane markings across distinct camera frames. "
-                    "If confirmation times out, the vehicle holds full brake."
+                    "GPS decides when the requested lane change is complete. "
+                    "The controller keeps steering ownership until GPS no longer "
+                    "requests a lane change."
                 )
                 handoff_help.setWordWrap(True)
                 form.addRow("Steering ownership", handoff_help)
@@ -836,20 +953,8 @@ class ControlPanel(QMainWindow):
         control_fps = float(metrics.get("control_fps", 0.0))
         traj_fps = float(metrics.get("trajectory_fps", 0.0))
         vision_fps = float(metrics.get("vision_fps", 0.0))
-        traj_age = metrics.get("trajectory_age_s")
-        phase = str(metrics.get("junction_phase", "IDLE"))
-        busy_t = bool(metrics.get("trajectory_busy", False))
-        busy_v = bool(metrics.get("vision_busy", False))
         trajectory_enabled = bool(metrics.get("trajectory_enabled", True))
-        age_text = "—" if traj_age is None else f"{float(traj_age):.2f}s"
-        trajectory_text = (
-            f"trajectory FPS: {traj_fps:.1f} | trajectory age: {age_text}"
-            if trajectory_enabled
-            else "trajectory: OFF"
-        )
-        trajectory_worker_state = (
-            "busy" if busy_t else "idle" if trajectory_enabled else "off"
-        )
+
         if hasattr(self, "metric_values"):
             self.metric_values["display"].setText(f"{display_fps:.1f}")
             self.metric_values["control"].setText(f"{control_fps:.1f}")
@@ -857,16 +962,79 @@ class ControlPanel(QMainWindow):
             self.metric_values["trajectory"].setText(
                 f"{traj_fps:.1f}" if trajectory_enabled else "OFF"
             )
-            self.metric_values["junction"].setText(phase.replace("_", " "))
-            self.metric_values["workers"].setText(
-                f"T {'BUSY' if busy_t else 'IDLE' if trajectory_enabled else 'OFF'}  ·  "
-                f"V {'BUSY' if busy_v else 'IDLE'}"
+        self._update_live_telemetry(metrics)
+
+    def _update_live_telemetry(self, metrics: dict[str, Any]) -> None:
+        """Refresh the persistent side panel from the latest control-loop snapshot."""
+        values = self.live_values
+
+        width_px = metrics.get("road_width_index_px")
+        ratio = metrics.get("road_width_ratio")
+        valid_rows = int(metrics.get("road_valid_rows") or 0)
+        if width_px is None:
+            values["road_width"].setText("— px")
+            values["road_width_meta"].setText("No valid drivable pixels inside the DW ROI")
+        else:
+            values["road_width"].setText(f"{float(width_px):.0f} px")
+            ratio_text = "—" if ratio is None else f"{float(ratio) * 100.0:.1f}% of frame width"
+            values["road_width_meta"].setText(
+                f"Median row span · {ratio_text} · {valid_rows} valid rows · comparison index, not metres"
             )
-        self.metrics_label.setText(
-            f"display FPS: {display_fps:.1f} | control FPS: {control_fps:.1f} | "
-            f"{trajectory_text} | vision FPS: {vision_fps:.1f} | junction: {phase} | "
-            f"workers: T={trajectory_worker_state} V={'busy' if busy_v else 'idle'}"
+
+        roi = metrics.get("road_roi")
+        if isinstance(roi, (tuple, list)) and len(roi) == 4:
+            values["road_roi"].setText(
+                f"x {int(roi[0])}–{int(roi[2])}  ·  y {int(roi[1])}–{int(roi[3])}"
+            )
+        else:
+            values["road_roi"].setText("—")
+        values["road_ratio"].setText(
+            "—" if ratio is None else f"{float(ratio) * 100.0:.1f}%"
         )
+        values["road_rows"].setText(str(valid_rows))
+
+        lane_type = str(metrics.get("lane_type") or "—")
+        values["lane_type"].setText(lane_type.replace("_", " ").upper())
+        lane_error = metrics.get("lane_error_px")
+        values["lane_error"].setText(
+            "—" if lane_error is None else f"{float(lane_error):+.1f} px"
+        )
+        lane_center = metrics.get("lane_center_x")
+        values["lane_center"].setText(
+            "—" if lane_center is None else f"{float(lane_center):.1f} px"
+        )
+        left_x = metrics.get("lane_left_x")
+        right_x = metrics.get("lane_right_x")
+        values["lane_bounds"].setText(
+            f"L {left_x if left_x is not None else '—'}  ·  R {right_x if right_x is not None else '—'}"
+        )
+
+        values["mode"].setText(str(metrics.get("driving_mode", "—")).upper())
+        values["junction"].setText(
+            str(metrics.get("junction_phase", "IDLE")).replace("_", " ")
+        )
+        lane_phase = str(metrics.get("lane_change_phase", "IDLE")).replace("_", " ")
+        direction = metrics.get("lane_change_direction")
+        if lane_phase != "IDLE" and direction:
+            lane_phase = f"{lane_phase} · {str(direction).upper()}"
+        values["lane_change"].setText(lane_phase)
+
+        gps = metrics.get("gps")
+        if isinstance(gps, (tuple, list)) and len(gps) >= 3:
+            values["gps"].setText(
+                f"{float(gps[0]):.1f}, {float(gps[1]):.1f}, {float(gps[2]):.1f}"
+            )
+        else:
+            values["gps"].setText("Unavailable")
+
+        if not bool(metrics.get("trajectory_enabled", True)):
+            trajectory_text = "OFF"
+        else:
+            age = metrics.get("trajectory_age_s")
+            trajectory_text = "BUSY" if metrics.get("trajectory_busy") else "IDLE"
+            if age is not None:
+                trajectory_text += f" · {float(age):.2f}s old"
+        values["trajectory"].setText(trajectory_text)
 
     def _scroll(self, widget: QWidget) -> QScrollArea:
         scroll = QScrollArea()
@@ -884,7 +1052,7 @@ class ControlPanel(QMainWindow):
             widget = QCheckBox()
             widget.stateChanged.connect(lambda _state, k=key: self._emit(k))
         elif kind == "choice":
-            widget = QComboBox()
+            widget = NoWheelComboBox()
             if key == "JUNCTION_DETECTION_MODE":
                 widget.addItem("Junction model (ResNet18)", "model")
                 widget.addItem("Crosswalk ROI — horizontal line", "crosswalk_roi")
@@ -892,12 +1060,12 @@ class ControlPanel(QMainWindow):
                 widget.addItems(list(limits))
             widget.currentTextChanged.connect(lambda _text, k=key: self._emit(k))
         elif kind == "int":
-            widget = QSpinBox()
+            widget = NoWheelSpinBox()
             widget.setRange(int(limits[0]), int(limits[1]))
             widget.setSingleStep(int(limits[2]))
             self.widgets[key] = widget
         elif kind == "float":
-            widget = QDoubleSpinBox()
+            widget = NoWheelDoubleSpinBox()
             widget.setRange(float(limits[0]), float(limits[1]))
             widget.setSingleStep(float(limits[2]))
             widget.setDecimals(4)
@@ -942,7 +1110,7 @@ class ControlPanel(QMainWindow):
     def _build_profiles(self, root_layout: QVBoxLayout) -> None:
         box = QGroupBox("Profiles (persist between sessions)")
         layout = QHBoxLayout(box)
-        self.profile_combo = QComboBox()
+        self.profile_combo = NoWheelComboBox()
         names = sorted(name for name in self.settings.profiles if not name.startswith("_"))
         self.profile_combo.addItems(names)
         active = self.settings.profiles.get("_active_profile")

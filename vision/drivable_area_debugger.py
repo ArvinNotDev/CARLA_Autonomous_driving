@@ -1,31 +1,32 @@
 from __future__ import annotations
 
-from typing import Any, Optional, Tuple, Dict
+from typing import Any, Dict, Optional, Tuple
 
 import cv2
 import numpy as np
 
 import config_city as conf
-from utils.vehicle_utils import blank_frame
 
 
 class DrivableAreaDebugger:
+    """Extract compact road-geometry measurements from the configured DW ROI."""
+
     def __init__(self, window_name: str = "drivable area") -> None:
         self.window_name = window_name
 
     def apply_center_roi(self, mask: np.ndarray) -> Tuple[int, int, int, int]:
-        h, w = mask.shape[:2]
+        """Return the configured road-width ROI as image-space slice bounds."""
+        height, width = mask.shape[:2]
 
-        x1 = int(conf.CW_LEFT_ROI * w)
-        x2 = int(conf.CW_RIGHT_ROI * w)
-        y1 = int(conf.CW_TOP_ROI * h)
-        y2 = int(conf.CW_BOTTOM_ROI * h)
+        x1 = int(float(getattr(conf, "DW_LEFT_ROI", 0.10)) * width)
+        x2 = int(float(getattr(conf, "DW_RIGHT_ROI", 0.90)) * width)
+        y1 = int(float(getattr(conf, "DW_TOP_ROI", 0.60)) * height)
+        y2 = int(float(getattr(conf, "DW_BOTTOM_ROI", 0.72)) * height)
 
-        x1 = max(0, min(w - 1, x1))
-        x2 = max(0, min(w - 1, x2))
-        y1 = max(0, min(h - 1, y1))
-        y2 = max(0, min(h - 1, y2))
-
+        x1 = max(0, min(width, x1))
+        x2 = max(0, min(width, x2))
+        y1 = max(0, min(height, y1))
+        y2 = max(0, min(height, y2))
         return x1, y1, x2, y2
 
     def show(
@@ -33,15 +34,11 @@ class DrivableAreaDebugger:
         vision_result: Optional[Dict[str, Any]],
     ) -> Dict[str, Any]:
         """
-        Displays the drivable-area debug view and returns the computed values.
+        Measure the median horizontal drivable-mask span inside DW ROI.
 
-        Returns a dictionary with:
-          - error
-          - center_x
-          - image_center_x
-          - left_x
-          - right_x
-          - roi
+        road_width_index_px is a relative comparison index in pixels, not a
+        physical road width in metres. The median across valid rows makes the
+        value less sensitive to isolated segmentation noise.
         """
         empty_result = {
             "error": None,
@@ -50,80 +47,74 @@ class DrivableAreaDebugger:
             "left_x": None,
             "right_x": None,
             "roi": None,
+            "roi_width_px": None,
+            "roi_height_px": None,
+            "road_width_index_px": None,
+            "road_width_ratio": None,
+            "road_valid_rows": 0,
         }
 
-        if vision_result is None:
+        if not isinstance(vision_result, dict):
             return empty_result
 
         try:
             debug = vision_result.get("debug", {})
-            drivable_mask = debug.get("drivable_mask", None)
-
+            drivable_mask = debug.get("drivable_mask") if isinstance(debug, dict) else None
             if drivable_mask is None:
                 return empty_result
 
-            if len(drivable_mask.shape) == 3:
-                gray = cv2.cvtColor(drivable_mask, cv2.COLOR_BGR2GRAY)
-            else:
-                gray = drivable_mask.copy()
+            mask = np.asarray(drivable_mask)
+            if mask.size == 0:
+                return empty_result
+            if mask.ndim == 3:
+                mask = cv2.cvtColor(mask[:, :, :3], cv2.COLOR_BGR2GRAY)
+            if mask.ndim != 2:
+                return empty_result
 
-            gray = gray.astype(np.float32)
-            max_val = float(gray.max()) if gray.size > 0 else 0.0
-
+            mask_float = mask.astype(np.float32, copy=False)
+            max_val = float(mask_float.max()) if mask_float.size else 0.0
             if max_val <= 1.0:
-                display_mask = (gray * 255.0).astype(np.uint8)
+                display_mask = mask_float > (1.0 / 255.0)
             else:
-                display_mask = np.clip(gray, 0, 255).astype(np.uint8)
+                display_mask = mask_float > 1.0
 
-            _, binary = cv2.threshold(display_mask, 1, 255, cv2.THRESH_BINARY)
+            height, width = display_mask.shape
+            image_center_x = width // 2
+            x1, y1, x2, y2 = self.apply_center_roi(display_mask)
+            roi_mask = display_mask[y1:y2, x1:x2]
+            if roi_mask.size == 0:
+                return {
+                    **empty_result,
+                    "image_center_x": image_center_x,
+                    "roi": (x1, y1, x2, y2),
+                    "roi_width_px": max(0, x2 - x1),
+                    "roi_height_px": max(0, y2 - y1),
+                }
 
-            h, w = binary.shape
-            image_center_x = w // 2
+            valid_rows = np.flatnonzero(np.any(roi_mask, axis=1))
+            road_width_index_px = None
+            road_width_ratio = None
+            left_x = None
+            right_x = None
+            center_x = image_center_x
 
-            x1, y1, x2, y2 = self.apply_center_roi(binary)
-            roi_binary = binary[y1:y2, x1:x2]
-            _, xs = np.where(roi_binary > 0)
+            if valid_rows.size:
+                valid_mask_rows = roi_mask[valid_rows]
+                roi_width = valid_mask_rows.shape[1]
+                row_lefts = np.argmax(valid_mask_rows, axis=1)
+                row_rights = roi_width - 1 - np.argmax(valid_mask_rows[:, ::-1], axis=1)
+                row_spans = row_rights - row_lefts + 1
 
-            if len(xs) == 0:
-                center_x = image_center_x
-                left_x = None
-                right_x = None
-            else:
-                left_x = x1 + int(xs.min())
-                right_x = x1 + int(xs.max())
-                center_x = int((left_x + right_x) / 2)
+                median_span = float(np.median(row_spans))
+                road_width_index_px = int(round(median_span))
+                road_width_ratio = float(median_span / max(1, width))
+
+                _, all_x = np.where(roi_mask)
+                left_x = x1 + int(all_x.min())
+                right_x = x1 + int(all_x.max())
+                center_x = int(round((left_x + right_x) / 2.0))
 
             error = image_center_x - center_x
-
-            vis = cv2.cvtColor(display_mask, cv2.COLOR_GRAY2BGR)
-            cv2.rectangle(vis, (x1, y1), (x2, y2), (0, 255, 255), 2)
-            cv2.line(vis, (center_x, 0), (center_x, h - 1), (0, 0, 255), 2)
-            cv2.line(vis, (image_center_x, 0), (image_center_x, h - 1), (255, 0, 0), 2)
-
-            scan_y = y2 - 1
-            if scan_y < 0:
-                scan_y = h // 2
-
-            cv2.line(vis, (x1, scan_y), (x2, scan_y), (0, 255, 255), 1)
-
-            if left_x is not None:
-                cv2.circle(vis, (left_x, scan_y), 6, (0, 255, 0), -1)
-            if right_x is not None:
-                cv2.circle(vis, (right_x, scan_y), 6, (0, 255, 0), -1)
-
-            if bool(getattr(conf, "DEBUG_SHOW_TEXT", True)):
-                cv2.putText(vis, f"max={max_val:.2f}", (10, 25),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                cv2.putText(vis, f"center_x={center_x}", (10, 50),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                cv2.putText(vis, f"img_center={image_center_x}", (10, 75),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                cv2.putText(vis, f"error={error}", (10, 100),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-            # cv2.imshow(self.window_name, vis)
-            # cv2.waitKey(1)
-
             return {
                 "error": error,
                 "center_x": center_x,
@@ -131,16 +122,16 @@ class DrivableAreaDebugger:
                 "left_x": left_x,
                 "right_x": right_x,
                 "roi": (x1, y1, x2, y2),
+                "roi_width_px": x2 - x1,
+                "roi_height_px": y2 - y1,
+                "road_width_index_px": road_width_index_px,
+                "road_width_ratio": road_width_ratio,
+                "road_valid_rows": int(valid_rows.size),
             }
-
         except Exception:
-            # cv2.imshow(self.window_name, blank_frame())
-            # cv2.waitKey(1)
             return empty_result
 
     def get_error(self, vision_result: Optional[Dict[str, Any]]) -> Optional[int]:
-        """
-        Runs the debugger and returns only the computed error.
-        """
+        """Return only the lateral error used by the recovery controller."""
         result = self.show(vision_result)
         return result["error"]

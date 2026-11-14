@@ -12,9 +12,9 @@ An experimental autonomous-driving stack for [CARLA](https://carla.org/) with la
 - Lane following from YOLO26s-sem ONNX perception and optional semantic segmentation.
 - Learned waypoint/trajectory steering for junctions, preceded by a short configurable static meter-based lead-in.
 - Route planning, junction classification, lane-change protection, spawn/goal selection, and manual WASD control.
-- A PySide6 runtime panel for live tuning of throttle, PID gains, target speed, trajectory parameters, ROIs, model thresholds, and debug overlays.
+- A redesigned PySide6 runtime panel with a persistent live-telemetry sidebar and a larger, full-width settings workspace for throttle, PID, trajectory, ROI, model, and camera controls.
 - Persistent named profiles in `runtime_profiles.json`.
-- Live FPS/GPS overlays and trajectory, ROI, lane-mask, and vision debugging.
+- Live FPS cards and a Qt telemetry sidebar for GPS, junction/lane-change state, lane perception, and a drivable-road span index. The camera image stays free of duplicated text overlays.
 
 ## Runtime architecture
 
@@ -53,6 +53,10 @@ The **Lane change** runtime settings expose the approach distance, distance per 
 The runtime setting **Junction detection method** selects either the trained ResNet18 junction classifier or **Crosswalk ROI — horizontal line**. The ROI mode uses the normalized `CW_TOP_ROI`, `CW_BOTTOM_ROI`, `CW_LEFT_ROI`, and `CW_RIGHT_ROI` values edited in the Flask ROI editor. It searches the camera image inside that rectangle for a sufficiently long, near-horizontal edge using OpenCV, then confirms it across consecutive vision frames. A confirmed line enters the same junction-planning and full-brake `CROSSWALK` state used by the existing controller. The detected segment is highlighted in the debug image.
 
 The detector exposes minimum line-length ratio, angle tolerance, confirmation frames, and a clear-time re-arm delay in the **Junction detection** settings tab. The re-arm delay prevents adjacent zebra stripes from repeatedly triggering stops. Changing between the two detection modes requires a runtime restart; in ROI mode the PyTorch junction classifier is not imported or loaded. The included `StableV2` profile uses ROI detection, while the other bundled profiles retain the model-based method.
+
+## Drivable-road span index
+
+The **Road-width ROI** (`DW_TOP_ROI`, `DW_BOTTOM_ROI`, `DW_LEFT_ROI`, `DW_RIGHT_ROI`) is independent from the crosswalk-detection ROI (`CW_*`). It can be edited in the Flask ROI Studio and in the Qt **Vision / debug** settings tab. The GUI reports the median horizontal span of positive drivable-mask pixels across valid image rows inside `DW_*`. The value is shown in pixels together with the frame-width ratio and valid-row count. It is deliberately a relative comparison index, **not a physical road width in metres**; keep camera resolution and ROI placement consistent when comparing roads.
 
 ## Optional LiDAR radar
 
