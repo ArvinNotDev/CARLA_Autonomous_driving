@@ -34,6 +34,7 @@ class TestPanelConstruction(unittest.TestCase):
         self.assertTrue(pid_gain.isHidden())
         panel.settings_search.clear()
         self.assertFalse(pid_gain.isHidden())
+        self.assertFalse(target_speed.isHidden())
         panel.close()
         try:
             os.remove("test_runtime_profiles.json")
