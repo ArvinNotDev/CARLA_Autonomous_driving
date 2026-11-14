@@ -72,16 +72,7 @@ class AutoDriver:
             return True, screen, self.controller.update(error=error)
 
         if self.lane_change_manager is not None:
-            self.lane_change_manager.update(
-                current_location,
-                goal_location,
-                line_angles={
-                    "left": debug.get("left_line_angle_deg"),
-                    "right": debug.get("right_line_angle_deg"),
-                },
-                lane_type=vision_result.get("lane_type"),
-                source_frame_id=vision_result.get("_source_frame_id"),
-            )
+            self.lane_change_manager.update(current_location, goal_location)
             override = self.lane_change_manager.control_override()
             if override is not None:
                 return True, screen, override

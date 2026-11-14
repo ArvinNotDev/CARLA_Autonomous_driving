@@ -1,6 +1,9 @@
 import sys
+import threading
+import time
 import types
 
+import numpy as np
 import pytest
 
 import config_city as conf
@@ -20,6 +23,14 @@ class VehicleControl:
         self.__dict__.update(kwargs)
 
 
+class FakePlanner:
+    def __init__(self, instruction="CHANGE_LANE_LEFT"):
+        self.instruction = instruction
+
+    def get_next_maneuver_text(self, current, goal):
+        return self.instruction
+
+
 @pytest.fixture(autouse=True)
 def carla_stub(monkeypatch):
     monkeypatch.setitem(
@@ -29,193 +40,94 @@ def carla_stub(monkeypatch):
     )
     monkeypatch.setattr(conf, "LANE_CHANGE_VERIFY_DISTANCE_M", 1.0, raising=False)
     monkeypatch.setattr(conf, "LANE_CHANGE_STEER_DISTANCE_M", 2.0, raising=False)
-    monkeypatch.setattr(conf, "LANE_CHANGE_ANGLE_ENTER_DEG", 10.0, raising=False)
-    monkeypatch.setattr(conf, "LANE_CHANGE_ANGLE_SETTLE_DEG", 6.0, raising=False)
-    monkeypatch.setattr(conf, "LANE_CHANGE_CONFIRM_FRAMES", 3, raising=False)
-    monkeypatch.setattr(conf, "LANE_CHANGE_SETTLE_STEER", 0.08, raising=False)
+    monkeypatch.setattr(conf, "LANE_CHANGE_STEER_VALUE", 0.2, raising=False)
+    monkeypatch.setattr(conf, "LANE_CHANGE_PLANNER_CHECK_INTERVAL_SECONDS", 0.05, raising=False)
 
 
-def make_manager(direction="left"):
-    manager = LaneChangeManager(vehicle=object(), planner=object())
-    manager.phase = "CHANGE"
-    manager.direction = direction
-    manager._segment_start_location = Location(0)
-    manager._baseline_line_angles = {"left": -15.0, "right": 15.0}
-    return manager
-
-
-def test_verify_phase_captures_pre_change_lane_angle_baseline():
-    manager = LaneChangeManager(vehicle=object(), planner=object())
-    manager.phase = "VERIFY"
-    manager.direction = "left"
-    manager._segment_start_location = Location(0)
-
-    manager.update(
-        Location(1.0),
-        None,
-        line_angles={"left": -18.0, "right": 17.0},
-        lane_type="only_left",
-        source_frame_id=1,
+def make_active_manager(instruction="CHANGE_LANE_LEFT"):
+    planner = FakePlanner(instruction)
+    manager = LaneChangeManager(
+        vehicle=object(),
+        planner=planner,
+        lane_change_debounce_seconds=0.0,
     )
-
+    manager._latest_planner_result = (1, "left")
+    manager.update(Location(0.0), Location(100.0))
+    assert manager.phase_name() == "VERIFY"
+    manager.update(Location(1.0), Location(100.0))
     assert manager.phase_name() == "CHANGE"
-    assert manager._baseline_line_angles == {"left": -18.0, "right": 17.0}
+    return manager, planner
+
+
+def finish_attempt_and_wait_for_gps(manager, x, goal=Location(100.0)):
+    manager.update(Location(x), goal)
+    assert manager.phase_name() == "CHECK"
+
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        with manager._state_lock:
+            ready = manager._latest_active_planner_result is not None
+        if ready:
+            break
+        time.sleep(0.005)
+    else:
+        pytest.fail("Active lane-change GPS query did not return")
+
+    manager.update(Location(x + 0.05), goal)
+
+
+def test_lane_change_uses_two_steered_then_two_straight_attempts_and_repeats():
+    manager, planner = make_active_manager("CHANGE_LANE_LEFT")
+
     control = manager.control_override()
     assert control.steer == pytest.approx(-0.2)
 
-
-def test_lane_change_keeps_steering_override_after_initial_distance():
-    manager = make_manager("left")
-
-    manager.update(
-        Location(2.1),
-        None,
-        line_angles={"left": -13.0, "right": 14.0},
-        lane_type="only_left",
-        source_frame_id=10,
-    )
-
-    assert manager.phase_name() == "SETTLE"
-    assert manager.movement_active()
-    control = manager.control_override()
-    assert control is not None
-    assert control.steer == pytest.approx(-0.08)
-
-
-def test_lane_change_releases_only_after_angle_transition_and_stable_frames():
-    manager = make_manager("right")
-
-    manager.update(
-        Location(0.5),
-        None,
-        line_angles={"left": -27.0, "right": 16.0},
-        lane_type="only_right",
-        source_frame_id=10,
-    )
+    # First steered attempt: GPS still requests the same lane change.
+    finish_attempt_and_wait_for_gps(manager, 3.0)
     assert manager.phase_name() == "CHANGE"
-    assert manager._angle_transition_seen
+    assert manager.control_override().steer == pytest.approx(-0.2)
 
-    manager.update(
-        Location(2.0),
-        None,
-        line_angles={"left": -18.0, "right": 17.0},
-        lane_type="only_right",
-        source_frame_id=11,
-    )
-    assert manager.phase_name() == "SETTLE"
-    assert manager._stable_angle_frames == 1
+    # Second steered attempt: switch to straight attempts.
+    finish_attempt_and_wait_for_gps(manager, 5.1)
+    assert manager.phase_name() == "STRAIGHT"
+    assert manager.control_override().steer == pytest.approx(0.0)
 
-    # Repeated control ticks with the same vision frame must not count twice.
-    manager.update(
-        Location(2.1),
-        None,
-        line_angles={"left": -15.0, "right": 15.0},
-        lane_type="only_right",
-        source_frame_id=11,
-    )
-    assert manager._stable_angle_frames == 1
+    # First straight attempt: remain straight.
+    finish_attempt_and_wait_for_gps(manager, 7.2)
+    assert manager.phase_name() == "STRAIGHT"
+    assert manager.control_override().steer == pytest.approx(0.0)
 
-    manager.update(
-        Location(2.2),
-        None,
-        line_angles={"left": -15.0, "right": 15.0},
-        lane_type="only_right",
-        source_frame_id=12,
-    )
-    assert manager.phase_name() == "SETTLE"
-    assert manager.control_override() is not None
+    # Second straight attempt: start a new two-steer/two-straight cycle.
+    finish_attempt_and_wait_for_gps(manager, 9.3)
+    assert manager.phase_name() == "CHANGE"
+    assert manager.control_override().steer == pytest.approx(-0.2)
 
-    manager.update(
-        Location(2.3),
-        None,
-        line_angles={"left": -15.0, "right": 15.0},
-        lane_type="only_right",
-        source_frame_id=13,
-    )
+    # On the next GPS check, the planner no longer requests a lane change.
+    planner.instruction = "LANEFOLLOW"
+    finish_attempt_and_wait_for_gps(manager, 11.4)
     assert manager.phase_name() == "IDLE"
     assert not manager.movement_active()
     assert manager.control_override() is None
 
 
-def test_lane_change_does_not_confirm_without_lane_markings():
-    manager = make_manager("left")
+def test_opposite_gps_lane_request_keeps_lane_change_control_owned():
+    manager, planner = make_active_manager("CHANGE_LANE_LEFT")
+    finish_attempt_and_wait_for_gps(manager, 3.0)
+    planner.instruction = "CHANGE_LANE_RIGHT"
 
-    for frame_id, distance in enumerate((0.5, 2.0, 2.2, 2.4, 2.6), start=1):
-        manager.update(
-            Location(distance),
-            None,
-            line_angles={"left": -15.0, "right": 15.0},
-            lane_type="none",
-            source_frame_id=frame_id,
-        )
-
-    assert manager.phase_name() == "SETTLE"
-    assert manager.control_override() is not None
-
-
-def test_lane_change_does_not_confirm_from_angle_without_transition():
-    manager = make_manager("left")
-
-    for frame_id, distance in enumerate((0.5, 2.0, 2.2, 2.4, 2.6), start=1):
-        manager.update(
-            Location(distance),
-            None,
-            line_angles={"left": -15.0, "right": 15.0},
-            lane_type="only_left",
-            source_frame_id=frame_id,
-        )
-
-    assert manager.phase_name() == "SETTLE"
-    assert manager._angle_transition_seen is False
-    assert manager.control_override() is not None
-
-
-def test_missing_source_frame_ids_cannot_satisfy_confirmation():
-    manager = make_manager("left")
-    manager.phase = "SETTLE"
-    manager._steering_distance_reached = True
-    manager._angle_transition_seen = True
-
-    for _ in range(8):
-        manager.update(
-            Location(2.1),
-            None,
-            line_angles={"left": -15.0, "right": 15.0},
-            lane_type="only_left",
-            source_frame_id=None,
-        )
-
-    assert manager._stable_angle_frames == 0
-    assert manager.phase_name() == "SETTLE"
-    assert manager.control_override() is not None
-
-
-def test_unconfirmed_lane_change_keeps_settle_control_without_braking():
-    manager = make_manager("left")
-    manager.phase = "SETTLE"
-    manager._steering_distance_reached = True
-    manager._angle_transition_seen = True
-
-    manager.update(
-        Location(2.1),
-        None,
-        line_angles={"left": -13.0, "right": 14.0},
-        lane_type="only_left",
-        source_frame_id=50,
-    )
-
-    control = manager.control_override()
-    assert manager.phase_name() == "SETTLE"
+    # Complete another attempt; a changed direction starts a new VERIFY phase
+    # without a lane-follow/PID handoff in between.
+    finish_attempt_and_wait_for_gps(manager, 5.1)
+    assert manager.phase_name() == "VERIFY"
+    assert manager.direction == "right"
     assert manager.movement_active()
-    assert control.throttle == pytest.approx(0.10)
-    assert control.brake == pytest.approx(0.0)
+    assert manager.control_override().steer == pytest.approx(0.0)
 
 
-
-def test_auto_driver_does_not_return_steering_to_lane_pid_during_settle(monkeypatch):
-    # AutoDriver is intentionally loaded with lightweight CARLA/utility stubs.
+def test_lane_follow_pid_is_not_called_while_gps_lane_change_is_active(monkeypatch):
+    # Load AutoDriver with lightweight CARLA/utility stubs.
     uv = types.ModuleType("utils.vehicle_utils")
-    uv.blank_frame = lambda: __import__("numpy").zeros((8, 8, 3), dtype="uint8")
+    uv.blank_frame = lambda: np.zeros((8, 8, 3), dtype=np.uint8)
     uv.make_stop_control = lambda: VehicleControl(throttle=0.0, brake=1.0)
     utils_pkg = types.ModuleType("utils")
     utils_pkg.__path__ = []
@@ -226,24 +138,21 @@ def test_auto_driver_does_not_return_steering_to_lane_pid_during_settle(monkeypa
     import importlib.util
     from pathlib import Path
     path = Path(__file__).resolve().parents[1] / "driving" / "auto_driver.py"
-    spec = importlib.util.spec_from_file_location("auto_driver_lane_change_test", path)
+    spec = importlib.util.spec_from_file_location("auto_driver_gps_lane_change_test", path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
 
-    manager = make_manager("left")
-    manager.phase = "SETTLE"
-    manager._segment_start_location = Location(2.0)
-    manager._steering_distance_reached = True
-    manager._angle_transition_seen = True
-    manager._stable_angle_frames = 0
+    manager, _ = make_active_manager()
+    manager.phase = "STRAIGHT"
+    manager._segment_start_location = Location(1.0)
 
     class Controller:
         calls = 0
 
         def update(self, error):
             self.calls += 1
-            return VehicleControl(throttle=0.2, steer=0.0)
+            return VehicleControl(throttle=0.2, steer=0.6)
 
     controller = Controller()
     driver = module.AutoDriver(
@@ -255,46 +164,22 @@ def test_auto_driver_does_not_return_steering_to_lane_pid_during_settle(monkeypa
         intersection_manager=None,
     )
 
-    import numpy as np
-    frame = np.zeros((8, 8, 3), dtype=np.uint8)
-    for frame_id in (20, 21):
-        _, _, control = driver.update(
-            frame,
-            {
-                "error": 10.0,
-                "lane_type": "only_left",
-                "_source_frame_id": frame_id,
-                "debug": {
-                    "combined": None,
-                    "left_line_angle_deg": -15.0,
-                    "right_line_angle_deg": 15.0,
-                },
-            },
-            Location(2.0),
-            None,
-            False,
-        )
-        assert control.steer == pytest.approx(-0.08)
-        assert controller.calls == 0
-
-    # The third distinct stable frame confirms the destination lane. Only
-    # after that does AutoDriver hand steering back to the lane-follow PID.
     _, _, control = driver.update(
-        frame,
+        np.zeros((8, 8, 3), dtype=np.uint8),
         {
             "error": 10.0,
             "lane_type": "only_left",
-            "_source_frame_id": 22,
             "debug": {
                 "combined": None,
-                "left_line_angle_deg": -15.0,
-                "right_line_angle_deg": 15.0,
+                "left_line_angle_deg": 45.0,
+                "right_line_angle_deg": -45.0,
             },
         },
-        Location(2.0),
-        None,
+        Location(1.2),
+        Location(100.0),
         False,
     )
-    assert manager.phase_name() == "IDLE"
-    assert controller.calls == 1
-    assert control.steer == 0.0
+
+    assert manager.phase_name() == "STRAIGHT"
+    assert control.steer == pytest.approx(0.0)
+    assert controller.calls == 0

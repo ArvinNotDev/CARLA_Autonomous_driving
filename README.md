@@ -40,11 +40,11 @@ The planner may run asynchronously, but no junction worker calls `vehicle.apply_
 
 ## Lane-change steering handoff
 
-A lane change keeps steering ownership away from the normal lane-follow PID through the `VERIFY`, `CHANGE`, and `SETTLE` phases. Before steering begins, the manager records the current lane-line angles as a baseline. After the initial steering-distance segment, it holds a small direction-specific steering input while it waits for the visible lane markings to deviate from that baseline and then return to within the configured tolerance. Comparing against the pre-maneuver angles also works on curved roads; the detector does not assume that lane lines must be vertical in the camera image. The handoff requires the configured number of **distinct vision frames** with valid lane markings; repeatedly reading the same cached vision result cannot satisfy the confirmation. Only after that confirmation does the lane-follow controller regain steering.
+A lane change keeps steering ownership away from the normal lane-follow PID while the CARLA route planner continues to return `CHANGE_LANE_LEFT` or `CHANGE_LANE_RIGHT`. Camera lane-line angles do not decide when the maneuver is complete and cannot change steering during this phase. After the configured approach distance, the manager performs two attempts using the configured direction-specific steering magnitude, then two attempts with zero steering. Each attempt covers the configured attempt distance. If GPS still requests the same lane change after both straight attempts, the two-steer/two-straight cycle repeats. GPS is queried asynchronously after each attempt; while that query is pending, the vehicle continues straight under lane-change-manager control.
 
-The lane-follow controller remains locked until the destination-lane angle transition and stable markings are confirmed across distinct camera frames. There is no timeout-triggered brake; while confirmation is pending, the lane-change manager continues its normal low-throttle settling control.
+Only when GPS no longer requests the active lane change is the manager released and ordinary lane-follow PID steering allowed again. If GPS immediately requests the opposite lane change, control ownership stays with the lane-change manager and that maneuver starts without an intervening PID handoff.
 
-The **Lane change** runtime settings expose approach and initial steering distances, angle-deviation and return tolerances, required confirmation frames, and the holding-steer value.
+The **Lane change** runtime settings expose the approach distance, distance per attempt, steering magnitude, planner query interval, and debounce.
 
 ## Junction detection modes
 

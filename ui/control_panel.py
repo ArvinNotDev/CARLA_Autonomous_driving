@@ -651,11 +651,9 @@ class ControlPanel(QMainWindow):
             },
             "Lane change": {
                 "LANE_CHANGE_DEBOUNCE_SECONDS",
-                "LANE_CHANGE_LINE_ANGLE_THRESHOLD_DEG",
                 "LANE_CHANGE_PLANNER_CHECK_INTERVAL_SECONDS",
                 "LANE_CHANGE_VERIFY_DISTANCE_M", "LANE_CHANGE_STEER_DISTANCE_M",
-                "LANE_CHANGE_ANGLE_ENTER_DEG", "LANE_CHANGE_ANGLE_SETTLE_DEG",
-                "LANE_CHANGE_CONFIRM_FRAMES", "LANE_CHANGE_SETTLE_STEER",
+                "LANE_CHANGE_STEER_VALUE",
             },
             "Vision / debug": {
                 "VISION_INFERENCE_INTERVAL_SECONDS", "DEBUG_PANEL_HZ",
