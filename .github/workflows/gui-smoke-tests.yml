@@ -1,0 +1,35 @@
+name: GUI smoke tests
+
+on:
+  push:
+    branches:
+      - feature/yolo26s-sem-integration
+    paths:
+      - "ui/**"
+      - "stream.py"
+      - "runtime_settings.py"
+      - "config_city.py"
+      - "tests/test_panel.py"
+      - ".github/workflows/gui-smoke-tests.yml"
+  pull_request:
+    branches:
+      - feature/yolo26s-sem-integration
+
+jobs:
+  gui-smoke:
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install GUI test dependencies
+        run: python -m pip install numpy pytest PySide6
+      - name: Compile GUI modules
+        run: python -m compileall -q ui stream.py runtime_settings.py
+      - name: Run GUI smoke tests
+        run: python -m pytest -q tests/test_panel.py

@@ -175,7 +175,7 @@ HTML_TEMPLATE = """
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Interactive ROI & Advanced Settings</title>
+<title>CARLA Perception Studio | ROI Calibration</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 :root {

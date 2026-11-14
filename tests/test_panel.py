@@ -26,6 +26,14 @@ class TestPanelConstruction(unittest.TestCase):
         self.assertIsNotNone(panel.settings_search)
         self.assertFalse(panel.stream_toggle.isChecked())
         self.assertGreaterEqual(panel.tabs.count(), 10)
+
+        target_speed = panel.widgets["TARGET_SPEED_KMH"]
+        pid_gain = panel.widgets["KP"]
+        panel.settings_search.setText("TARGET_SPEED_KMH")
+        self.assertFalse(target_speed.isHidden())
+        self.assertTrue(pid_gain.isHidden())
+        panel.settings_search.clear()
+        self.assertFalse(pid_gain.isHidden())
         panel.close()
         try:
             os.remove("test_runtime_profiles.json")
