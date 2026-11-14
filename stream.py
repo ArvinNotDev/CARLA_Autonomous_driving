@@ -4,7 +4,7 @@ import json
 import os
 from flask import Flask, Response, request, render_template_string, jsonify
 import threading
-import urllib.request
+from werkzeug.serving import make_server
 
 import config_city as conf
 from runtime_settings import SETTING_SPECS, RuntimeSettings
@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 stop_event = threading.Event()
 app = Flask(__name__)
 _server_thread = None
+_server = None
+_server_lock = threading.Lock()
 _settings_callback = None
 
 # --- ROI variable names ---
@@ -1214,15 +1216,6 @@ def video_feed_frame():
 
     return Response(buffer.tobytes(), mimetype='image/jpeg')
 
-@app.route("/shutdown", methods=["POST"])
-def shutdown_route():
-    stop_event.set()
-    func = request.environ.get('werkzeug.server.shutdown')
-    if func:
-        func()
-    logger.debug("Server shutting down...")
-    return "Server shutting down..."
-
 def start_stream(host=None, port=None):
     if host is None:
         host = getattr(conf, "STREAM_HOST", "0.0.0.0")
@@ -1232,31 +1225,52 @@ def start_stream(host=None, port=None):
     app.run(host=host, port=port, threaded=True, debug=False, use_reloader=False)
 
 def start_stream_background(host=None, port=None):
-    global _server_thread
-    if _server_thread is not None and _server_thread.is_alive():
-        return False
-    _server_thread = threading.Thread(
-        target=start_stream,
-        kwargs={"host": host, "port": port},
-        name="carla-debug-stream",
-        daemon=True,
-    )
-    _server_thread.start()
-    return True
+    global _server, _server_thread
+    with _server_lock:
+        if _server is not None:
+            return False
+
+        if host is None:
+            host = getattr(conf, "STREAM_HOST", "127.0.0.1")
+        if port is None:
+            port = getattr(conf, "STREAM_PORT", 5000)
+
+        # Bind synchronously so port conflicts are reported to the GUI immediately.
+        server = make_server(host, int(port), app, threaded=True)
+        thread = threading.Thread(
+            target=server.serve_forever,
+            name="carla-debug-stream",
+            daemon=True,
+        )
+        _server = server
+        _server_thread = thread
+        try:
+            thread.start()
+        except Exception:
+            _server = None
+            _server_thread = None
+            server.server_close()
+            raise
+        return True
 
 def stop_stream(host=None, port=None):
-    if host in (None, "0.0.0.0", "::"):
-        host = "127.0.0.1"
-    if port is None:
-        port = getattr(conf, "STREAM_PORT", 5000)
+    global _server, _server_thread
+    with _server_lock:
+        server = _server
+        thread = _server_thread
+        if server is None:
+            return False
+        _server = None
+        _server_thread = None
+
     try:
-        urllib.request.urlopen(
-            f"http://{host}:{int(port)}/shutdown",
-            data=b"",
-            timeout=1.5,
-        ).read()
+        server.shutdown()
+        server.server_close()
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
         return True
     except Exception:
+        logger.exception("Failed to stop Flask editor")
         return False
 
 if __name__ == '__main__':
