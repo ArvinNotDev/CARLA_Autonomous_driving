@@ -718,17 +718,28 @@ class CarlaLaneDrivingApp:
         set_settings_callback(self._on_settings_changed)
         self.control_panel.show()
 
-        # No sleep here: stream startup must not stall the Qt UI.
-        try:
-            start_stream_background(conf.STREAM_HOST, conf.STREAM_PORT)
-        except Exception:
-            pass
-
     def _toggle_flask_stream(self, enabled: bool) -> None:
-        if enabled:
-            start_stream_background(conf.STREAM_HOST, conf.STREAM_PORT)
-        else:
-            stop_stream(conf.STREAM_HOST, conf.STREAM_PORT)
+        try:
+            if enabled:
+                started = start_stream_background(conf.STREAM_HOST, conf.STREAM_PORT)
+                if not started:
+                    self.control_panel.set_flask_stream_state(
+                        True, "Flask editor is already running."
+                    )
+                else:
+                    self.control_panel.set_flask_stream_state(
+                        True, f"Flask editor running at {self.control_panel._flask_urls()}"
+                    )
+            else:
+                stopped = stop_stream(conf.STREAM_HOST, conf.STREAM_PORT)
+                self.control_panel.set_flask_stream_state(
+                    False,
+                    "Flask editor stopped." if stopped else "Flask editor was not running."
+                )
+        except OSError as exc:
+            self.control_panel.set_flask_stream_state(
+                False, f"Could not start Flask editor: {exc}"
+            )
 
     def _control_loop(self) -> None:
         next_tick = time.perf_counter()
