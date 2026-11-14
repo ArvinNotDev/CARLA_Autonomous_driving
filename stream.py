@@ -178,39 +178,167 @@ HTML_TEMPLATE = """
 <title>Interactive ROI & Advanced Settings</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-:root{
-  --bg:#071426; --card:#0b1220; --accent:#06b6d4; --muted:#94a3b8; --txt:#e6eef6;
+:root {
+  color-scheme: dark;
+  --bg: #08111f;
+  --surface: #101d2f;
+  --surface-2: #0c1828;
+  --surface-3: #15263d;
+  --border: #263b55;
+  --accent: #55c9e7;
+  --accent-strong: #1496b8;
+  --text: #e8f0f9;
+  --muted: #91a5bb;
+  --radius: 14px;
 }
-*{box-sizing:border-box}
-body{margin:0;font-family:Inter,Segoe UI,Roboto,Arial;background:linear-gradient(180deg,#071026 0%, #07142a 100%);color:var(--txt);padding:18px}
-.container{max-width:1250px;margin:0 auto;display:grid;grid-template-columns: 1fr 440px;gap:18px;align-items:start}
-.card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.03);padding:14px;border-radius:10px;box-shadow: 0 6px 24px rgba(2,6,23,0.6)}
-.header{display:flex;align-items:center;gap:12px;margin-bottom:8px}
-.h1{font-size:18px;font-weight:600}
-.controls{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
-select,input[type=number],input[type=color]{background:#071428;color:var(--txt);border:1px solid rgba(255,255,255,0.04);padding:6px 8px;border-radius:6px}
-button.btn{background:var(--accent);color:#012; border:none;padding:8px 10px;border-radius:8px;cursor:pointer;font-weight:600}
-button.ghost{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--txt);padding:7px 10px;border-radius:8px;cursor:pointer}
-canvas{width:100%;height:auto;border-radius:8px;display:block;background:#000}
-.label{width:140px;color:var(--muted);font-size:13px}
-.small{font-size:13px;color:var(--muted)}
-.right-panel{display:flex;flex-direction:column;gap:12px}
-.inputs{max-height:460px;overflow:auto;padding-right:6px}
-.input-wrap{display:flex;align-items:center;gap:8px;margin-bottom:6px}
-.counter{min-width:72px;text-align:center}
-.section-title{font-weight:700;margin-bottom:6px}
-.toggle-row{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
-.toast{position:fixed;right:20px;bottom:20px;background:#0b1220;border:1px solid rgba(255,255,255,0.06);padding:10px 14px;border-radius:8px;color:var(--txt);box-shadow:0 8px 30px rgba(2,6,23,0.6)}
-.form-row{display:flex;gap:8px;align-items:center;margin:6px 0}
-.small-muted{font-size:12px;color:var(--muted)}
+* { box-sizing: border-box; }
+html { min-width: 320px; background: var(--bg); }
+body {
+  margin: 0;
+  min-height: 100vh;
+  padding: 22px;
+  color: var(--text);
+  font-family: Inter, "Segoe UI", Roboto, Arial, sans-serif;
+  background:
+    radial-gradient(ellipse at 12% 0%, rgba(22, 120, 155, .17), transparent 36rem),
+    linear-gradient(145deg, #08111f 0%, #0b1728 55%, #091321 100%);
+}
+.container {
+  width: min(100%, 1660px);
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(360px, .75fr);
+  gap: 18px;
+  align-items: start;
+}
+.card {
+  min-width: 0;
+  padding: 18px;
+  background: linear-gradient(160deg, rgba(19, 35, 55, .96), rgba(12, 24, 40, .97));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 16px 42px rgba(0, 0, 0, .22);
+}
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid rgba(145, 165, 187, .15);
+}
+.h1 { color: #f2f8ff; font-size: 20px; font-weight: 750; letter-spacing: -.3px; }
+.controls { display: flex; gap: 9px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+select, input[type=number], input[type=color], input[type=text], textarea {
+  min-height: 36px;
+  color: var(--text);
+  background: #091524;
+  border: 1px solid #304760;
+  border-radius: 8px;
+  padding: 7px 10px;
+  outline: none;
+}
+select:focus, input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(85, 201, 231, .12); }
+input[type=color] { width: 44px; min-height: 34px; padding: 3px; cursor: pointer; }
+input[type=checkbox] { accent-color: var(--accent-strong); width: 16px; height: 16px; vertical-align: middle; }
+button.btn, button.ghost {
+  min-height: 36px;
+  padding: 8px 13px;
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  transition: background .16s ease, border-color .16s ease, transform .16s ease;
+}
+button.btn {
+  color: #041521;
+  background: linear-gradient(135deg, #6cdbef, #36b7d5);
+  border: 1px solid #63cde4;
+  box-shadow: 0 5px 14px rgba(27, 166, 198, .15);
+}
+button.btn:hover { background: #8ce6f4; transform: translateY(-1px); }
+button.ghost { color: #c3d4e5; background: #14253a; border: 1px solid #304760; }
+button.ghost:hover { background: #1b344e; border-color: #4e7692; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 3 / 2;
+  background: #030a12;
+  border: 1px solid #2d425a;
+  border-radius: 10px;
+  touch-action: none;
+}
+.label { flex: 0 0 148px; color: var(--muted); font-size: 12px; line-height: 1.35; }
+.small, .small-muted { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.right-panel { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.inputs { max-height: 470px; overflow: auto; padding: 2px 7px 2px 0; scrollbar-color: #39536e #0b1726; scrollbar-width: thin; }
+.input-wrap {
+  display: grid;
+  grid-template-columns: minmax(115px, 1fr) 76px auto auto;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+}
+.counter { width: 76px; min-width: 0; text-align: center; font-variant-numeric: tabular-nums; }
+.section-title { margin-bottom: 12px; color: #eef7ff; font-size: 14px; font-weight: 750; letter-spacing: .1px; }
+.toggle-row { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.toggle-row label { color: #c9d7e6; font-size: 13px; }
+.form-row { display: flex; gap: 10px; align-items: center; margin: 8px 0; }
+.form-row .label { flex-basis: 170px; }
+.form-row input:not([type=checkbox]), .form-row select, .form-row textarea { flex: 1; min-width: 0; }
+.toast {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 10;
+  padding: 12px 16px;
+  color: var(--text);
+  background: #13243a;
+  border: 1px solid #3c5975;
+  border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, .35);
+}
+pre {
+  overflow: auto;
+  padding: 12px;
+  background: #081524;
+  border: 1px solid #263b55;
+  border-radius: 9px;
+}
+@media (max-width: 1080px) {
+  body { padding: 14px; }
+  .container { grid-template-columns: minmax(0, 1fr); }
+  .right-panel { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .right-panel > .card:last-child { grid-column: 1 / -1; }
+}
+@media (max-width: 680px) {
+  body { padding: 9px; }
+  .card { padding: 13px; border-radius: 11px; }
+  .header { align-items: flex-start; flex-direction: column; }
+  .h1 { font-size: 18px; }
+  .right-panel { display: flex; }
+  .input-wrap { grid-template-columns: minmax(0, 1fr) 72px; }
+  .input-wrap .btn-inc { grid-row: 2; }
+  .label { flex-basis: 120px; }
+  .form-row { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .form-row .label { flex-basis: auto; }
+  .form-row input:not([type=checkbox]), .form-row select, .form-row textarea { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+}
 </style>
 </head>
 <body>
 <div class="container">
   <div class="card">
     <div class="header">
-      <div class="h1">Interactive ROI Editor</div>
-      <div class="small">Drag-to-resize/move, click to set, change colors & visibility</div>
+      <div class="h1">CARLA Perception Studio</div>
+      <div class="small">ROI calibration workspace · drag, resize, inspect and tune regions</div>
     </div>
 
     <div class="controls">

@@ -21,6 +21,11 @@ class TestPanelConstruction(unittest.TestCase):
             frame_store=DebugFrameStore(),
         )
         self.assertIsNotNone(panel.debug_frame)
+        self.assertIsNotNone(panel.workspace_splitter)
+        self.assertIn("display", panel.metric_values)
+        self.assertIsNotNone(panel.settings_search)
+        self.assertFalse(panel.stream_toggle.isChecked())
+        self.assertGreaterEqual(panel.tabs.count(), 10)
         panel.close()
         try:
             os.remove("test_runtime_profiles.json")

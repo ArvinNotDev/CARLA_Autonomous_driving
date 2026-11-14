@@ -6,8 +6,8 @@ from typing import Any, Callable, Optional
 from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QImage, QPixmap, QPaintEvent
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QGridLayout, QHBoxLayout,
-    QLabel, QLineEdit, QMainWindow, QPushButton, QScrollArea, QSpinBox,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGroupBox, QGridLayout, QHBoxLayout,
+    QLabel, QLineEdit, QMainWindow, QPushButton, QScrollArea, QSpinBox, QSplitter,
     QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -203,59 +203,432 @@ class ControlPanel(QMainWindow):
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
 
         root = QWidget()
+        root.setObjectName("runtimeRoot")
         root_layout = QVBoxLayout(root)
+        root_layout.setContentsMargins(18, 16, 18, 14)
+        root_layout.setSpacing(12)
+
+        header = QFrame()
+        header.setObjectName("topBar")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(18, 14, 18, 14)
+        header_layout.setSpacing(14)
+
+        brand_column = QVBoxLayout()
+        brand_column.setSpacing(3)
+        eyebrow = QLabel("CARLA AUTONOMOUS SYSTEMS")
+        eyebrow.setObjectName("eyebrowLabel")
+        title = QLabel("Runtime Command Center")
+        title.setObjectName("pageTitle")
+        subtitle = QLabel("Live perception, vehicle telemetry and runtime configuration")
+        subtitle.setObjectName("mutedLabel")
+        brand_column.addWidget(eyebrow)
+        brand_column.addWidget(title)
+        brand_column.addWidget(subtitle)
+        header_layout.addLayout(brand_column, 1)
+
+        header_actions = QVBoxLayout()
+        header_actions.setSpacing(5)
+        self.stream_toggle = QPushButton("ROI Studio · OFF")
+        self.stream_toggle.setObjectName("primaryButton")
+        self.stream_toggle.setCheckable(True)
+        self.stream_toggle.setChecked(False)
+        self.stream_toggle.setToolTip("Start or stop the optional Flask ROI and advanced-settings editor.")
+        self.stream_toggle.clicked.connect(self._emit_stream_toggle)
+        header_actions.addWidget(self.stream_toggle)
+        flask_label = QLabel(f"Local editor  ·  {self._flask_urls()}")
+        flask_label.setObjectName("mutedLabel")
+        flask_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        flask_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        header_actions.addWidget(flask_label)
+        header_layout.addLayout(header_actions)
+        root_layout.addWidget(header)
+
+        self.workspace_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.workspace_splitter.setObjectName("workspaceSplitter")
+        self.workspace_splitter.setChildrenCollapsible(False)
+        self.workspace_splitter.setHandleWidth(7)
+
+        monitor = QFrame()
+        monitor.setObjectName("monitorSurface")
+        monitor_layout = QVBoxLayout(monitor)
+        monitor_layout.setContentsMargins(14, 14, 14, 12)
+        monitor_layout.setSpacing(10)
+
+        live_view_row = QSplitter(Qt.Orientation.Horizontal)
+        live_view_row.setObjectName("liveViewSplitter")
+        live_view_row.setChildrenCollapsible(False)
+        live_view_row.setHandleWidth(7)
+
+        camera_card = QFrame()
+        camera_card.setObjectName("surfaceCard")
+        camera_layout = QVBoxLayout(camera_card)
+        camera_layout.setContentsMargins(12, 10, 12, 12)
+        camera_layout.setSpacing(8)
+        camera_header = QHBoxLayout()
+        camera_title_column = QVBoxLayout()
+        camera_title_column.setSpacing(2)
+        camera_title = QLabel("Perception camera")
+        camera_title.setObjectName("sectionTitle")
+        camera_subtitle = QLabel("Live camera output with perception and debug overlays")
+        camera_subtitle.setObjectName("mutedLabel")
+        camera_title_column.addWidget(camera_title)
+        camera_title_column.addWidget(camera_subtitle)
+        camera_header.addLayout(camera_title_column, 1)
+        self.camera_dimensions_label = QLabel("WAITING FOR FRAME")
+        self.camera_dimensions_label.setObjectName("statusPill")
+        camera_header.addWidget(self.camera_dimensions_label)
+        camera_layout.addLayout(camera_header)
 
         self.debug_frame = DebugFrameLabel(self.display_metrics)
+        self.debug_frame.setObjectName("cameraViewport")
         self.debug_frame.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.debug_frame.setMinimumHeight(360)
-        self.debug_frame.setStyleSheet("background:#101418; color:#cdd6f4;")
-        live_view_row = QHBoxLayout()
-        live_view_row.addWidget(self.debug_frame, 2)
-        lidar_panel = QWidget()
-        lidar_layout = QVBoxLayout(lidar_panel)
-        lidar_layout.setContentsMargins(0, 0, 0, 0)
+        self.debug_frame.setMinimumSize(360, 250)
+        self.debug_frame.setText("Waiting for camera frames…")
+        camera_layout.addWidget(self.debug_frame, 1)
+        live_view_row.addWidget(camera_card, 7)
+
+        lidar_card = QFrame()
+        lidar_card.setObjectName("surfaceCard")
+        lidar_layout = QVBoxLayout(lidar_card)
+        lidar_layout.setContentsMargins(12, 10, 12, 12)
+        lidar_layout.setSpacing(8)
+        lidar_header = QHBoxLayout()
+        lidar_title_column = QVBoxLayout()
+        lidar_title_column.setSpacing(2)
+        lidar_title = QLabel("LiDAR radar")
+        lidar_title.setObjectName("sectionTitle")
+        lidar_subtitle = QLabel("Top-down obstacle point cloud")
+        lidar_subtitle.setObjectName("mutedLabel")
+        lidar_title_column.addWidget(lidar_title)
+        lidar_title_column.addWidget(lidar_subtitle)
+        lidar_header.addLayout(lidar_title_column, 1)
+        self.lidar_toggle.setObjectName("primaryButton")
+        lidar_header.addWidget(self.lidar_toggle)
+        lidar_layout.addLayout(lidar_header)
+
         lidar_controls = QHBoxLayout()
-        lidar_controls.addWidget(self.lidar_toggle)
-        zoom_in_button = QPushButton("Zoom +")
-        zoom_in_button.setToolTip("Zoom in; show a shorter LiDAR distance range")
+        lidar_controls.setSpacing(6)
+        zoom_in_button = QPushButton("＋  Zoom in")
+        zoom_in_button.setObjectName("quietButton")
+        zoom_in_button.setToolTip("Show a shorter LiDAR distance range")
         zoom_in_button.clicked.connect(self.lidar_radar.zoom_in)
-        zoom_out_button = QPushButton("Zoom −")
-        zoom_out_button.setToolTip("Zoom out; show a longer LiDAR distance range")
+        zoom_out_button = QPushButton("－  Zoom out")
+        zoom_out_button.setObjectName("quietButton")
+        zoom_out_button.setToolTip("Show a longer LiDAR distance range")
         zoom_out_button.clicked.connect(self.lidar_radar.zoom_out)
         lidar_controls.addWidget(zoom_in_button)
         lidar_controls.addWidget(zoom_out_button)
         lidar_controls.addStretch(1)
         lidar_layout.addLayout(lidar_controls)
         lidar_layout.addWidget(self.lidar_radar, 1)
-        live_view_row.addWidget(lidar_panel, 1)
-        root_layout.addLayout(live_view_row, 1)
+        live_view_row.addWidget(lidar_card, 3)
 
-        self.metrics_label = QLabel("display FPS: 0.0 | control FPS: 0.0 | trajectory FPS: 0.0 | vision FPS: 0.0")
-        self.metrics_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        root_layout.addWidget(self.metrics_label)
+        monitor_layout.addWidget(live_view_row, 1)
 
-        stream_row = QHBoxLayout()
-        self.stream_toggle = QPushButton("Flask editor: OFF")
-        self.stream_toggle.setCheckable(True)
-        self.stream_toggle.setChecked(False)
-        self.stream_toggle.clicked.connect(self._emit_stream_toggle)
-        stream_row.addWidget(self.stream_toggle)
-        stream_row.addWidget(QLabel("Use the Flask editor for live settings and ROI editing."))
-        stream_row.addStretch(1)
-        root_layout.addLayout(stream_row)
-
-        flask_url = self._flask_urls()
-        flask_label = QLabel(f"Flask editor URL: {flask_url}")
-        flask_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
+        metrics_row = QHBoxLayout()
+        metrics_row.setSpacing(8)
+        self.metric_values: dict[str, QLabel] = {}
+        metric_specs = (
+            ("DISPLAY FPS", "display", "0.0"),
+            ("CONTROL FPS", "control", "0.0"),
+            ("VISION FPS", "vision", "0.0"),
+            ("TRAJECTORY FPS", "trajectory", "0.0"),
+            ("JUNCTION PHASE", "junction", "IDLE"),
+            ("INFERENCE WORKERS", "workers", "T idle  ·  V idle"),
         )
-        root_layout.addWidget(flask_label)
+        for caption, key, initial in metric_specs:
+            card = QFrame()
+            card.setObjectName("metricCard")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(11, 8, 11, 8)
+            card_layout.setSpacing(3)
+            caption_label = QLabel(caption)
+            caption_label.setObjectName("metricCaption")
+            value_label = QLabel(initial)
+            value_label.setObjectName("metricValue")
+            value_label.setMinimumWidth(0)
+            card_layout.addWidget(caption_label)
+            card_layout.addWidget(value_label)
+            metrics_row.addWidget(card, 1)
+            self.metric_values[key] = value_label
+        monitor_layout.addLayout(metrics_row)
+
+        self.metrics_label = QLabel("Diagnostics will appear when runtime telemetry is available.")
+        self.metrics_label.setObjectName("diagnosticsLine")
+        self.metrics_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        monitor_layout.addWidget(self.metrics_label)
+
+        settings_surface = QFrame()
+        settings_surface.setObjectName("settingsSurface")
+        settings_layout = QVBoxLayout(settings_surface)
+        settings_layout.setContentsMargins(14, 12, 14, 12)
+        settings_layout.setSpacing(9)
+
+        settings_header = QHBoxLayout()
+        settings_heading = QVBoxLayout()
+        settings_heading.setSpacing(2)
+        settings_title = QLabel("Runtime configuration")
+        settings_title.setObjectName("sectionTitle")
+        settings_subtitle = QLabel("Changes are applied live unless a setting is marked as restart-required.")
+        settings_subtitle.setObjectName("mutedLabel")
+        settings_heading.addWidget(settings_title)
+        settings_heading.addWidget(settings_subtitle)
+        settings_header.addLayout(settings_heading, 1)
+        self.settings_search = QLineEdit()
+        self.settings_search.setObjectName("settingsSearch")
+        self.settings_search.setPlaceholderText("Filter settings by name or key…")
+        self.settings_search.setClearButtonEnabled(True)
+        self.settings_search.setMaximumWidth(310)
+        self.settings_search.setToolTip("Search setting labels and configuration keys across all categories.")
+        settings_header.addWidget(self.settings_search)
+        settings_layout.addLayout(settings_header)
+
+        profile_surface = QFrame()
+        profile_surface.setObjectName("profileSurface")
+        profile_layout = QVBoxLayout(profile_surface)
+        profile_layout.setContentsMargins(9, 7, 9, 7)
+        profile_layout.setSpacing(0)
+        self._build_profiles(profile_layout)
+        settings_layout.addWidget(profile_surface)
 
         self.tabs = QTabWidget()
-        root_layout.addWidget(self.tabs)
-        self.status = QLabel("Live settings apply immediately.")
+        self.tabs.setObjectName("settingsTabs")
+        self.tabs.setDocumentMode(True)
+        self.tabs.setMovable(False)
+        self.settings_search.textChanged.connect(self._filter_settings)
+        settings_layout.addWidget(self.tabs, 1)
+
+        self.workspace_splitter.addWidget(monitor)
+        self.workspace_splitter.addWidget(settings_surface)
+        self.workspace_splitter.setStretchFactor(0, 6)
+        self.workspace_splitter.setStretchFactor(1, 5)
+        self.workspace_splitter.setSizes([540, 420])
+        root_layout.addWidget(self.workspace_splitter, 1)
+
+        self.status = QLabel("READY  ·  Live settings apply immediately.")
+        self.status.setObjectName("footerStatus")
+        self.status.setMinimumHeight(28)
         root_layout.addWidget(self.status)
         self.setCentralWidget(root)
+
+        self.setWindowTitle("CARLA Runtime Command Center")
+        self.setMinimumSize(1040, 760)
+        self.resize(1480, 1020)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        self.setStyleSheet("""
+            QMainWindow, QWidget#runtimeRoot {
+                background: #0a1220;
+                color: #e7eef8;
+                font-family: "Segoe UI", "Inter", sans-serif;
+                font-size: 10pt;
+            }
+            QFrame#topBar, QFrame#monitorSurface, QFrame#settingsSurface {
+                background: #101b2c;
+                border: 1px solid #23354c;
+                border-radius: 14px;
+            }
+            QFrame#surfaceCard {
+                background: #0c1727;
+                border: 1px solid #263a53;
+                border-radius: 12px;
+            }
+            QFrame#profileSurface {
+                background: #0c1727;
+                border: 1px solid #263a53;
+                border-radius: 10px;
+            }
+            QLabel#eyebrowLabel {
+                color: #65c9e8;
+                font-size: 8pt;
+                font-weight: 700;
+                letter-spacing: 1px;
+            }
+            QLabel#pageTitle {
+                color: #f1f6fd;
+                font-size: 19pt;
+                font-weight: 700;
+            }
+            QLabel#sectionTitle {
+                color: #edf4fc;
+                font-size: 11pt;
+                font-weight: 700;
+            }
+            QLabel#mutedLabel, QLabel#metricCaption {
+                color: #8fa3ba;
+                font-size: 8pt;
+            }
+            QLabel#statusPill {
+                color: #8fe2f3;
+                background: #123246;
+                border: 1px solid #23536a;
+                border-radius: 8px;
+                padding: 5px 9px;
+                font-size: 8pt;
+                font-weight: 700;
+            }
+            QLabel#metricCaption {
+                font-weight: 700;
+                letter-spacing: 0.4px;
+            }
+            QLabel#metricValue {
+                color: #e9f6ff;
+                font-size: 14pt;
+                font-weight: 700;
+            }
+            QFrame#metricCard {
+                background: #0b1727;
+                border: 1px solid #23384f;
+                border-radius: 10px;
+            }
+            QLabel#diagnosticsLine {
+                color: #7f94aa;
+                font-size: 8pt;
+                padding: 2px 4px;
+            }
+            QLabel#cameraViewport {
+                background: #050b13;
+                color: #6f879f;
+                border: 1px solid #22354c;
+                border-radius: 9px;
+                font-size: 10pt;
+            }
+            QLabel#footerStatus {
+                color: #9db2c8;
+                background: #101b2c;
+                border: 1px solid #23354c;
+                border-radius: 8px;
+                padding: 5px 10px;
+                font-size: 8pt;
+            }
+            QLineEdit#settingsSearch {
+                min-height: 28px;
+                max-width: 310px;
+                background: #091524;
+                border: 1px solid #30465e;
+                border-radius: 8px;
+                padding: 5px 10px;
+                color: #e5edf7;
+            }
+            QTabWidget#settingsTabs::pane {
+                border: 1px solid #263a53;
+                border-radius: 9px;
+                background: #0c1727;
+                top: -1px;
+            }
+            QTabWidget#settingsTabs QTabBar::tab {
+                background: #142239;
+                color: #9db2c8;
+                border: 1px solid #263a53;
+                padding: 8px 12px;
+                margin-right: 4px;
+                border-top-left-radius: 7px;
+                border-top-right-radius: 7px;
+                min-height: 22px;
+            }
+            QTabWidget#settingsTabs QTabBar::tab:selected {
+                background: #1a3651;
+                color: #f0f8ff;
+                border-bottom-color: #65c9e8;
+            }
+            QTabWidget#settingsTabs QTabBar::tab:hover:!selected {
+                background: #1b2c43;
+            }
+            QGroupBox {
+                color: #d8e7f7;
+                font-weight: 700;
+                border: 1px solid #2a4058;
+                border-radius: 9px;
+                margin-top: 10px;
+                padding: 10px 8px 8px 8px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+                color: #83cfe5;
+            }
+            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+                background: #091321;
+                color: #e5edf7;
+                border: 1px solid #30455e;
+                border-radius: 6px;
+                padding: 6px 8px;
+                min-height: 22px;
+                selection-background-color: #1f6680;
+            }
+            QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
+                border: 1px solid #55b8d4;
+            }
+            QComboBox QAbstractItemView {
+                background: #102036;
+                color: #e5edf7;
+                selection-background-color: #1a526b;
+                border: 1px solid #30455e;
+            }
+            QCheckBox {
+                spacing: 8px;
+                color: #dce8f5;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                border-radius: 4px;
+                border: 1px solid #536d88;
+                background: #0a1524;
+            }
+            QCheckBox::indicator:checked {
+                background: #24a6c4;
+                border-color: #54d4e8;
+            }
+            QPushButton {
+                color: #dceaf6;
+                background: #17283d;
+                border: 1px solid #30465f;
+                border-radius: 7px;
+                padding: 7px 11px;
+                min-height: 25px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background: #203b56;
+                border-color: #47728d;
+            }
+            QPushButton:pressed {
+                background: #102238;
+            }
+            QPushButton#primaryButton {
+                color: #eafaff;
+                background: #14627b;
+                border: 1px solid #268ba7;
+            }
+            QPushButton#primaryButton:hover {
+                background: #197b98;
+            }
+            QPushButton#quietButton {
+                background: #122238;
+                border-color: #2a4058;
+                color: #adc1d4;
+            }
+            QScrollArea, QScrollArea > QWidget > QWidget {
+                background: transparent;
+                border: none;
+            }
+            QSplitter::handle {
+                background: #263950;
+                border-radius: 3px;
+            }
+            QScrollBar:vertical {
+                background: #0b1726;
+                width: 10px;
+                margin: 2px;
+            }
+            QScrollBar::handle:vertical {
+                background: #344b64;
+                border-radius: 4px;
+                min-height: 28px;
+            }
+        """)
 
         groups = {
             "Driving": {
@@ -341,7 +714,6 @@ class ControlPanel(QMainWindow):
         self.movement_editor.changed.connect(self._emit_movement_sequences)
         self.tabs.addTab(self._scroll(self.movement_editor), "Junction movements")
 
-        self._build_profiles(root_layout)
         self._load_values(self.settings.snapshot())
 
         self._refresh_timer = QTimer(self)
@@ -428,6 +800,8 @@ class ControlPanel(QMainWindow):
                     rgb.strides[0],
                     QImage.Format.Format_RGB888,
                 ).copy()
+            if hasattr(self, "camera_dimensions_label"):
+                self.camera_dimensions_label.setText(f"{w} × {h}")
             self._last_qimage = image
             self._apply_scaled_pixmap(new_frame=True)
         except Exception as exc:
@@ -476,6 +850,18 @@ class ControlPanel(QMainWindow):
         trajectory_worker_state = (
             "busy" if busy_t else "idle" if trajectory_enabled else "off"
         )
+        if hasattr(self, "metric_values"):
+            self.metric_values["display"].setText(f"{display_fps:.1f}")
+            self.metric_values["control"].setText(f"{control_fps:.1f}")
+            self.metric_values["vision"].setText(f"{vision_fps:.1f}")
+            self.metric_values["trajectory"].setText(
+                f"{traj_fps:.1f}" if trajectory_enabled else "OFF"
+            )
+            self.metric_values["junction"].setText(phase.replace("_", " "))
+            self.metric_values["workers"].setText(
+                f"T {'BUSY' if busy_t else 'IDLE' if trajectory_enabled else 'OFF'}  ·  "
+                f"V {'BUSY' if busy_v else 'IDLE'}"
+            )
         self.metrics_label.setText(
             f"display FPS: {display_fps:.1f} | control FPS: {control_fps:.1f} | "
             f"{trajectory_text} | vision FPS: {vision_fps:.1f} | junction: {phase} | "
@@ -521,11 +907,37 @@ class ControlPanel(QMainWindow):
 
         if key not in self.widgets:
             self.widgets[key] = widget
+        widget.setProperty("settingKey", key)
+        label_widget = QLabel(label)
+        label_widget.setProperty("settingKey", key)
         if kind == "int":
             widget.valueChanged.connect(lambda _value, k=key: self._emit(k))
         elif kind == "float":
             widget.valueChanged.connect(lambda _value, k=key: self._emit(k))
-        form.addRow(label, widget)
+        form.addRow(label_widget, widget)
+
+    def _filter_settings(self, text: str) -> None:
+        """Filter setting rows by their visible label or configuration key."""
+        query = text.strip().casefold()
+        for index in range(self.tabs.count()):
+            scroll = self.tabs.widget(index)
+            page = scroll.widget() if isinstance(scroll, QScrollArea) else scroll
+            form = page.layout()
+            if not isinstance(form, QFormLayout):
+                continue
+            for row in range(form.rowCount()):
+                label_item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+                field_item = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+                field_widget = field_item.widget() if field_item is not None else None
+                if field_widget is None or not field_widget.property("settingKey"):
+                    continue
+                label_widget = label_item.widget() if label_item is not None else None
+                label_text = label_widget.text() if isinstance(label_widget, QLabel) else ""
+                key = str(field_widget.property("settingKey"))
+                visible = not query or query in f"{key} {label_text}".casefold()
+                if label_widget is not None:
+                    label_widget.setVisible(visible)
+                field_widget.setVisible(visible)
 
     def _build_profiles(self, root_layout: QVBoxLayout) -> None:
         box = QGroupBox("Profiles (persist between sessions)")
@@ -620,7 +1032,7 @@ class ControlPanel(QMainWindow):
             self.status.setText(status)
 
     def _emit_stream_toggle(self, enabled: bool) -> None:
-        self.stream_toggle.setText("Flask editor: ON" if enabled else "Flask editor: OFF")
+        self.stream_toggle.setText("ROI Studio · ON" if enabled else "ROI Studio · OFF")
         self.stream_toggle_requested.emit(bool(enabled))
 
     def set_flask_stream_state(self, enabled: bool, status: str | None = None) -> None:
@@ -628,7 +1040,7 @@ class ControlPanel(QMainWindow):
         self.stream_toggle.blockSignals(True)
         self.stream_toggle.setChecked(bool(enabled))
         self.stream_toggle.setText(
-            "Flask editor: ON" if enabled else "Flask editor: OFF"
+            "ROI Studio · ON" if enabled else "ROI Studio · OFF"
         )
         self.stream_toggle.blockSignals(False)
         if status:

@@ -256,54 +256,70 @@ class SpawnGoalPicker(QDialog):
     def _apply_style(self):
         self.setStyleSheet("""
             QDialog, QWidget {
-                background: #1e1e2e;
-                color: #cdd6f4;
-                font-family: 'Segoe UI', sans-serif;
-                font-size: 11px;
+                background: #0a1422;
+                color: #e5eef8;
+                font-family: "Segoe UI", "Inter", sans-serif;
+                font-size: 10pt;
             }
             QGroupBox {
-                border: 1px solid #313244;
-                border-radius: 4px;
-                margin-top: 6px;
-                padding-top: 4px;
-                font-weight: bold;
-                color: #89b4fa;
+                background: #101d2f;
+                border: 1px solid #2b415a;
+                border-radius: 10px;
+                margin-top: 11px;
+                padding: 13px 10px 9px 10px;
+                font-weight: 700;
+                color: #85d6eb;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 6px;
+                left: 12px;
+                padding: 0 5px;
             }
             QPushButton {
-                background: #313244;
-                color: #cdd6f4;
-                border: 1px solid #45475a;
-                border-radius: 4px;
-                padding: 4px 10px;
+                background: #172a40;
+                color: #dceaf6;
+                border: 1px solid #35516d;
+                border-radius: 7px;
+                padding: 7px 12px;
+                min-height: 26px;
+                font-weight: 600;
             }
-            QPushButton:hover  { background: #45475a; }
-            QPushButton:pressed { background: #585b70; }
+            QPushButton:hover { background: #21415d; border-color: #4e7995; }
+            QPushButton:pressed { background: #102238; }
             QPushButton#accent {
-                background: #1d4785;
-                border-color: #89b4fa;
-                color: #89b4fa;
+                background: #14627b;
+                border-color: #2a98b5;
+                color: #f0fbff;
+                font-weight: 700;
             }
-            QPushButton#accent:hover { background: #2563b0; }
+            QPushButton#accent:hover { background: #197b98; }
             QPushButton#danger {
-                background: #522525;
-                border-color: #f38ba8;
-                color: #f38ba8;
+                background: #3b2632;
+                border-color: #85516a;
+                color: #ffc4d4;
             }
-            QPushButton#danger:hover { background: #7d2828; }
-            QLineEdit, QSpinBox, QDoubleSpinBox {
-                background: #181825;
-                border: 1px solid #45475a;
-                border-radius: 3px;
-                padding: 2px 4px;
-                color: #cdd6f4;
+            QPushButton#danger:hover { background: #593044; }
+            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+                background: #091524;
+                border: 1px solid #304760;
+                border-radius: 6px;
+                padding: 5px 7px;
+                color: #e5eef8;
+                min-height: 22px;
+                selection-background-color: #1f6680;
             }
-            QRadioButton, QCheckBox { color: #cdd6f4; }
-            QLabel { color: #cdd6f4; }
-            QSplitter::handle { background: #313244; }
+            QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {
+                border-color: #55c9e7;
+            }
+            QRadioButton, QCheckBox { color: #dce8f5; spacing: 7px; }
+            QLabel { color: #dce8f5; }
+            QSplitter::handle { background: #263b55; }
+            QToolTip {
+                color: #eef7ff;
+                background: #14283e;
+                border: 1px solid #3a5874;
+                padding: 5px 7px;
+            }
         """)
 
     def _build_actions(self):
@@ -314,7 +330,7 @@ class SpawnGoalPicker(QDialog):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(12, 12, 12, 12)
 
         splitter = QSplitter()
         splitter.setChildrenCollapsible(False)
@@ -322,12 +338,12 @@ class SpawnGoalPicker(QDialog):
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(0)
+        left_layout.setSpacing(8)
 
         toolbar = QWidget()
         tl = QHBoxLayout(toolbar)
-        tl.setContentsMargins(4, 4, 4, 4)
-        tl.setSpacing(4)
+        tl.setContentsMargins(4, 2, 4, 2)
+        tl.setSpacing(8)
 
         self.refresh_btn = QPushButton("↻ Refresh")
         self.fit_btn = QPushButton("⤢ Fit")
@@ -343,10 +359,11 @@ class SpawnGoalPicker(QDialog):
         left_layout.addWidget(self.view, 1)
 
         right = QWidget()
-        right.setFixedWidth(330)
+        right.setMinimumWidth(320)
+        right.setMaximumWidth(390)
         right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(6, 6, 6, 6)
-        right_layout.setSpacing(6)
+        right_layout.setContentsMargins(6, 4, 4, 4)
+        right_layout.setSpacing(10)
 
         mode_box = QGroupBox("Active Marker")
         mode_layout = QVBoxLayout(mode_box)

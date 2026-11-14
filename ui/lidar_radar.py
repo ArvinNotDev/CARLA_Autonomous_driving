@@ -78,7 +78,7 @@ class LidarRadarWidget(QWidget):
         return colors
 
     def _point_image(self, diameter: int, radius: float) -> QImage:
-        canvas = np.zeros((diameter, diameter, 3), dtype=np.uint8)
+        canvas = np.full((diameter, diameter, 3), (7, 17, 30), dtype=np.uint8)
         points = self._points
         if points is None or not len(points):
             return QImage(
@@ -114,7 +114,7 @@ class LidarRadarWidget(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor("#101418"))
+        painter.fillRect(self.rect(), QColor("#0b1727"))
 
         max_range = self._display_range()
         diameter = max(80, int(min(self.width() - 24, self.height() - 24)))
@@ -126,7 +126,7 @@ class LidarRadarWidget(QWidget):
         target = QRectF(center_x - radius, center_y - radius, diameter, diameter)
         painter.drawImage(target, image)
 
-        painter.setPen(QPen(QColor("#52616b"), 1))
+        painter.setPen(QPen(QColor("#29425b"), 1))
         for distance in self._ring_distances(max_range):
             ring_radius = radius * distance / max_range
             painter.drawEllipse(
