@@ -49,6 +49,7 @@ class LaneChangeManager:
         self._request_id = 0
         self._latest_planner_result: Optional[tuple[int, str]] = None
         self._latest_active_planner_result: Optional[tuple[int, Optional[str]]] = None
+        self._planner_not_before = 0.0
 
     @staticmethod
     def _direction_from_instruction(instruction: object) -> Optional[str]:
@@ -75,10 +76,33 @@ class LaneChangeManager:
         self._straight_attempts = 0
         self._pending_next_phase = None
 
+    def defer_new_maneuvers(self, delay_seconds: float) -> None:
+        """Delay fresh GPS lane-change requests without interrupting an active maneuver."""
+        delay = max(0.0, float(delay_seconds))
+        if delay <= 0.0:
+            return
+
+        with self._state_lock:
+            self._planner_not_before = max(
+                self._planner_not_before,
+                time.monotonic() + delay,
+            )
+            if self.phase == "IDLE":
+                # Invalidate any idle GPS query/result requested before the
+                # junction maneuver completed.
+                self._request_id += 1
+                self._planner_query_active = False
+                self._planner_query_kind = None
+                self._latest_planner_result = None
+                self._latest_active_planner_result = None
+
     def _apply_planner_result(self, current_location) -> None:
         if current_location is None:
             return
         with self._state_lock:
+            if time.monotonic() < self._planner_not_before:
+                self._latest_planner_result = None
+                return
             result = self._latest_planner_result
             if result is None or self.phase != "IDLE":
                 return
@@ -106,6 +130,8 @@ class LaneChangeManager:
             float(getattr(conf, "LANE_CHANGE_PLANNER_CHECK_INTERVAL_SECONDS", 0.50)),
         )
         with self._state_lock:
+            if not active_check and now < self._planner_not_before:
+                return False
             if self._planner_query_active:
                 return False
             if not force and now - self._last_planner_query_at < interval:
@@ -200,8 +226,19 @@ class LaneChangeManager:
             self._finish_locked()
             return True
 
-    def update(self, current_location, goal_location) -> None:
+    def update(
+        self,
+        current_location,
+        goal_location,
+        *,
+        allow_new_maneuver: bool = True,
+    ) -> None:
         if self.vehicle is None:
+            return
+
+        with self._state_lock:
+            initial_phase = self.phase
+        if initial_phase == "IDLE" and not allow_new_maneuver:
             return
 
         self._apply_planner_result(current_location)
@@ -270,6 +307,8 @@ class LaneChangeManager:
         if phase != "IDLE":
             return
 
+        if now < self._planner_not_before:
+            return
         if time.time() < self.lane_change_debounce_until:
             return
         self._start_planner_query(

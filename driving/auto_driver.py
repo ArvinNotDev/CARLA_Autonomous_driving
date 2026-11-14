@@ -49,6 +49,7 @@ class AutoDriver:
         current_location,
         goal_location,
         intersection_sequence,
+        allow_lane_change_start: bool = True,
     ) -> tuple[bool, np.ndarray, carla.VehicleControl]:
         self.current_location = current_location
         self.goal_location = goal_location
@@ -72,7 +73,11 @@ class AutoDriver:
             return True, screen, self.controller.update(error=error)
 
         if self.lane_change_manager is not None:
-            self.lane_change_manager.update(current_location, goal_location)
+            self.lane_change_manager.update(
+                current_location,
+                goal_location,
+                allow_new_maneuver=allow_lane_change_start,
+            )
             override = self.lane_change_manager.control_override()
             if override is not None:
                 return True, screen, override

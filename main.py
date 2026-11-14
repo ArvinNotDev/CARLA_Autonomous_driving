@@ -82,6 +82,7 @@ class CarlaLaneDrivingApp:
         self.seq_timeout: float = 0.0
         self.trajectory_takeover_until = 0.0
         self.next_maneuver: Optional[str] = None
+        self._junction_lane_change_cooldown_pending = False
 
         self.planner: Optional[RoutePlanner] = None
         self.goal_location = None
@@ -498,7 +499,17 @@ class CarlaLaneDrivingApp:
         conf.debug_frame_buffer = np.ascontiguousarray(composed)
         self.frame_store.publish(composed)
 
+    def _defer_lane_changes_after_junction(self) -> None:
+        delay = max(
+            0.0, float(cfg("POST_JUNCTION_LANE_CHANGE_DELAY_SECONDS", 6.0))
+        )
+        if self.lane_change_manager is not None:
+            self.lane_change_manager.defer_new_maneuvers(delay)
+        self._junction_lane_change_cooldown_pending = False
+
     def _disable_trajectory_model(self) -> None:
+        if self._junction_lane_change_cooldown_pending:
+            self._defer_lane_changes_after_junction()
         self._trajectory_runtime_enabled = False
         self.intersection_sequence = False
         self.next_maneuver = None
@@ -844,13 +855,15 @@ class CarlaLaneDrivingApp:
                         self.seq_timeout
                         + float(cfg("JUNCTION_TRAJECTORY_WINDOW_SECONDS", 6.0))
                     )
+                    self._junction_lane_change_cooldown_pending = True
                     command_changed = True
                 else:
-                    # Keep the distance-based junction lead-in, then return
-                    # directly to lane-line control when trajectory is disabled.
+                    # The static maneuver has completed; defer new lane-change
+                    # GPS requests before returning to ordinary route following.
                     self.intersection_sequence = False
                     self.next_maneuver = None
                     self.trajectory_takeover_until = 0.0
+                    self._defer_lane_changes_after_junction()
 
         if command_changed and self.inference_worker is not None:
             # Do not wait for the normal inference interval after a junction
@@ -949,12 +962,17 @@ class CarlaLaneDrivingApp:
                         self.current_location,
                         self.goal_location,
                         False,
+                        allow_lane_change_start=False,
                     )
             else:
                 if self.intersection_sequence:
                     self.intersection_sequence = False
                     self.next_maneuver = None
                     self.trajectory_takeover_until = 0.0
+                    if self._junction_lane_change_cooldown_pending:
+                        # Start the quiet period after the trajectory maneuver
+                        # finishes, not when the crosswalk was first detected.
+                        self._defer_lane_changes_after_junction()
                 candidate_out_checker, screen, control = self.auto_driver.update(
                     rgb_packet.bgr,
                     vision_result,

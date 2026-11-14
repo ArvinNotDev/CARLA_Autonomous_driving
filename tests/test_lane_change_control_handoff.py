@@ -183,3 +183,73 @@ def test_lane_follow_pid_is_not_called_while_gps_lane_change_is_active(monkeypat
     assert manager.phase_name() == "STRAIGHT"
     assert control.steer == pytest.approx(0.0)
     assert controller.calls == 0
+
+
+
+def test_post_junction_delay_blocks_fresh_gps_lane_change_queries(monkeypatch):
+    class CountingPlanner:
+        calls = 0
+        def get_next_maneuver_text(self, current, goal):
+            self.calls += 1
+            return "CHANGE_LANE_LEFT"
+
+    planner = CountingPlanner()
+    manager = LaneChangeManager(
+        vehicle=object(),
+        planner=planner,
+        lane_change_debounce_seconds=0.0,
+    )
+    manager._latest_planner_result = (1, "left")
+    base_time = time.monotonic()
+    manager.defer_new_maneuvers(6.0)
+    assert manager._latest_planner_result is None
+
+    # A late response from a query started before the junction cannot start
+    # a maneuver inside the quiet period.
+    manager._latest_planner_result = (2, "right")
+    monkeypatch.setattr(
+        "navigation.lane_change_manager.time.monotonic",
+        lambda: base_time + 5.9,
+    )
+    manager.update(Location(0.0), Location(100.0))
+    assert manager.phase_name() == "IDLE"
+    assert manager._latest_planner_result is None
+    assert planner.calls == 0
+
+    queried = threading.Event()
+    class CountingPlannerAfterDelay:
+        calls = 0
+        def get_next_maneuver_text(self, current, goal):
+            self.calls += 1
+            queried.set()
+            return "CHANGE_LANE_LEFT"
+
+    after_delay = CountingPlannerAfterDelay()
+    manager.planner = after_delay
+    monkeypatch.setattr(
+        "navigation.lane_change_manager.time.monotonic",
+        lambda: base_time + 6.1,
+    )
+    manager.update(Location(0.0), Location(100.0))
+    assert queried.wait(1.0)
+    assert after_delay.calls == 1
+
+
+def test_idle_lane_change_manager_does_not_query_gps_when_junction_owns_control():
+    class CountingPlanner:
+        calls = 0
+        def get_next_maneuver_text(self, current, goal):
+            self.calls += 1
+            return "CHANGE_LANE_LEFT"
+
+    planner = CountingPlanner()
+    manager = LaneChangeManager(vehicle=object(), planner=planner)
+    manager._latest_planner_result = (1, "left")
+    manager.update(
+        Location(0.0),
+        Location(100.0),
+        allow_new_maneuver=False,
+    )
+    assert manager.phase_name() == "IDLE"
+    assert manager._latest_planner_result == (1, "left")
+    assert planner.calls == 0

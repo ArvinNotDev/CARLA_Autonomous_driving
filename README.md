@@ -44,7 +44,9 @@ A lane change keeps steering ownership away from the normal lane-follow PID whil
 
 Only when GPS no longer requests the active lane change is the manager released and ordinary lane-follow PID steering allowed again. If GPS immediately requests the opposite lane change, control ownership stays with the lane-change manager and that maneuver starts without an intervening PID handoff.
 
-The **Lane change** runtime settings expose the approach distance, distance per attempt, steering magnitude, planner query interval, and debounce.
+After a junction crosswalk stop and its configured movement/trajectory sequence are complete, fresh lane-change planner queries are held for six seconds by default. The system also suppresses new lane-change requests while trajectory takeover is active, including when the lane controller is used as a fallback because a fresh trajectory prediction is not available. When the delay expires, GPS is queried again and a lane change starts only if the route planner still requests one. The delay is configurable through **Wait after junction before lane change (s)**.
+
+The **Lane change** runtime settings expose the approach distance, distance per attempt, steering magnitude, planner query interval, debounce, and the post-junction delay.
 
 ## Junction detection modes
 

@@ -41,6 +41,7 @@ SETTING_SPECS = [
     ("LANE_CHANGE_VERIFY_DISTANCE_M", "Lane-change approach distance (m)", "float", (0.1, 10.0, 0.1), True),
     ("LANE_CHANGE_STEER_DISTANCE_M", "Distance per lane-change attempt (m)", "float", (0.25, 15.0, 0.25), True),
     ("LANE_CHANGE_STEER_VALUE", "Lane-change steering magnitude", "float", (0.01, 1.0, 0.01), True),
+    ("POST_JUNCTION_LANE_CHANGE_DELAY_SECONDS", "Wait after junction before lane change (s)", "float", (0.0, 30.0, 0.5), True),
     ("CROSSWALK_SLEEP", "Crosswalk pause (s)", "float", (0.0, 30.0, 0.5), True),
     ("LANE_THRESHOLD", "Lane mask threshold", "int", (0, 255, 1), True),
     ("CROSSWALK_THRESHOLD", "Crosswalk threshold", "int", (0, 255, 1), True),

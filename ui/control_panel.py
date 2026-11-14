@@ -654,6 +654,7 @@ class ControlPanel(QMainWindow):
                 "LANE_CHANGE_PLANNER_CHECK_INTERVAL_SECONDS",
                 "LANE_CHANGE_VERIFY_DISTANCE_M", "LANE_CHANGE_STEER_DISTANCE_M",
                 "LANE_CHANGE_STEER_VALUE",
+                "POST_JUNCTION_LANE_CHANGE_DELAY_SECONDS",
             },
             "Vision / debug": {
                 "VISION_INFERENCE_INTERVAL_SECONDS", "DEBUG_PANEL_HZ",
