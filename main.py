@@ -15,6 +15,7 @@ from controllers.controller import FixedSpeedPIDController
 from controllers.input_manager import InputManager
 from driving.auto_driver import AutoDriver
 from navigation.intersection_manager import IntersectionManager
+from navigation.junction_trigger import JunctionTriggerLatch
 from navigation.global_planner import RoutePlanner
 from navigation.lane_change_manager import LaneChangeManager
 from sensors.camera_manager import CameraManager
@@ -99,11 +100,12 @@ class CarlaLaneDrivingApp:
         self._last_traj_command = "LANE_FOLLOW"
 
         self._vision_result = None
-        self._intersection_result = False
-        self._intersection_result_completed_at = 0.0
-        self._intersection_result_source_frame_id = -1
-        self._roi_junction_armed = True
-        self._roi_line_clear_since: Optional[float] = None
+        self.junction_trigger = JunctionTriggerLatch(
+            clear_duration=max(
+                0.2, float(cfg("JUNCTION_ROI_REARM_CLEAR_SECONDS", 1.0))
+            )
+        )
+        self._last_intersection_attempt_at = 0.0
 
         self.control_metrics = ControlMetrics(window_seconds=1.0)
         self.display_metrics = DisplayMetrics(window_seconds=1.0)
@@ -252,6 +254,15 @@ class CarlaLaneDrivingApp:
                 self._accepted_vision_request = vision.request_id
                 self._vision_result = vision.result
 
+                manager_idle = (
+                    self.intersection_manager is None
+                    or self.intersection_manager.phase_name() == "IDLE"
+                )
+                clear_duration = max(
+                    0.2, float(cfg("JUNCTION_ROI_REARM_CLEAR_SECONDS", 1.0))
+                )
+                self.junction_trigger.clear_duration = clear_duration
+
                 if self.junction_detection_mode == "crosswalk_roi":
                     roi_info = (
                         vision.result.get("junction_roi")
@@ -260,35 +271,15 @@ class CarlaLaneDrivingApp:
                     )
                     if isinstance(roi_info, dict):
                         line_present = bool(roi_info.get("line_present", False))
-                        if line_present:
-                            self._roi_line_clear_since = None
-                        else:
-                            if self._roi_line_clear_since is None:
-                                self._roi_line_clear_since = vision.completed_at
-                            clear_duration = max(
-                                0.2,
-                                float(cfg("JUNCTION_ROI_REARM_CLEAR_SECONDS", 1.0)),
-                            )
-                            manager_idle = (
-                                self.intersection_manager is None
-                                or self.intersection_manager.phase_name() == "IDLE"
-                            )
-                            if (
-                                manager_idle
-                                and vision.completed_at - self._roi_line_clear_since
-                                >= clear_duration
-                            ):
-                                self._roi_junction_armed = True
-
-                        if (
-                            bool(roi_info.get("detected", False))
-                            and self._roi_junction_armed
-                        ):
-                            # Keep the event pending until the existing planner
-                            # accepts it; do not lose a short-lived line detection.
-                            self._intersection_result = True
-                            self._intersection_result_completed_at = vision.completed_at
-                            self._intersection_result_source_frame_id = vision.source_frame_id
+                        self.junction_trigger.observe(
+                            detected=(
+                                bool(roi_info.get("detected", False))
+                                and line_present
+                            ),
+                            evidence_present=line_present,
+                            timestamp=vision.completed_at,
+                            manager_idle=manager_idle,
+                        )
 
             inter, _, _, _ = self.inference_worker.intersection_snapshot()
             if (
@@ -297,9 +288,21 @@ class CarlaLaneDrivingApp:
                 and inter.request_id > self._accepted_intersection_request
             ):
                 self._accepted_intersection_request = inter.request_id
-                self._intersection_result = bool(inter.is_intersection)
-                self._intersection_result_completed_at = inter.completed_at
-                self._intersection_result_source_frame_id = inter.source_frame_id
+                if self.junction_detection_mode == "model":
+                    self.junction_trigger.clear_duration = max(
+                        0.2, float(cfg("JUNCTION_ROI_REARM_CLEAR_SECONDS", 1.0))
+                    )
+                    model_detected = bool(inter.is_intersection)
+                    manager_idle = (
+                        self.intersection_manager is None
+                        or self.intersection_manager.phase_name() == "IDLE"
+                    )
+                    self.junction_trigger.observe(
+                        detected=model_detected,
+                        evidence_present=model_detected,
+                        timestamp=inter.completed_at,
+                        manager_idle=manager_idle,
+                    )
 
         return trajectory, self._vision_result
 
@@ -486,16 +489,10 @@ class CarlaLaneDrivingApp:
             lane_change_phase = self.lane_change_manager.phase_name()
             if lane_change_phase != "IDLE":
                 direction = self.lane_change_manager.direction or "unknown"
-                if self.lane_change_manager.confirmation_timed_out():
-                    lines.append(
-                        f"Lane change: {lane_change_phase} ({direction}) — "
-                        "safety brake active; waiting for lane confirmation"
-                    )
-                else:
-                    lines.append(
-                        f"Lane change: {lane_change_phase} ({direction}) — "
-                        "lane-follow steering locked"
-                    )
+                lines.append(
+                    f"Lane change: {lane_change_phase} ({direction}) — "
+                    "lane-follow steering locked"
+                )
 
         composed = self.renderer.compose(screen, {"lines": lines})
         conf.debug_frame_buffer = np.ascontiguousarray(composed)
@@ -862,24 +859,27 @@ class CarlaLaneDrivingApp:
             self._last_trajectory_submit_at = 0.0
             self._submit_inference(rgb_packet, semantic_packet, now)
 
-        # Accept a fresh result from the selected junction detector without
-        # making it part of the control-critical inference path.
-        if (
-            self._intersection_result
-            and time.perf_counter() - self._intersection_result_completed_at
-            <= float(cfg("INTERSECTION_RESULT_MAX_AGE_SECONDS", 0.75))
-            and not self.intersection_sequence
-            and self.intersection_manager is not None
-        ):
-            started = self.intersection_manager.start_for_intersection(
-                self.current_location,
-                self.goal_location,
-            )
-            if started:
-                self._intersection_result = False
-                if self.junction_detection_mode == "crosswalk_roi":
-                    self._roi_junction_armed = False
-                    self._roi_line_clear_since = None
+        # Keep a positive detector event pending while the planner is still
+        # outside its entry distance. The event is consumed only after the
+        # manager actually enters CROSSWALK/STATIC, not when async planning starts.
+        if self.intersection_manager is not None:
+            junction_phase = self.intersection_manager.phase_name()
+            if junction_phase in {"CROSSWALK", "STATIC"}:
+                self.junction_trigger.acknowledge()
+            elif (
+                junction_phase == "IDLE"
+                and self.junction_trigger.pending
+                and not self.intersection_sequence
+            ):
+                retry_interval = max(
+                    0.1, float(cfg("INTERSECTION_CHECK_INTERVAL_SECONDS", 0.25))
+                )
+                if now - self._last_intersection_attempt_at >= retry_interval:
+                    self._last_intersection_attempt_at = now
+                    self.intersection_manager.start_for_intersection(
+                        self.current_location,
+                        self.goal_location,
+                    )
 
         current_command = (
             self.next_maneuver if self.intersection_sequence else "LANE_FOLLOW"

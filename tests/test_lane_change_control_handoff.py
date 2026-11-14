@@ -190,13 +190,11 @@ def test_missing_source_frame_ids_cannot_satisfy_confirmation():
     assert manager.control_override() is not None
 
 
-def test_unconfirmed_lane_change_fails_safe_to_full_brake(monkeypatch):
-    monkeypatch.setattr(conf, "LANE_CHANGE_CONFIRM_TIMEOUT_SECONDS", 1.0, raising=False)
+def test_unconfirmed_lane_change_keeps_settle_control_without_braking():
     manager = make_manager("left")
     manager.phase = "SETTLE"
     manager._steering_distance_reached = True
     manager._angle_transition_seen = True
-    manager._settle_started_at = __import__("time").monotonic() - 2.0
 
     manager.update(
         Location(2.1),
@@ -209,8 +207,9 @@ def test_unconfirmed_lane_change_fails_safe_to_full_brake(monkeypatch):
     control = manager.control_override()
     assert manager.phase_name() == "SETTLE"
     assert manager.movement_active()
-    assert control.throttle == 0.0
-    assert control.brake == 1.0
+    assert control.throttle == pytest.approx(0.10)
+    assert control.brake == pytest.approx(0.0)
+
 
 
 def test_auto_driver_does_not_return_steering_to_lane_pid_during_settle(monkeypatch):

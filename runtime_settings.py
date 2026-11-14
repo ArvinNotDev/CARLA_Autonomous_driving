@@ -45,7 +45,6 @@ SETTING_SPECS = [
     ("LANE_CHANGE_ANGLE_SETTLE_DEG", "Destination-lane angle tolerance (deg)", "float", (0.5, 20.0, 0.5), True),
     ("LANE_CHANGE_CONFIRM_FRAMES", "Stable frames to confirm new lane", "int", (2, 12, 1), True),
     ("LANE_CHANGE_SETTLE_STEER", "Holding steering while confirming", "float", (0.0, 0.2, 0.01), True),
-    ("LANE_CHANGE_CONFIRM_TIMEOUT_SECONDS", "Stop if lane change is unconfirmed (s)", "float", (1.0, 30.0, 0.5), True),
     ("CROSSWALK_SLEEP", "Crosswalk pause (s)", "float", (0.0, 30.0, 0.5), True),
     ("LANE_THRESHOLD", "Lane mask threshold", "int", (0, 255, 1), True),
     ("CROSSWALK_THRESHOLD", "Crosswalk threshold", "int", (0, 255, 1), True),

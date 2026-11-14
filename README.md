@@ -42,9 +42,9 @@ The planner may run asynchronously, but no junction worker calls `vehicle.apply_
 
 A lane change keeps steering ownership away from the normal lane-follow PID through the `VERIFY`, `CHANGE`, and `SETTLE` phases. Before steering begins, the manager records the current lane-line angles as a baseline. After the initial steering-distance segment, it holds a small direction-specific steering input while it waits for the visible lane markings to deviate from that baseline and then return to within the configured tolerance. Comparing against the pre-maneuver angles also works on curved roads; the detector does not assume that lane lines must be vertical in the camera image. The handoff requires the configured number of **distinct vision frames** with valid lane markings; repeatedly reading the same cached vision result cannot satisfy the confirmation. Only after that confirmation does the lane-follow controller regain steering.
 
-If the destination lane cannot be confirmed within the configured timeout, the manager applies full braking and continues to hold steering ownership rather than handing control back prematurely. The debug overlay shows the active lane-change phase and indicates when lane-follow steering is locked.
+The lane-follow controller remains locked until the destination-lane angle transition and stable markings are confirmed across distinct camera frames. There is no timeout-triggered brake; while confirmation is pending, the lane-change manager continues its normal low-throttle settling control.
 
-The **Lane change** runtime settings expose approach and initial steering distances, angle-deviation and return tolerances, required confirmation frames, the holding-steer value, and the fail-safe confirmation timeout.
+The **Lane change** runtime settings expose approach and initial steering distances, angle-deviation and return tolerances, required confirmation frames, and the holding-steer value.
 
 ## Junction detection modes
 

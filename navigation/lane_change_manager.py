@@ -48,8 +48,6 @@ class LaneChangeManager:
         self._angle_transition_seen = False
         self._stable_angle_frames = 0
         self._steering_distance_reached = False
-        self._settle_started_at: Optional[float] = None
-        self._settle_timed_out = False
 
     def _movement_active(self) -> bool:
         with self._state_lock:
@@ -61,10 +59,6 @@ class LaneChangeManager:
     def phase_name(self) -> str:
         with self._state_lock:
             return self.phase
-
-    def confirmation_timed_out(self) -> bool:
-        with self._state_lock:
-            return self.phase == "SETTLE" and self._settle_timed_out
 
     def _angle_guard_triggered(self) -> bool:
         threshold = float(getattr(conf, "LANE_CHANGE_LINE_ANGLE_THRESHOLD_DEG", 20.0))
@@ -79,8 +73,6 @@ class LaneChangeManager:
         self._angle_transition_seen = False
         self._stable_angle_frames = 0
         self._steering_distance_reached = False
-        self._settle_started_at = None
-        self._settle_timed_out = False
 
     def _apply_planner_result(self, current_location) -> None:
         if current_location is None:
@@ -242,7 +234,6 @@ class LaneChangeManager:
                         if self.phase == "CHANGE":
                             self._steering_distance_reached = True
                             self.phase = "SETTLE"
-                            self._settle_started_at = now
                     self.lane_change_attempts += 1
                     if (
                         self.lane_change_attempts
@@ -258,14 +249,6 @@ class LaneChangeManager:
                 self._finish()
                 return
 
-            with self._state_lock:
-                if (
-                    self.phase == "SETTLE"
-                    and self._settle_started_at is not None
-                    and now - self._settle_started_at
-                    >= max(1.0, float(getattr(conf, "LANE_CHANGE_CONFIRM_TIMEOUT_SECONDS", 8.0)))
-                ):
-                    self._settle_timed_out = True
             return
 
         if phase != "IDLE":
@@ -321,7 +304,6 @@ class LaneChangeManager:
         with self._state_lock:
             phase = self.phase
             direction = self.direction
-            settle_timed_out = self._settle_timed_out
 
         if phase == "VERIFY":
             throttle = 0.08
@@ -330,15 +312,6 @@ class LaneChangeManager:
             throttle = 0.10
             steer = -0.2 if direction == "left" else 0.2
         elif phase == "SETTLE":
-            if settle_timed_out:
-                return carla.VehicleControl(
-                    throttle=0.0,
-                    steer=0.0,
-                    brake=1.0,
-                    reverse=False,
-                    hand_brake=False,
-                    manual_gear_shift=False,
-                )
             throttle = 0.10
             settle_steer = max(
                 0.0, min(0.2, float(getattr(conf, "LANE_CHANGE_SETTLE_STEER", 0.08)))
