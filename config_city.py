@@ -163,6 +163,12 @@ CW_BOTTOM_ROI = 1.00
 CW_LEFT_ROI = 0.00
 CW_RIGHT_ROI = 1.00
 
+# Drivable-area region used to configure a future road-width measurement.
+DW_TOP_ROI = 0.60
+DW_BOTTOM_ROI = 0.72
+DW_LEFT_ROI = 0.10
+DW_RIGHT_ROI = 0.90
+
 # -------------------------------------------------
 # Advanced settings used by the editor
 # -------------------------------------------------
