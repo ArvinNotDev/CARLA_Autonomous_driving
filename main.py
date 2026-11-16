@@ -14,6 +14,7 @@ from carla_manager import CarlaManager
 from controllers.controller import FixedSpeedPIDController
 from controllers.input_manager import InputManager
 from driving.auto_driver import AutoDriver
+from driving.recovery_gate import ContinuousConditionGate
 from navigation.intersection_manager import IntersectionManager
 from navigation.junction_trigger import JunctionTriggerLatch
 from navigation.global_planner import RoutePlanner
@@ -115,6 +116,7 @@ class CarlaLaneDrivingApp:
         self._startup_drive_until = 0.0
         self._out_checker = False
         self._out_checker_started_at: Optional[float] = None
+        self._drivable_recovery_error_gate = ContinuousConditionGate()
         self._last_drivable_info: dict[str, Any] = {}
         self._last_recovery_lidar_info: dict[str, Any] = {}
 
@@ -402,40 +404,68 @@ class CarlaLaneDrivingApp:
         return evidence
 
     def _update_out_checker_logic(self, candidate_out_checker: bool, drive_info: Any) -> None:
-        """Keep main's recovery window and correction rule, gated by side LiDAR evidence."""
+        """Require a sustained drivable-area error before applying recovery steering."""
         if not bool(cfg("DRIVABLE_RECOVERY_ENABLED", True)):
             self._out_checker = False
             self._out_checker_started_at = None
-            self._last_recovery_lidar_info = {"blocked": False, "reason": "recovery_disabled"}
+            self._drivable_recovery_error_gate.reset()
+            self._last_recovery_lidar_info = {
+                "blocked": False,
+                "reason": "recovery_disabled",
+            }
             return
 
         error = self._extract_drivable_error(drive_info)
         now = time.monotonic()
-        if self._out_checker_started_at is None:
-            if candidate_out_checker:
-                self._out_checker_started_at = now
-                self._out_checker = True
-            else:
-                self._out_checker = False
-            return
+        error_threshold = float(cfg("DRIVABLE_RECOVERY_ERROR_THRESHOLD", 20.0))
+        confirmation_seconds = max(
+            0.0, float(cfg("DRIVABLE_RECOVERY_CONFIRMATION_SECONDS", 1.5))
+        )
+        error_condition = bool(candidate_out_checker) and error > error_threshold
+        error_confirmed = self._drivable_recovery_error_gate.update(
+            condition=error_condition,
+            timestamp=now,
+            required_seconds=confirmation_seconds,
+        )
 
-        self._out_checker = True
-        if error > float(cfg("DRIVABLE_RECOVERY_ERROR_THRESHOLD", 20.0)):
+        if not error_confirmed:
+            if self._out_checker_started_at is None:
+                self._out_checker = False
+
+            if error_condition:
+                self._last_recovery_lidar_info = {
+                    "blocked": False,
+                    "reason": "error_confirmation_pending",
+                    "required_seconds": confirmation_seconds,
+                }
+            elif candidate_out_checker:
+                self._last_recovery_lidar_info = {
+                    "blocked": False,
+                    "reason": "error_below_threshold",
+                }
+            else:
+                self._last_recovery_lidar_info = {
+                    "blocked": False,
+                    "reason": "drivable_area_unavailable",
+                }
+        else:
+            if self._out_checker_started_at is None:
+                # Start the existing recovery window only after the error has
+                # remained above threshold for the full confirmation interval.
+                self._out_checker_started_at = now
+
+            self._out_checker = True
             lidar_info = self._inspect_recovery_side_for_obstacle(error)
             self._last_recovery_lidar_info = lidar_info
             if not bool(lidar_info.get("blocked", False)):
                 self._force_left_correction()
-        else:
-            self._last_recovery_lidar_info = {
-                "blocked": False,
-                "reason": "error_below_threshold",
-            }
 
-        if now - self._out_checker_started_at >= float(
+        if self._out_checker_started_at is not None and now - self._out_checker_started_at >= float(
             cfg("DRIVABLE_RECOVERY_WINDOW_SECONDS", 10.0)
         ):
             self._out_checker = False
             self._out_checker_started_at = None
+            self._drivable_recovery_error_gate.reset()
 
     def _trajectory_for_control(self, current_command: str):
         if not self._trajectory_runtime_enabled or self.inference_worker is None:
