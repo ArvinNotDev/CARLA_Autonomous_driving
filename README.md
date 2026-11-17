@@ -3,7 +3,7 @@
 An experimental autonomous-driving stack for [CARLA](https://carla.org/) with lane perception, drivable-area reasoning, route planning, junction handling, trajectory prediction, live debugging, and manual override.
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
-![CARLA](https://img.shields.io/badge/CARLA-0.9.x-222222)
+![CARLA](https://img.shields.io/badge/CARLA-1.0-222222)
 ![PySide6](https://img.shields.io/badge/UI-PySide6-41CD52)
 ![License](https://img.shields.io/badge/License-MIT-blue)
 
@@ -15,6 +15,10 @@ An experimental autonomous-driving stack for [CARLA](https://carla.org/) with la
 - A redesigned PySide6 runtime panel with a persistent live-telemetry sidebar and a larger, full-width settings workspace for throttle, PID, trajectory, ROI, model, and camera controls.
 - Persistent named profiles in `runtime_profiles.json`.
 - Live FPS cards and a Qt telemetry sidebar for GPS, junction/lane-change state, lane perception, and a drivable-road span index. The camera image stays free of duplicated text overlays.
+
+## CARLA 1.0 integration
+
+The CARLA API folder is selected at application startup before the CARLA module is imported. The Global Route Planner imports `agents.navigation` from that selected package; there are no machine-specific CARLA paths in the project. CARLA 1.0's route planner uses the bundled `networkx` dependency, which is declared in `requirements.txt`.
 
 ## Runtime architecture
 
@@ -64,9 +68,9 @@ LiDAR is disabled by default in the application and every included runtime profi
 
 ## Requirements
 
-- CARLA 0.9.x server running on `localhost:2000`.
-- Python 3.10+ (3.12 recommended).
-- A working CARLA Python API installation.
+- CARLA 1.0 server running on `localhost:2000` (client/server versions must match).
+- Python 3.10–3.15 (use the matching CARLA 1.0 wheel shipped with your package).
+- The app loads the matching CARLA 1.0 Python wheel from the selected installation folder. It caches that wheel under the current user's application data and does not replace the global Python package.
 - NVIDIA CUDA is optional; ONNX Runtime and PyTorch will use CPU when CUDA is unavailable.
 
 Install Python dependencies:
@@ -79,13 +83,31 @@ The runtime expects `models_and_datasets/lane_and_drivable-area_model.onnx` and 
 
 ## Run
 
-Start the CARLA server, then:
+Start the CARLA 1.0 server first. On Windows, a low-rendering-cost starting point is:
+
+```bat
+CarlaUnreal.exe -quality-level=Low -ResX=1280 -ResY=720 -windowed
+```
+
+Then launch the application:
 
 ```bash
 python main.py
 ```
 
+**First launch:** a folder picker asks for the CARLA package root, normally named `Carla-1.0-Win64-Shipping` and containing `PythonAPI`. You can also select its `PythonAPI` or `PythonAPI\\carla` subfolder. The application remembers this choice using Qt settings. On later launches it loads the same installation automatically. If the saved path is no longer valid, it asks you to locate CARLA again.
+
+The app selects the wheel under `PythonAPI/carla/dist` that matches the running Python version and Windows platform, then installs it into an application-local cache. It also loads CARLA's bundled `agents` navigation sources from the selected folder. It will not silently fall back to a different installed client when no matching wheel is available.
+
+After connecting, the app compares the CARLA client and server build versions and gives an explicit error if they do not match.
+
 Choose a spawn point and goal. The runtime control panel opens automatically. Press `E` in the CARLA control window to toggle autonomous/manual mode; `WASD` controls the car in manual mode; `Esc` exits.
+
+## GTX 1080 / lower-VRAM profile
+
+The branch starts with the `CARLA_V1_LowGPU` runtime profile selected. It uses a 320×192 RGB camera at a 20 Hz capture interval, a 30 Hz control loop, a 20 Hz debug panel, disables the unused semantic and alternate cameras, keeps LiDAR off, disables the trajectory model, and explicitly disables hardware ray tracing on RGB cameras. You can select another profile in the runtime panel if the machine can handle a heavier setup.
+
+CARLA's official CARLA 1.0 requirements recommend an RTX 3000-series GPU or better with at least 16 GB VRAM. A GTX 1080 8 GB is below that specification. `-quality-level=Low` turns off Lumen and reduces reflection, shadow, streaming-pool and particle costs, but it does not remove scene geometry or guarantee that the packaged simulator will start on a GTX 1080. The engine also initializes its hardware ray-tracing subsystem at project level; the CARLA documentation says that changing this project default requires editing the engine configuration and rebuilding CARLA. Therefore this profile is a best-effort experiment, not an officially supported GTX 1080 configuration. Do not use `-nullrhi` for this application because it needs live RGB camera frames.
 
 The existing ROI/advanced editor is also available through:
 
