@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/yolo26s-sem-integration
+      - transition-to-carla-v1
     paths:
       - "ui/**"
       - "stream.py"
@@ -12,12 +13,17 @@ on:
       - "runtime_profiles.json"
       - "main.py"
       - "vision/**"
+      - "utils/carla_installation.py"
+      - "navigation/global_planner.py"
+      - "carla_manager.py"
+      - "tests/test_carla_installation.py"
       - "tests/test_panel.py"
       - "tests/test_drivable_area_debugger.py"
       - ".github/workflows/gui-smoke-tests.yml"
   pull_request:
     branches:
       - feature/yolo26s-sem-integration
+      - transition-to-carla-v1
 
 jobs:
   gui-smoke:
@@ -38,6 +44,6 @@ jobs:
       - name: Install GUI test dependencies
         run: python -m pip install numpy pytest PySide6 opencv-python-headless
       - name: Compile GUI modules
-        run: python -m compileall -q ui stream.py runtime_settings.py main.py vision
+        run: python -m compileall -q ui stream.py runtime_settings.py main.py vision utils navigation/global_planner.py carla_manager.py
       - name: Run GUI smoke tests
-        run: python -m pytest -q tests/test_panel.py tests/test_drivable_area_debugger.py
+        run: python -m pytest -q tests/test_carla_installation.py tests/test_panel.py tests/test_drivable_area_debugger.py
