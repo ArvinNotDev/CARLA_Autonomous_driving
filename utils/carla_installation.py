@@ -211,13 +211,14 @@ def configure_carla_api(parent=None) -> bool:
 
     if saved_root is not None and is_carla_root(saved_root):
         try:
-            app_data = Path(
-                QStandardPaths.writableLocation(
-                    QStandardPaths.StandardLocation.AppLocalDataLocation
-                )
+            app_data_text = QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.AppLocalDataLocation
             )
-            if not str(app_data):
-                app_data = Path.home() / ".carla_autonomous_driving"
+            app_data = (
+                Path(app_data_text)
+                if app_data_text
+                else Path.home() / ".carla_autonomous_driving"
+            )
             ready, description = _prepare_selected_root(saved_root, app_data, parent)
             if ready:
                 return True
