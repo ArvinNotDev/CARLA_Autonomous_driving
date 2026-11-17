@@ -20,8 +20,8 @@ if __name__ == "__main__":
 
 import carla
 import numpy as np
-from PySide6.QtCore import QMetaObject, Qt
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+from PySide6.QtCore import QMetaObject, QTimer, Qt
+from PySide6.QtWidgets import QApplication, QDialog
 
 import config_city as conf
 from carla_manager import CarlaManager
@@ -69,6 +69,7 @@ class CarlaLaneDrivingApp:
         self.carla_manager = CarlaManager()
         self.world = None
         self.vehicle = None
+        self.spawn_transform = None
 
         self.camera_manager: Optional[CameraManager] = None
         self.lidar_manager: Optional[LidarManager] = None
@@ -91,6 +92,11 @@ class CarlaLaneDrivingApp:
         self._stop_event = threading.Event()
         self._control_thread: Optional[threading.Thread] = None
         self._state_lock = threading.Lock()
+        self._restart_in_progress = False
+        self._restart_timer = QTimer()
+        self._restart_timer.setSingleShot(True)
+        self._restart_timer.setInterval(450)
+        self._restart_timer.timeout.connect(self._restart_simulation)
 
         self.intersection_sequence = False
         self.is_intersection = False
@@ -580,13 +586,212 @@ class CarlaLaneDrivingApp:
             self.control_panel.sync_external_settings(values)
 
     def _request_car_reset(self) -> None:
-        if self.control_panel is None:
+        """Debounce sensor/model changes and restart only the CARLA runtime."""
+        if (
+            self.control_panel is None
+            or not self.running
+            or self._restart_in_progress
+        ):
             return
-        QMessageBox.information(
-            self.control_panel,
-            "Restart required",
-            "This setting changes a model or sensor resource. Restart the run to apply it.",
+
+        self.control_panel.status.setText(
+            "Applying settings — restarting the simulation from the selected spawn point..."
         )
+        # A short debounce prevents spin-box edits from triggering several
+        # consecutive vehicle/sensor respawns while the user is still editing.
+        self._restart_timer.start()
+
+    def _reset_runtime_state(self) -> None:
+        """Clear state that belongs to one driving run, keeping the Qt UI alive."""
+        self.auto_mode = bool(cfg("AUTO_MODE_DEFAULT", True))
+        self.intersection_sequence = False
+        self.is_intersection = False
+        self.seq_timeout = 0.0
+        self.trajectory_takeover_until = 0.0
+        self.next_maneuver = None
+        self._junction_lane_change_cooldown_pending = False
+
+        self._last_trajectory_submit_at = 0.0
+        self._last_trajectory_frame_id = -1
+        self._last_vision_submit_at = 0.0
+        self._last_vision_frame_id = -1
+        self._last_intersection_submit_at = 0.0
+        self._last_intersection_frame_id = -1
+        self._accepted_trajectory_request = 0
+        self._accepted_vision_request = 0
+        self._accepted_intersection_request = 0
+        self._last_traj_command = "LANE_FOLLOW"
+        self._vision_result = None
+        self._last_intersection_attempt_at = 0.0
+
+        self.junction_trigger = JunctionTriggerLatch(
+            clear_duration=max(
+                0.2, float(cfg("JUNCTION_ROI_REARM_CLEAR_SECONDS", 1.0))
+            )
+        )
+        self._out_checker = False
+        self._out_checker_started_at = None
+        self._drivable_recovery_error_gate = ContinuousConditionGate()
+        self._last_drivable_info = {}
+        self._last_recovery_lidar_info = {}
+        self.current_location = None
+        self.drivable_debugger = DrivableAreaDebugger()
+
+        self.junction_detection_mode = str(
+            cfg("JUNCTION_DETECTION_MODE", "model")
+        ).strip().lower()
+        if self.junction_detection_mode not in {"model", "crosswalk_roi"}:
+            self.junction_detection_mode = "model"
+
+        if self.junction_detection_mode == "model":
+            if self.intersection_model is None:
+                from navigation.intersection_detector import IntersectionModel
+
+                self.intersection_model = IntersectionModel(
+                    "models_and_datasets/models/junction_model_resnet18.pt"
+                )
+        else:
+            self.intersection_model = None
+
+    def _cleanup_runtime_resources(
+        self,
+        *,
+        restore_world: bool,
+        close_panel: bool = False,
+        stop_stream_server: bool = False,
+    ) -> None:
+        """Stop actors and workers; optionally retain the world and Qt panel."""
+        if self.inference_worker is not None:
+            try:
+                self.inference_worker.set_trajectory_agent(None)
+                self.inference_worker.stop()
+            except Exception:
+                pass
+            self.inference_worker = None
+
+        self.trajectory_steering_agent = None
+        self._trajectory_runtime_enabled = False
+
+        if self.intersection_manager is not None:
+            try:
+                self.intersection_manager.stop()
+            except Exception:
+                pass
+            self.intersection_manager = None
+
+        try:
+            if self.vehicle is not None:
+                self.vehicle.apply_control(make_stop_control())
+        except Exception:
+            pass
+
+        if self.input_manager is not None:
+            try:
+                self.input_manager.shutdown()
+            except Exception:
+                pass
+            self.input_manager = None
+
+        if self.camera_manager is not None:
+            try:
+                self.camera_manager.cleanup()
+            except Exception:
+                pass
+            self.camera_manager = None
+
+        if self.lidar_manager is not None:
+            try:
+                self.lidar_manager.cleanup()
+            except Exception:
+                pass
+            self.lidar_manager = None
+
+        try:
+            if self.carla_manager is not None:
+                if restore_world:
+                    self.carla_manager.cleanup()
+                else:
+                    self.carla_manager.destroy_vehicle()
+        except Exception:
+            pass
+
+        self.vehicle = None
+        self.controller = None
+        self.vision_processor = None
+        self.auto_driver = None
+        self.lane_change_manager = None
+        self.planner = None
+
+        if close_panel and self.control_panel is not None:
+            try:
+                self.control_panel.close()
+            except Exception:
+                pass
+
+        if stop_stream_server:
+            try:
+                stop_stream(conf.STREAM_HOST, conf.STREAM_PORT)
+            except Exception:
+                pass
+
+    def _restart_simulation(self) -> None:
+        """Rebuild CARLA actors/sensors at the previous spawn without closing Qt."""
+        if (
+            self._restart_in_progress
+            or self.control_panel is None
+            or not self.running
+        ):
+            return
+
+        self._restart_in_progress = True
+        panel = self.control_panel
+        panel.status.setText(
+            "Restarting CARLA runtime and respawning the vehicle..."
+        )
+        QApplication.processEvents()
+
+        stop_event = self._stop_event
+        stop_event.set()
+        old_thread = self._control_thread
+        if old_thread is not None and old_thread.is_alive():
+            old_thread.join(timeout=8.0)
+
+        if old_thread is not None and old_thread.is_alive():
+            stop_event.clear()
+            self._restart_in_progress = False
+            panel.status.setText(
+                "Restart cancelled: the control loop did not stop safely. "
+                "The current simulation is still running."
+            )
+            return
+
+        self._control_thread = None
+        try:
+            self._cleanup_runtime_resources(restore_world=False)
+            self._stop_event = threading.Event()
+            self.running = True
+            self.setup(restart=True)
+
+            if self.vehicle is None:
+                raise RuntimeError("The vehicle was not respawned.")
+
+            self._control_thread = threading.Thread(
+                target=self._control_loop,
+                name="carla-control-loop",
+                daemon=True,
+            )
+            self._control_thread.start()
+            panel.status.setText(
+                "Settings applied. Vehicle respawned at the selected spawn point."
+            )
+        except Exception as exc:
+            self._stop_event.set()
+            self._cleanup_runtime_resources(restore_world=False)
+            self._stop_event = threading.Event()
+            self.running = True
+            panel.status.setText(f"Simulation restart failed: {exc}")
+        finally:
+            self._restart_in_progress = False
 
     def _safe_vehicle_apply_control(self, control: carla.VehicleControl) -> None:
         if self.vehicle is None or control is None:
@@ -619,29 +824,41 @@ class CarlaLaneDrivingApp:
                 except Exception:
                     pass
 
-    def setup(self) -> None:
-        available_maps = self.carla_manager.get_available_maps()
-        if not available_maps:
-            raise RuntimeError("CARLA server did not report any available maps.")
+    def setup(self, *, restart: bool = False) -> None:
+        if restart:
+            # Reuse the currently loaded world and the user's original spawn/goal.
+            # No map picker or spawn dialog is shown during a settings restart.
+            if self.world is None or self.spawn_transform is None:
+                raise RuntimeError(
+                    "Cannot restart the simulation before a map and spawn point are selected."
+                )
+            spawn_tf = self.spawn_transform
+        else:
+            available_maps = self.carla_manager.get_available_maps()
+            if not available_maps:
+                raise RuntimeError("CARLA server did not report any available maps.")
 
-        current_world = self.carla_manager.client.get_world()
-        current_map = current_world.get_map().name
-        map_picker = MapSelectionDialog(available_maps, current_map)
-        if map_picker.exec() != QDialog.DialogCode.Accepted:
-            self.running = False
-            return
+            current_world = self.carla_manager.client.get_world()
+            current_map = current_world.get_map().name
+            map_picker = MapSelectionDialog(available_maps, current_map)
+            if map_picker.exec() != QDialog.DialogCode.Accepted:
+                self.running = False
+                return
 
-        self.world = self.carla_manager.connect(map_picker.selected_map())
-        if self.world is None:
-            raise RuntimeError("Failed to connect to CARLA world.")
+            self.world = self.carla_manager.connect(map_picker.selected_map())
+            if self.world is None:
+                raise RuntimeError("Failed to connect to CARLA world.")
 
-        picker = SpawnGoalPicker(self.world)
-        if picker.exec() != QDialog.DialogCode.Accepted:
-            self.running = False
-            return
+            picker = SpawnGoalPicker(self.world)
+            if picker.exec() != QDialog.DialogCode.Accepted:
+                self.running = False
+                return
 
-        spawn_tf = picker.get_spawn_transform()
-        self.goal_location = picker.get_goal_location()
+            self.spawn_transform = picker.get_spawn_transform()
+            self.goal_location = picker.get_goal_location()
+            spawn_tf = self.spawn_transform
+
+        self._reset_runtime_state()
 
         self.vehicle = self.carla_manager.spawn_vehicle(spawn_transform=spawn_tf)
         if self.vehicle is None:
@@ -715,17 +932,27 @@ class CarlaLaneDrivingApp:
 
         self._startup_drive_until = time.monotonic() + 3.0
 
-        self.control_panel = ControlPanel(
-            self.settings,
-            display_metrics=self.display_metrics,
-            frame_store=self.frame_store,
-            lidar_manager=self.lidar_manager,
-            metrics_provider=self._metrics_for_panel,
-        )
-        self.control_panel.settings_changed.connect(self._on_settings_changed)
-        self.control_panel.reset_requested.connect(self._request_car_reset)
-        self.control_panel.stream_toggle_requested.connect(self._toggle_flask_stream)
-        set_settings_callback(self._on_settings_changed)
+        if self.control_panel is None:
+            self.control_panel = ControlPanel(
+                self.settings,
+                display_metrics=self.display_metrics,
+                frame_store=self.frame_store,
+                lidar_manager=self.lidar_manager,
+                metrics_provider=self._metrics_for_panel,
+            )
+            self.control_panel.settings_changed.connect(self._on_settings_changed)
+            self.control_panel.reset_requested.connect(self._request_car_reset)
+            self.control_panel.stream_toggle_requested.connect(self._toggle_flask_stream)
+            set_settings_callback(self._on_settings_changed)
+        else:
+            # Keep the existing Qt window/timers alive, but point its radar at
+            # the newly-created LiDAR manager.
+            self.control_panel.lidar_radar.lidar_manager = self.lidar_manager
+            self.control_panel.lidar_radar._points = None
+            self.control_panel.set_lidar_enabled(
+                bool(cfg("LIDAR_ENABLED", False))
+            )
+
         self.control_panel.show()
 
     def _toggle_flask_stream(self, enabled: bool) -> None:
@@ -776,7 +1003,7 @@ class CarlaLaneDrivingApp:
             self._stop_event.wait(max(0.0, next_tick - now))
 
         app = QApplication.instance()
-        if app is not None:
+        if app is not None and not self._restart_in_progress:
             try:
                 QMetaObject.invokeMethod(
                     app,
@@ -1019,63 +1246,17 @@ class CarlaLaneDrivingApp:
 
     def shutdown(self) -> None:
         self.running = False
+        self._restart_timer.stop()
         self._stop_event.set()
 
         if self._control_thread is not None and self._control_thread.is_alive():
             self._control_thread.join(timeout=2.0)
 
-        if self.inference_worker is not None:
-            self.inference_worker.set_trajectory_agent(None)
-            self.inference_worker.stop()
-            self.inference_worker = None
-        self.trajectory_steering_agent = None
-        self._trajectory_runtime_enabled = False
-
-        if self.intersection_manager is not None:
-            try:
-                self.intersection_manager.stop()
-            except Exception:
-                pass
-
-        if self.control_panel is not None:
-            try:
-                self.control_panel.close()
-            except Exception:
-                pass
-
-        try:
-            if self.vehicle is not None:
-                self.vehicle.apply_control(make_stop_control())
-        except Exception:
-            pass
-
-        if self.input_manager is not None:
-            try:
-                self.input_manager.shutdown()
-            except Exception:
-                pass
-
-        try:
-            if self.camera_manager is not None:
-                self.camera_manager.cleanup()
-        except Exception:
-                pass
-        try:
-            if self.lidar_manager is not None:
-                self.lidar_manager.cleanup()
-        except Exception:
-            pass
-        try:
-            stop_stream(conf.STREAM_HOST, conf.STREAM_PORT)
-        except Exception:
-            pass
-
-        try:
-            if self.carla_manager is not None:
-                self.carla_manager.cleanup()
-        except Exception:
-            pass
-
+        self._cleanup_runtime_resources(
+            restore_world=True,
+            close_panel=True,
+            stop_stream_server=True,
+        )
 
     def run(self) -> None:
         self.setup()
