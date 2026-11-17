@@ -1,8 +1,22 @@
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from typing import Any, Optional
+
+# The CARLA API must be configured before importing carla or any module that
+# imports it. On a normal GUI launch, show the first-run folder picker and
+# remember the selected installation in the user's Qt settings.
+if __name__ == "__main__":
+    from PySide6.QtWidgets import QApplication as _BootstrapApplication
+    from utils.carla_installation import configure_carla_api as _configure_carla_api
+
+    _bootstrap_application = (
+        _BootstrapApplication.instance() or _BootstrapApplication(sys.argv)
+    )
+    if not _configure_carla_api(_bootstrap_application):
+        raise SystemExit(0)
 
 import carla
 import numpy as np
