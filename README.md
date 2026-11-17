@@ -95,7 +95,7 @@ Then launch the application:
 python main.py
 ```
 
-**First launch:** a folder picker asks for the CARLA package root, normally named `Carla-1.0-Win64-Shipping` and containing `PythonAPI`. You can also select its `PythonAPI` or `PythonAPI\\carla` subfolder. The application remembers this choice using Qt settings. On later launches it loads the same installation automatically. If the saved path is no longer valid, it asks you to locate CARLA again.
+**First launch:** a folder picker asks for the CARLA package root, normally named `Carla-1.0-Win64-Shipping` and containing `PythonAPI`. You can also select its `PythonAPI` or `PythonAPI\carla` subfolder. The application remembers this choice using Qt settings. On later launches it loads the same installation automatically. If the saved path is no longer valid, it asks you to locate CARLA again.
 
 The app selects the wheel under `PythonAPI/carla/dist` that matches the running Python version and Windows platform, then installs it into an application-local cache. It also loads CARLA's bundled `agents` navigation sources from the selected folder. It will not silently fall back to a different installed client when no matching wheel is available.
 
@@ -117,7 +117,7 @@ python stream.py
 
 ## Runtime profiles
 
-Use the profile controls at the bottom of the PySide6 panel to save or load a named configuration. The repository includes the `stableV1` profile as the default startup profile; the last saved values are written to `runtime_profiles.json`.
+Use the profile controls at the bottom of the PySide6 panel to save or load a named configuration. The `CARLA_V1_LowGPU` profile is selected by default on this branch; the last saved values are written to `runtime_profiles.json`.
 
 Live settings update the active controller or perception pipeline immediately. Settings that change CARLA sensor resources or model loading are clearly marked **Hardware (reset)** and show a reset prompt.
 
