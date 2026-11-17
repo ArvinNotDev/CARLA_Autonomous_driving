@@ -95,9 +95,9 @@ Then launch the application:
 python main.py
 ```
 
-**First launch:** a folder picker asks for the CARLA package root, normally named `Carla-1.0-Win64-Shipping` and containing `PythonAPI`. You can also select its `PythonAPI` or `PythonAPI\carla` subfolder. The application remembers this choice using Qt settings. On later launches it loads the same installation automatically. If the saved path is no longer valid, it asks you to locate CARLA again.
+**Every launch:** the app asks whether to use the previously selected CARLA installation or choose another folder. The saved location is remembered using Qt settings. Select the root folder (for example `I:\Carla-1.0-Win64-Shipping`), or its `PythonAPI` / `PythonAPI\carla` subfolder. If the saved path is no longer valid or its wheel cannot be loaded, choose another installation.
 
-The app selects the wheel under `PythonAPI/carla/dist` that matches the running Python version and Windows platform, then installs it into an application-local cache. It also loads CARLA's bundled `agents` navigation sources from the selected folder. It will not silently fall back to a different installed client when no matching wheel is available.
+The app selects the wheel under `PythonAPI/carla/dist` that matches the running Python version and Windows platform, then installs it into an application-local cache. It verifies the importable `carla` module using Python's import machinery, accepting either a package directory or a top-level native `.pyd` module. It also loads CARLA's bundled `agents` navigation sources from the selected folder. It will not silently fall back to a different installed client when no matching wheel is available.
 
 After connecting, the app compares the CARLA client and server build versions and gives an explicit error if they do not match.
 
