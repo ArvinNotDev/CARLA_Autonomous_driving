@@ -43,8 +43,35 @@ class CarlaManager:
 
     def _ensure_client(self) -> carla.Client:
         if self.client is None:
-            self.client = carla.Client(self.host, self.port)
-            self.client.set_timeout(self.timeout)
+            client = carla.Client(self.host, self.port)
+            client.set_timeout(self.timeout)
+
+            get_client_version = getattr(client, "get_client_version", None)
+            get_server_version = getattr(client, "get_server_version", None)
+            if not callable(get_client_version) or not callable(get_server_version):
+                raise RuntimeError(
+                    "The selected Python API does not expose CARLA 1.0 version "
+                    "checks. Select the PythonAPI folder from a CARLA 1.0 package."
+                )
+
+            try:
+                client_version = str(get_client_version())
+                server_version = str(get_server_version())
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Could not verify the CARLA server at {self.host}:{self.port}. "
+                    "Start the CARLA 1.0 server first and check the connection."
+                ) from exc
+
+            if client_version != server_version:
+                raise RuntimeError(
+                    "CARLA Python API/server version mismatch: "
+                    f"client={client_version}, server={server_version}. "
+                    "Close the simulator and select the PythonAPI folder from the "
+                    "same CARLA 1.0 installation that you are running."
+                )
+
+            self.client = client
         return self.client
 
     def get_available_maps(self) -> list[str]:
