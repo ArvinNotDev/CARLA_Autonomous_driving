@@ -5,7 +5,6 @@ torch
 torchvision
 onnxruntime-gpu
 onnxruntime
-carla==1.0
 networkx>=3.2,<4
 pygame
 PySide6
