@@ -3,6 +3,7 @@ name: GUI smoke tests
 on:
   push:
     branches:
+      - main
       - feature/yolo26s-sem-integration
       - transition-to-carla-v1
     paths:
@@ -11,6 +12,7 @@ on:
       - "runtime_settings.py"
       - "config_city.py"
       - "runtime_profiles.json"
+      - "requirements.txt"
       - "main.py"
       - "vision/**"
       - "utils/carla_installation.py"
@@ -23,6 +25,7 @@ on:
       - ".github/workflows/gui-smoke-tests.yml"
   pull_request:
     branches:
+      - main
       - feature/yolo26s-sem-integration
       - transition-to-carla-v1
 
