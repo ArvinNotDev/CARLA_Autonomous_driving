@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
+import os
 import platform
 import shutil
 import subprocess
@@ -14,6 +15,7 @@ from typing import Optional
 ORGANIZATION_NAME = "ArvinNotDev"
 APPLICATION_NAME = "CARLA_Autonomous_Driving"
 CARLA_ROOT_SETTING = "carla/root"
+_DLL_DIRECTORY_HANDLES = []
 
 
 def normalize_carla_root(path: str | Path) -> Path:
@@ -76,13 +78,21 @@ def find_compatible_wheel(
     return sorted(candidates, key=lambda item: item.name)[0] if candidates else None
 
 
+def _register_windows_dll_directory(path: Path) -> None:
+    """Keep a Windows DLL search handle alive for native CARLA extensions."""
+    if sys.platform != "win32" or not hasattr(os, "add_dll_directory"):
+        return
+    if path.is_dir():
+        _DLL_DIRECTORY_HANDLES.append(os.add_dll_directory(str(path)))
+
+
 def _install_wheel(wheel: Path, app_data_directory: Path) -> Path:
     """Install the CARLA wheel into an application-local cache, not global Python."""
     digest = hashlib.sha256(wheel.read_bytes()).hexdigest()[:20]
     destination = app_data_directory / "carla_python_api" / digest
     marker = destination / ".carla-wheel-installed"
 
-    if marker.is_file():
+    if marker.is_file() and (destination / "carla").is_dir():
         return destination
 
     shutil.rmtree(destination, ignore_errors=True)
@@ -159,6 +169,7 @@ def _prepare_selected_root(root: Path, app_data_directory: Path, parent) -> tupl
 
     if wheel is not None:
         client_directory = _install_wheel(wheel, app_data_directory)
+        _register_windows_dll_directory(client_directory / "carla")
         client_description = wheel.name
     else:
         installed_version = _installed_carla_version()
