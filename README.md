@@ -111,12 +111,12 @@ The application also loads CARLA's bundled navigation agents and verifies the cl
 
 Clone the repository and create a virtual environment:
 
-```bash
+```powershell
 git clone https://github.com/ArvinNotDev/CARLA_Autonomous_driving.git
 cd CARLA_Autonomous_driving
 
 py -3.12 -m venv .venv
-.venv\\Scripts\\activate
+.\\.venv\\Scripts\\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
