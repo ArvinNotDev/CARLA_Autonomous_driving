@@ -1,11 +1,16 @@
-import carla
+"""Route planning adapters for CARLA 1.0."""
 
-import sys
-sys.path.append(r"I:\CARLA_0.9.16\PythonAPI\carla") # locate the carla folder
-sys.path.append(r"I:\CARLA_0.9.16\PythonAPI") # locate the carla folder
-
-from agents.navigation.global_route_planner import GlobalRoutePlanner
-from agents.navigation.local_planner import RoadOption
+try:
+    from agents.navigation.global_route_planner import GlobalRoutePlanner
+    from agents.navigation.local_planner import RoadOption
+except ModuleNotFoundError as exc:
+    if exc.name == "agents" or (exc.name or "").startswith("agents."):
+        raise ModuleNotFoundError(
+            "CARLA's bundled PythonAPI navigation package could not be imported. "
+            "Start the application with 'python main.py' and select the CARLA 1.0 "
+            "installation folder when prompted."
+        ) from exc
+    raise
 
 
 class RoutePlanner:
