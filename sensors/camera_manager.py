@@ -75,6 +75,10 @@ class CameraManager:
         rgb_bp.set_attribute("image_size_y", str(conf.CAMERA_IMAGE_HEIGHT))
         rgb_bp.set_attribute("fov", str(conf.CAMERA_FOV))
         rgb_bp.set_attribute("sensor_tick", str(conf.CAMERA_SENSOR_TICK))
+        # CARLA 1.0 supports hardware ray tracing on RGB cameras only at
+        # the Epic tier. Keep it explicitly disabled for non-RTX GPUs.
+        if rgb_bp.has_attribute("use_ray_tracing"):
+            rgb_bp.set_attribute("use_ray_tracing", "false")
 
         self.rgb_camera = self.world.spawn_actor(
             rgb_bp,
@@ -125,6 +129,8 @@ class CameraManager:
             alt_bp.set_attribute("image_size_y", str(conf.model_image_size[1]))
             alt_bp.set_attribute("fov", str(conf.CAMERA_FOV))
             alt_bp.set_attribute("sensor_tick", str(conf.CAMERA_SENSOR_TICK))
+            if alt_bp.has_attribute("use_ray_tracing"):
+                alt_bp.set_attribute("use_ray_tracing", "false")
 
             self.alt_camera = self.world.spawn_actor(
                 alt_bp,
