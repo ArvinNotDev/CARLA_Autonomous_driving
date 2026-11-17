@@ -105,7 +105,7 @@ Choose a spawn point and goal. The runtime control panel opens automatically. Pr
 
 ## GTX 1080 / lower-VRAM profile
 
-The branch starts with the `CARLA_V1_LowGPU` runtime profile selected. It uses a 320×192 RGB camera at a 20 Hz capture interval, a 30 Hz control loop, a 20 Hz debug panel, disables the unused semantic and alternate cameras, keeps LiDAR off, disables the trajectory model, and explicitly disables hardware ray tracing on RGB cameras. You can select another profile in the runtime panel if the machine can handle a heavier setup.
+The branch starts with the existing `StableV2` runtime profile selected. Its camera resolution, capture interval, semantic/alternate camera settings, control frequency, and debug refresh settings are kept exactly as defined by that profile. Hardware ray tracing remains explicitly disabled on RGB cameras for compatibility with non-RTX GPUs.
 
 CARLA's official CARLA 1.0 requirements recommend an RTX 3000-series GPU or better with at least 16 GB VRAM. A GTX 1080 8 GB is below that specification. `-quality-level=Low` turns off Lumen and reduces reflection, shadow, streaming-pool and particle costs, but it does not remove scene geometry or guarantee that the packaged simulator will start on a GTX 1080. The engine also initializes its hardware ray-tracing subsystem at project level; the CARLA documentation says that changing this project default requires editing the engine configuration and rebuilding CARLA. Therefore this profile is a best-effort experiment, not an officially supported GTX 1080 configuration. Do not use `-nullrhi` for this application because it needs live RGB camera frames.
 
@@ -117,7 +117,7 @@ python stream.py
 
 ## Runtime profiles
 
-Use the profile controls at the bottom of the PySide6 panel to save or load a named configuration. The `CARLA_V1_LowGPU` profile is selected by default on this branch; the last saved values are written to `runtime_profiles.json`.
+Use the profile controls at the bottom of the PySide6 panel to save or load a named configuration. `StableV2` is selected by default on this branch and its profile values are preserved in `runtime_profiles.json`. Settings that require sensor/model reconstruction now restart the CARLA runtime in place and respawn the vehicle at the previously selected spawn point; the application and settings window remain open.
 
 Live settings update the active controller or perception pipeline immediately. Settings that change CARLA sensor resources or model loading are clearly marked **Hardware (reset)** and show a reset prompt.
 
