@@ -51,10 +51,10 @@ VEHICLE_BLUEPRINT = "vehicle.tesla.model3"
 # -------------------------------------------------
 # Camera
 # -------------------------------------------------
-CAMERA_IMAGE_WIDTH = 512
-CAMERA_IMAGE_HEIGHT = 320
+CAMERA_IMAGE_WIDTH = 320
+CAMERA_IMAGE_HEIGHT = 192
 CAMERA_FOV = 120
-CAMERA_SENSOR_TICK = 0.025
+CAMERA_SENSOR_TICK = 0.05
 
 CAMERA_X = 1.4
 CAMERA_Y = 0.0
@@ -92,11 +92,11 @@ AUTO_MODE_DEFAULT = True
 # The PySide6 runtime panel is the primary debug view.  OpenCV can still be
 # enabled from the panel when a separate legacy window is useful.
 SHOW_OPENCV_WINDOW = False
-ENABLE_SEMANTIC_CAMERA = True
-ENABLE_ALT_CAMERA = True
+ENABLE_SEMANTIC_CAMERA = False
+ENABLE_ALT_CAMERA = False
 VISION_MODE = "onnx"
-CONTROL_LOOP_HZ = 40.0
-DEBUG_PANEL_HZ = 40.0
+CONTROL_LOOP_HZ = 30.0
+DEBUG_PANEL_HZ = 20.0
 STREAM_HOST = "0.0.0.0"
 STREAM_PORT = 5000
 
