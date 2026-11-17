@@ -16,6 +16,12 @@ An experimental autonomous-driving stack for [CARLA](https://carla.org/) with la
 - Persistent named profiles in `runtime_profiles.json`.
 - Live FPS cards and a Qt telemetry sidebar for GPS, junction/lane-change state, lane perception, and a drivable-road span index. The camera image stays free of duplicated text overlays.
 
+## CARLA installation selection
+
+Before importing the CARLA Python API, `python main.py` asks whether to reuse the previously selected CARLA installation or browse for another one. The selected folder is remembered using Qt settings. The matching wheel is installed in an application-local cache and is loaded ahead of globally installed CARLA packages; the application does not silently fall back to a different CARLA version.
+
+Select the CARLA package root (the folder containing `PythonAPI`), or its `PythonAPI` / `PythonAPI\\carla` subfolder. The wheel is selected for the active Python version and platform, then verified as an importable `carla` module. Both a package directory and a top-level native extension module are supported.
+
 ## Runtime architecture
 
 The PySide6 GUI runs its normal Qt event loop on the main thread. Vehicle control runs at a fixed cadence (`CONTROL_LOOP_HZ`) on one dedicated control thread. A single inference worker serializes vision, trajectory, and junction-model inference and keeps only the newest pending frame for each task type.
@@ -120,7 +126,7 @@ roi_config.json            ROI/advanced settings
 - **The car does not move after spawning:** confirm CARLA is running, the selected spawn point is on a drivable lane, and that the panel is in Auto mode. The app applies a short startup throttle grace period while camera frames become available.
 - **No ONNX inference:** verify `MODEL_PATH`, install `onnxruntime` (or `onnxruntime-gpu`), and check that the model file exists.
 - **Panel does not appear:** install `PySide6` and run from the repository root.
-- **CARLA API import errors:** add your CARLA `PythonAPI` directory to `PYTHONPATH` or update the paths used by `navigation/global_planner.py`.
+- **CARLA API import errors:** rerun `python main.py`, choose the correct installation, and check that its `PythonAPI/carla/dist` folder contains a wheel matching your Python version and Windows architecture.
 
 ## Third-party notice
 
