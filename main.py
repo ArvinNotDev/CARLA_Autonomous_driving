@@ -15,7 +15,7 @@ if __name__ == "__main__":
     _bootstrap_application = (
         _BootstrapApplication.instance() or _BootstrapApplication(sys.argv)
     )
-    if not _configure_carla_api(_bootstrap_application):
+    if not _configure_carla_api(None):
         raise SystemExit(0)
 
 import carla
