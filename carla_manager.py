@@ -129,13 +129,17 @@ class CarlaManager:
         self.vehicle.set_simulate_physics(True)
         return self.vehicle
 
-    def cleanup(self):
+    def destroy_vehicle(self) -> None:
+        """Destroy only the ego vehicle while keeping the connected world active."""
         if self.vehicle is not None:
             try:
                 self.vehicle.destroy()
             except Exception:
                 pass
             self.vehicle = None
+
+    def cleanup(self):
+        self.destroy_vehicle()
 
         if self.world is not None and self.original_settings is not None:
             try:
