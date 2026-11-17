@@ -257,12 +257,12 @@ class PipelineConfig:
 
     # Towns
     town_names: Tuple[str, ...] = (
-        "Town01",
-        "Town02",
-        "Town03",
-        "Town04",
-        "Town05",
-        "Town10HD",
+        "Town01_Opt",
+        "Town02_Opt",
+        "Town03_Opt",
+        "Town04_Opt",
+        "Town05_Opt",
+        "Town10HD_Opt",
     )
 
     # Deterministic collection
