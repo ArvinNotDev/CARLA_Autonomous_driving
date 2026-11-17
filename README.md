@@ -1,149 +1,279 @@
 # CARLA Autonomous Driving
 
-An experimental autonomous-driving stack for [CARLA](https://carla.org/) with lane perception, drivable-area reasoning, route planning, junction handling, trajectory prediction, live debugging, and manual override.
-
-![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+[![GUI smoke tests](https://github.com/ArvinNotDev/CARLA_Autonomous_driving/actions/workflows/gui-smoke-tests.yml/badge.svg?branch=main)](https://github.com/ArvinNotDev/CARLA_Autonomous_driving/actions/workflows/gui-smoke-tests.yml)
+![Python](https://img.shields.io/badge/Python-3.12%20recommended-3776AB?logo=python&logoColor=white)
 ![CARLA](https://img.shields.io/badge/CARLA-1.0-222222)
-![PySide6](https://img.shields.io/badge/UI-PySide6-41CD52)
-![License](https://img.shields.io/badge/License-MIT-blue)
+![Interface](https://img.shields.io/badge/Interface-PySide6-41CD52)
 
-## What it does
+An experimental autonomous-driving research project built around **CARLA 1.0**. The stack combines camera-based lane and drivable-area perception, route planning, junction handling, lane-change control, optional trajectory steering, and a live PySide6 runtime dashboard.
 
-- Lane following from YOLO26s-sem ONNX perception and optional semantic segmentation.
-- Learned waypoint/trajectory steering for junctions, preceded by a short configurable static meter-based lead-in.
-- Route planning, junction classification, lane-change protection, spawn/goal selection, and manual WASD control.
-- A redesigned PySide6 runtime panel with a persistent live-telemetry sidebar and a larger, full-width settings workspace for throttle, PID, trajectory, ROI, model, and camera controls.
-- Persistent named profiles in `runtime_profiles.json`.
-- Live FPS cards and a Qt telemetry sidebar for GPS, junction/lane-change state, lane perception, and a drivable-road span index. The camera image stays free of duplicated text overlays.
+> **Current development target:** CARLA 1.0 (UE5) on the `main` branch. The legacy CARLA 0.9.16 baseline is preserved separately on `main_9.16`.
 
-## CARLA 1.0 integration
+---
 
-The CARLA API folder is selected at application startup before the CARLA module is imported. The Global Route Planner imports `agents.navigation` from that selected package; there are no machine-specific CARLA paths in the project. CARLA 1.0's route planner uses the bundled `networkx` dependency, which is declared in `requirements.txt`.
+## Version tracks
+
+The repository keeps the two incompatible CARLA generations on separate branches. Keep the CARLA server and Python API from the same installation; a 0.9.16 client must not be used with a 1.0 server, or vice versa.
+
+| Branch | Target | Purpose |
+| --- | --- | --- |
+| `main` | **CARLA 1.0** | Primary development branch for the current v1 codebase |
+| `main_9.16` | **CARLA 0.9.16** | Preserved legacy baseline for the previous CARLA generation |
+
+The `main_9.16` branch is a snapshot of the former `main` at the point before the CARLA 1.0 integration was promoted. New v1 development should happen directly on `main`; use `main_9.16` only when maintaining or reproducing the legacy 0.9.16 setup.
+
+### Switch versions
+
+**CARLA 1.0 (current):**
+
+```bash
+git fetch origin
+git switch main
+git pull --ff-only origin main
+```
+
+**CARLA 0.9.16 (legacy):**
+
+```bash
+git fetch origin
+git switch main_9.16
+git pull --ff-only origin main_9.16
+```
+
+---
+
+## Capabilities
+
+- **Lane perception:** YOLO26s-sem ONNX inference for lane and drivable-area understanding, with configurable thresholds and regions of interest.
+- **Drivable-area recovery:** a configurable recovery gate that reacts to sustained perception errors and can use LiDAR obstacle checks to suppress unsafe corrections.
+- **Route planning:** CARLA Global Route Planner integration using the navigation agents bundled with the selected CARLA 1.0 installation.
+- **Junction handling:** route-aware junction behavior with crosswalk-ROI detection or an optional ResNet18 junction classifier.
+- **Lane-change control:** explicit steering ownership during lane changes, distance-based steering attempts, asynchronous route rechecks, and post-junction protection.
+- **Optional trajectory steering:** waypoint prediction and trajectory-based steering can be enabled from a runtime profile when required.
+- **Manual override:** keyboard driving alongside autonomous control.
+- **Live diagnostics:** camera/debug view, FPS metrics, GPS, lane and drivable-area measurements, junction/lane-change state, and optional LiDAR radar.
+- **Runtime configuration:** persistent named profiles, a Flask-based ROI editor, live settings, and automatic in-place simulation restart for sensor/model changes.
 
 ## Runtime architecture
 
-The PySide6 GUI runs its normal Qt event loop on the main thread. Vehicle control runs at a fixed cadence (`CONTROL_LOOP_HZ`) on one dedicated control thread. A single inference worker serializes vision, trajectory, and junction-model inference and keeps only the newest pending frame for each task type.
+The application is organized around three execution paths:
 
-The debug panel uses a latest-frame buffer and its own Qt refresh timer (`DEBUG_PANEL_HZ`). It converts and scales frames only when the panel actually refreshes. Display FPS is measured from newly painted debug frames over a rolling time window, not from control-loop iterations or inference completions.
+1. **Qt interface:** PySide6 owns the main application event loop and runtime dashboard.
+2. **Vehicle control:** one dedicated control thread owns vehicle commands and runs at the configured `CONTROL_LOOP_HZ`.
+3. **Inference:** a serialized inference worker handles vision, optional trajectory prediction, and model-based junction inference. It keeps the newest pending work rather than building an unbounded queue of stale camera frames.
 
-Trajectory output is an immutable, timestamped result. Busy/failed inference never replaces the last valid prediction with `None`; result age and worker state are exposed in the diagnostics overlay.
+A latest-frame buffer connects the control and inference paths to the UI. The dashboard refreshes independently at `DEBUG_PANEL_HZ`, so rendering and telemetry updates do not define the vehicle-control cadence.
 
-## Optional trajectory model
+### Runtime settings and restart behavior
 
-The trajectory steering model is controlled by the `TRAJECTORY_MODEL_ENABLED` profile setting and the runtime-panel checkbox. When disabled, the application does not import the trajectory PyTorch agent or load `trajectory_modelV2.pt`, and no trajectory inference requests are submitted. The fixed-distance junction lead-in remains active; after its final segment, control returns directly to the lane-line controller instead of entering trajectory takeover. Disabling the model during a run takes effect immediately: new requests stop, queued work is cleared, and the model is released after any already-running inference completes. Enabling it again requires a runtime restart so the checkpoint can be loaded outside the control loop. The `StableV2` profile defaults this option to off.
+Settings are divided into two groups:
 
-## Junction behavior
+- **Live settings** update the active controller, thresholds, ROI values, or display behavior without rebuilding the simulation.
+- **Sensor/model settings** trigger an automatic in-place runtime restart. The control loop is stopped, the active sensors and ego vehicle are cleaned up, and the vehicle is spawned again at the previously selected spawn transform. The application window and settings panel remain open; the map and goal selection are retained.
 
-Junction handling is intentionally one pipeline:
+The restart is debounced so that editing a setting does not create a sequence of unnecessary respawns.
 
-1. Detect a junction and determine the next route maneuver.
-2. Run a short configurable static meter-based lead-in.
-3. Return control to the trajectory model for the configurable takeover duration with the route command (`LEFT`, `RIGHT`, or `STRAIGHT`).
-
-The planner may run asynchronously, but no junction worker calls `vehicle.apply_control()`. The control thread is the sole owner of vehicle commands during normal driving, lane changes, static junction lead-ins, and trajectory takeover. There is no blocking render-loop sleep and no legacy full-left recovery command.
-
-## Lane-change steering handoff
-
-A lane change keeps steering ownership away from the normal lane-follow PID while the CARLA route planner continues to return `CHANGE_LANE_LEFT` or `CHANGE_LANE_RIGHT`. Camera lane-line angles do not decide when the maneuver is complete and cannot change steering during this phase. After the configured approach distance, the manager performs two attempts using the configured direction-specific steering magnitude, then two attempts with zero steering. Each attempt covers the configured attempt distance. If GPS still requests the same lane change after both straight attempts, the two-steer/two-straight cycle repeats. GPS is queried asynchronously after each attempt; while that query is pending, the vehicle continues straight under lane-change-manager control.
-
-Only when GPS no longer requests the active lane change is the manager released and ordinary lane-follow PID steering allowed again. If GPS immediately requests the opposite lane change, control ownership stays with the lane-change manager and that maneuver starts without an intervening PID handoff.
-
-After a junction crosswalk stop and its configured movement/trajectory sequence are complete, fresh lane-change planner queries are held for six seconds by default. The system also suppresses new lane-change requests while trajectory takeover is active, including when the lane controller is used as a fallback because a fresh trajectory prediction is not available. When the delay expires, GPS is queried again and a lane change starts only if the route planner still requests one. The delay is configurable through **Wait after junction before lane change (s)**.
-
-The **Lane change** runtime settings expose the approach distance, distance per attempt, steering magnitude, planner query interval, debounce, and the post-junction delay.
-
-## Junction detection modes
-
-The runtime setting **Junction detection method** selects either the trained ResNet18 junction classifier or **Crosswalk ROI — horizontal line**. The ROI mode uses the normalized `CW_TOP_ROI`, `CW_BOTTOM_ROI`, `CW_LEFT_ROI`, and `CW_RIGHT_ROI` values edited in the Flask ROI editor. It searches the camera image inside that rectangle for a sufficiently long, near-horizontal edge using OpenCV, then confirms it across consecutive vision frames. A confirmed line enters the same junction-planning and full-brake `CROSSWALK` state used by the existing controller. The detected segment is highlighted in the debug image.
-
-The detector exposes minimum line-length ratio, angle tolerance, confirmation frames, and a clear-time re-arm delay in the **Junction detection** settings tab. The re-arm delay prevents adjacent zebra stripes from repeatedly triggering stops. Changing between the two detection modes requires a runtime restart; in ROI mode the PyTorch junction classifier is not imported or loaded. The included `StableV2` profile uses ROI detection, while the other bundled profiles retain the model-based method.
-
-## Drivable-road span index
-
-The **Road-width ROI** (`DW_TOP_ROI`, `DW_BOTTOM_ROI`, `DW_LEFT_ROI`, `DW_RIGHT_ROI`) is independent from the crosswalk-detection ROI (`CW_*`). It can be edited in the Flask ROI Studio and in the Qt **Vision / debug** settings tab. The GUI reports the median horizontal span of positive drivable-mask pixels across valid image rows inside `DW_*`. The value is shown in pixels together with the frame-width ratio and valid-row count. It is deliberately a relative comparison index, **not a physical road width in metres**; keep camera resolution and ROI placement consistent when comparing roads.
-
-## Optional LiDAR radar
-
-LiDAR is disabled by default in the application and every included runtime profile. Use the **LiDAR: OFF/ON** button beside the radar in the runtime panel to start or completely stop the CARLA sensor while the simulation is running. When enabled, the radar displays the point cloud; the optional recovery safety check can also use LiDAR to avoid steering corrections toward detected side obstacles. LiDAR is not used to detect road edges or road shoulders. The radar zoom is available under **LiDAR display**, while **LiDAR sensor range** is under **Hardware (reset)** and requires a run restart.
+---
 
 ## Requirements
 
-- CARLA 1.0 server running on `localhost:2000` (client/server versions must match).
-- Python 3.10–3.15 (use the matching CARLA 1.0 wheel shipped with your package).
-- The app loads the matching CARLA 1.0 Python wheel from the selected installation folder. It caches that wheel under the current user's application data and does not replace the global Python package.
-- NVIDIA CUDA is optional; ONNX Runtime and PyTorch will use CPU when CUDA is unavailable.
+### Software
 
-Install Python dependencies:
+- Windows 10/11 (the packaged CARLA 1.0 distribution is the target environment).
+- **CARLA 1.0** server.
+- **Python 3.12, 64-bit recommended.** The application selects the CARLA wheel matching the active interpreter and platform from the installed CARLA package.
+- Git.
+- Python dependencies listed in `requirements.txt`.
+
+The project uses NumPy, OpenCV, Pillow, PyTorch, ONNX Runtime, Pygame, PySide6, and NetworkX. CUDA is optional; the available inference providers depend on the installed runtime and GPU environment.
+
+### CARLA Python API
+
+Do **not** install an unrelated CARLA client from PyPI for the v1 branch. The application loads the matching Python wheel shipped with the selected CARLA 1.0 installation:
+
+```text
+< CARLA 1.0 installation >/
+├── CarlaUnreal.exe
+├── Engine/
+└── PythonAPI/
+    └── carla/
+        └── dist/
+            └── carla-<version>-cp<python>-...whl
+```
+
+At startup, the application asks whether to use the previously saved installation or select another folder. You can choose the CARLA installation root, its `PythonAPI` folder, or its `PythonAPI/carla` subfolder. The wheel is installed into an application-local cache and loaded before other CARLA packages. The global Python environment is not used as a fallback.
+
+The application also loads CARLA's bundled navigation agents and verifies the client/server versions after connecting. If no compatible wheel is available, startup stops with a diagnostic instead of silently loading a different CARLA generation.
+
+---
+
+## Installation
+
+Clone the repository and create a virtual environment:
 
 ```bash
+git clone https://github.com/ArvinNotDev/CARLA_Autonomous_driving.git
+cd CARLA_Autonomous_driving
+
+py -3.12 -m venv .venv
+.venv\\Scripts\\activate
+python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-The runtime expects `models_and_datasets/lane_and_drivable-area_model.onnx` and trajectory/junction checkpoints under `models_and_datasets/models/`.
+The CARLA Python API is deliberately provided by the selected CARLA installation and is not installed by the requirements file.
+
+The runtime expects the following model assets to be present:
+
+- `models_and_datasets/lane_and_drivable-area_model.onnx`
+- `models_and_datasets/models/junction_model_resnet18.pt` when model-based junction detection is selected
+- `models_and_datasets/models/trajectory_modelV2.pt` when trajectory steering is enabled
+
+---
 
 ## Run
 
-Start the CARLA 1.0 server first. On Windows, a low-rendering-cost starting point is:
-
-```bat
-CarlaUnreal.exe -quality-level=Low -ResX=1280 -ResY=720 -windowed
-```
-
-Then launch the application:
+1. Start the **CARLA 1.0** server.
+2. Launch the application from the repository root:
 
 ```bash
 python main.py
 ```
 
-**Every launch:** the app asks whether to use the previously selected CARLA installation or choose another folder. The saved location is remembered using Qt settings. Select the root folder (for example `I:\Carla-1.0-Win64-Shipping`), or its `PythonAPI` / `PythonAPI\carla` subfolder. If the saved path is no longer valid or its wheel cannot be loaded, choose another installation.
+For a lower-rendering-cost windowed launch on Windows, you can start the server with:
 
-The app selects the wheel under `PythonAPI/carla/dist` that matches the running Python version and Windows platform, then installs it into an application-local cache. It verifies the importable `carla` module using Python's import machinery, accepting either a package directory or a top-level native `.pyd` module. It also loads CARLA's bundled `agents` navigation sources from the selected folder. It will not silently fall back to a different installed client when no matching wheel is available.
+```bat
+CarlaUnreal.exe -quality-level=Low -ResX=1280 -ResY=720 -windowed
+```
 
-After connecting, the app compares the CARLA client and server build versions and gives an explicit error if they do not match.
+The simulator window resolution and the ego camera sensor resolution are separate settings. The bundled `StableV2` profile retains its own camera configuration.
 
-Choose a spawn point and goal. The runtime control panel opens automatically. Press `E` in the CARLA control window to toggle autonomous/manual mode; `WASD` controls the car in manual mode; `Esc` exits.
+On every application launch, choose **Use saved installation** or **Choose another folder** in the CARLA installation dialog. After connecting, select the map, spawn point, and goal. The runtime dashboard then opens.
 
-## GTX 1080 / lower-VRAM profile
+### Controls
 
-The branch starts with the existing `StableV2` runtime profile selected. Its camera resolution, capture interval, semantic/alternate camera settings, control frequency, and debug refresh settings are kept exactly as defined by that profile. Hardware ray tracing remains explicitly disabled on RGB cameras for compatibility with non-RTX GPUs.
+| Input | Action |
+| --- | --- |
+| `E` | Toggle autonomous/manual driving |
+| `W` / `A` / `S` / `D` | Manual throttle, steering, and reverse |
+| `Space` | Brake in manual mode |
+| `Esc` | Exit the control window/application |
 
-CARLA's official CARLA 1.0 requirements recommend an RTX 3000-series GPU or better with at least 16 GB VRAM. A GTX 1080 8 GB is below that specification. `-quality-level=Low` turns off Lumen and reduces reflection, shadow, streaming-pool and particle costs, but it does not remove scene geometry or guarantee that the packaged simulator will start on a GTX 1080. The engine also initializes its hardware ray-tracing subsystem at project level; the CARLA documentation says that changing this project default requires editing the engine configuration and rebuilding CARLA. Therefore this profile is a best-effort experiment, not an officially supported GTX 1080 configuration. Do not use `-nullrhi` for this application because it needs live RGB camera frames.
-
-The existing ROI/advanced editor is also available through:
+The ROI/advanced editor can also be started separately:
 
 ```bash
 python stream.py
 ```
 
-## Runtime profiles
+---
 
-Use the profile controls at the bottom of the PySide6 panel to save or load a named configuration. `StableV2` is selected by default on this branch and its profile values are preserved in `runtime_profiles.json`. Settings that require sensor/model reconstruction now restart the CARLA runtime in place and respawn the vehicle at the previously selected spawn point; the application and settings window remain open.
+## Default runtime profile: StableV2
 
-Live settings update the active controller or perception pipeline immediately. Settings that change CARLA sensor resources or model loading are clearly marked **Hardware (reset)** and show a reset prompt.
+The v1 branch starts with the existing **`StableV2`** profile selected. Its stored profile values are preserved as-is; the profile is not replaced by a separate low-GPU preset.
 
-## Project layout
+Key camera and runtime values in that profile:
+
+| Setting | StableV2 |
+| --- | ---: |
+| RGB camera resolution | 512 × 320 |
+| RGB camera sensor interval | 0.025 s |
+| Camera field of view | 120° |
+| Control loop | 40 Hz |
+| Dashboard refresh | 40 Hz |
+| Semantic camera | Enabled |
+| Alternate camera | Enabled |
+| LiDAR | Disabled |
+| Trajectory model | Disabled by default |
+| Junction detection | Crosswalk ROI |
+
+Use the profile controls in the runtime panel to load or save named configurations. Profile values are stored in `runtime_profiles.json`.
+
+**Hardware note:** CARLA 1.0 is a demanding UE5-based simulator. Lowering the server's render quality and display resolution may reduce GPU load, but does not guarantee compatibility with GPUs below CARLA's recommended hardware level. The project's sensor resolution is controlled separately by the runtime profile.
+
+---
+
+## Perception and driving details
+
+### Junction detection
+
+The **Junction detection method** setting selects either the trained ResNet18 classifier or **Crosswalk ROI — horizontal line**. ROI mode searches the configured `CW_*` rectangle for a sufficiently long, near-horizontal marking, confirms it across consecutive frames, and then enters the same route-planning and crosswalk-stop pipeline. The detector exposes line-length, angle, confirmation, and re-arm settings.
+
+### Lane changes
+
+During a lane change, the lane-change manager retains steering ownership while route-planner requests are rechecked asynchronously. The normal lane-follow controller is released only when the active maneuver is complete. Configurable approach distance, attempt distance, steering magnitude, planner interval, and debounce settings control the process.
+
+### Drivable-area recovery
+
+The recovery gate monitors sustained drivable-area errors before requesting corrective steering. Threshold, time window, steering, and throttle can be configured. When enabled, the optional LiDAR gate can suppress corrections toward side obstacles; LiDAR is not used as a road-edge or shoulder detector.
+
+### Road-span index
+
+The independent `DW_*` ROI reports the median horizontal span of positive drivable-mask pixels across valid image rows. It is displayed in pixels and as a frame-width ratio. This is a relative image-space index, **not a measurement of physical road width in metres**.
+
+---
+
+## Repository layout
 
 ```text
-main.py                    Application loop and live control-panel integration
-carla_manager.py           CARLA connection, spawn, and cleanup
-controllers/               PID and keyboard control
-driving/                   Autonomous driving orchestration
-navigation/                Route, junction, lane-side, and lane-change logic
-sensors/                   RGB/semantic cameras and optional LiDAR
-trajectory/                Waypoint model, steering agent, visualization
-vision/                    ONNX/segmentation perception and debug views
-ui/                        Spawn/goal picker, renderer, runtime control panel
-config_city.py             Defaults and JSON overrides
-roi_config.json            ROI/advanced settings
+main.py                         Application setup, control loop, runtime restart
+carla_manager.py                CARLA client, map, vehicle spawn, cleanup
+config_city.py                  Runtime defaults and pipeline configuration
+runtime_settings.py             Profile loading, applying, and persistence
+runtime_profiles.json           Named runtime profiles (StableV2 is active)
+controllers/                    PID and manual input
+driving/                        Autonomous driving and recovery gates
+navigation/                     Route, junction, and lane-change logic
+sensors/                        RGB/semantic cameras and optional LiDAR
+trajectory/                     Waypoint model, steering agent, visualization
+vision/                         ONNX/segmentation perception and debug views
+ui/                             PySide6 dashboard, renderers, spawn/goal tools
+models_and_datasets/             Model checkpoints and ONNX assets
+tests/                           Regression and GUI smoke tests
 ```
 
 ## Troubleshooting
 
-- **The car does not move after spawning:** confirm CARLA is running, the selected spawn point is on a drivable lane, and that the panel is in Auto mode. The app applies a short startup throttle grace period while camera frames become available.
-- **No ONNX inference:** verify `MODEL_PATH`, install `onnxruntime` (or `onnxruntime-gpu`), and check that the model file exists.
-- **Panel does not appear:** install `PySide6` and run from the repository root.
-- **CARLA API import errors:** add your CARLA `PythonAPI` directory to `PYTHONPATH` or update the paths used by `navigation/global_planner.py`.
+**CARLA client/server version mismatch**
+
+- Confirm that the running server is CARLA 1.0.
+- Re-run `python main.py` and select the PythonAPI folder from that exact CARLA 1.0 installation.
+- Do not use the 0.9.16 Python API with a 1.0 server.
+
+**No compatible CARLA wheel found**
+
+- Check that `PythonAPI/carla/dist` contains a wheel matching the active Python version and Windows architecture.
+- Use Python 3.12 64-bit if you are unsure which interpreter to choose.
+- Re-open the installation selector and choose the CARLA root or its `PythonAPI` folder.
+
+**The vehicle does not move after spawning**
+
+- Confirm that the server is running and that the selected spawn point is on a drivable lane.
+- Check that the runtime panel is in Auto mode.
+- Allow the camera stream to initialize after a restart.
+
+**No ONNX inference**
+
+- Verify the model path in the runtime settings.
+- Confirm that ONNX Runtime is installed and that the requested execution provider is available.
+- Check that the ONNX model file exists.
+
+**The dashboard does not appear**
+
+- Install the dependencies from `requirements.txt`.
+- Run `python main.py` from the repository root and check the terminal output for import or Qt errors.
+
+---
+
+## Tests
+
+Run the local regression tests with:
+
+```bash
+python -m pytest -q
+```
+
+The GitHub Actions GUI smoke-test workflow compiles the application modules and runs the CARLA installation, dashboard, perception-debugger, and StableV2-profile checks. The CI checks do not replace an end-to-end run against a locally installed CARLA 1.0 server.
 
 ## Third-party notice
 
-Perception code includes adaptations from **YOLOPv2-ONNX-Sample** by Kazuhito00. The original MIT license is included in `LICENSES/YOLOPv2-ONNX-Sample-MIT.txt`.
+Perception code includes adaptations from **YOLOPv2-ONNX-Sample** by Kazuhito00. The corresponding MIT license notice is included at `LICENSES/YOLOPv2-ONNX-Sample-MIT.txt`.
