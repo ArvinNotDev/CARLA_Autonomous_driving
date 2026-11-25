@@ -221,8 +221,8 @@ class AvisDashboardState:
             raise ValueError("Manual controls must be numeric.") from exc
         if not math.isfinite(throttle_value) or not math.isfinite(steering_value):
             raise ValueError("Manual controls must be finite.")
-        if not 0.0 <= throttle_value <= 1.0:
-            raise ValueError("Manual throttle must be between 0 and 1.")
+        if not -1.0 <= throttle_value <= 1.0:
+            raise ValueError("Manual throttle must be between -1 and 1.")
         if not -1.0 <= steering_value <= 1.0:
             raise ValueError("Manual steering must be between -1 and 1.")
         with self._lock:
@@ -335,10 +335,10 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
           <button class="btn stop" id="stopButton" type="button">Emergency stop</button>
         </div>
         <div class="manual-grid">
-          <div class="control"><label for="throttleInput">Throttle <output id="throttleOutput">0%</output></label><input id="throttleInput" type="range" min="0" max="100" value="0" step="1"></div>
+          <div class="control"><label for="throttleInput">Throttle / reverse <output id="throttleOutput">0%</output></label><input id="throttleInput" type="range" min="-100" max="100" value="0" step="1"></div>
           <div class="control"><label for="steeringInput">Steering <output id="steeringOutput">0%</output></label><input id="steeringInput" type="range" min="-100" max="100" value="0" step="1"></div>
         </div>
-        <div class="keyhelp">Manual mode: W = throttle, A / D = steer, Space = zero throttle and steering. The dashboard sends a short heartbeat; loss of heartbeat releases throttle.</div>
+        <div class="keyhelp">Manual mode: W = forward, S = reverse, A / D = steer, Space = zero throttle and steering. The dashboard sends a short heartbeat; loss of heartbeat releases throttle.</div>
       </div>
       <div class="panel">
         <div class="panel-head"><h3>Runtime telemetry</h3><span class="tag" id="runtimeStatus">Starting</span></div>
@@ -488,7 +488,7 @@ $("stopButton").addEventListener("click", async () => {
   }
 });
 function updateManualLabels() {
-  $("throttleOutput").textContent = Math.round(manualThrottle * 100) + "%";
+  $("throttleOutput").textContent = (manualThrottle < 0 ? "REV " : "FWD ") + Math.round(Math.abs(manualThrottle) * 100) + "%";
   $("steeringOutput").textContent = Math.round(manualSteering * 100) + "%";
 }
 $("throttleInput").addEventListener("input", event => {
@@ -502,10 +502,10 @@ $("steeringInput").addEventListener("input", event => {
 const pressed = new Set();
 document.addEventListener("keydown", event => {
   const key = event.key.toLowerCase();
-  if (!["w","a","d"," "].includes(key) || currentMode !== "manual") return;
+  if (!["w","s","a","d"," "].includes(key) || currentMode !== "manual") return;
   event.preventDefault();
   pressed.add(key);
-  manualThrottle = pressed.has("w") ? 0.42 : 0;
+  manualThrottle = pressed.has("w") ? 0.42 : pressed.has("s") ? -0.30 : 0;
   manualSteering = (pressed.has("d") ? 0.45 : 0) - (pressed.has("a") ? 0.45 : 0);
   $("throttleInput").value = String(Math.round(manualThrottle * 100));
   $("steeringInput").value = String(Math.round(manualSteering * 100));
@@ -514,7 +514,7 @@ document.addEventListener("keydown", event => {
 document.addEventListener("keyup", event => {
   const key = event.key.toLowerCase();
   pressed.delete(key);
-  if (currentMode === "manual" && ["w","a","d"," "].includes(key)) {
+  if (currentMode === "manual" && ["w","s","a","d"," "].includes(key)) {
     manualThrottle = pressed.has("w") ? 0.42 : 0;
     manualSteering = (pressed.has("d") ? 0.45 : 0) - (pressed.has("a") ? 0.45 : 0);
     $("throttleInput").value = String(Math.round(manualThrottle * 100));
