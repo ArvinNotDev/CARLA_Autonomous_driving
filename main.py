@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
+import webbrowser
 from typing import Any, Optional
 
 # The CARLA API must be configured before importing carla or any module that
@@ -15,6 +16,9 @@ if __name__ == "__main__":
     _bootstrap_application = (
         _BootstrapApplication.instance() or _BootstrapApplication(sys.argv)
     )
+    # Flask is the main runtime UI now. Closing a temporary Qt picker must not
+    # terminate the QApplication event loop and shut down the web dashboard.
+    _bootstrap_application.setQuitOnLastWindowClosed(False)
     if not _configure_carla_api(None):
         raise SystemExit(0)
 
@@ -1011,6 +1015,17 @@ class CarlaLaneDrivingApp:
             )
             if started:
                 print(f"[WEB] Runtime dashboard: {local_url} (bind host: {host})")
+                try:
+                    if not webbrowser.open(local_url, new=2):
+                        print(
+                            "[WEB] Browser did not open automatically. "
+                            f"Open {local_url} manually."
+                        )
+                except Exception as browser_exc:
+                    print(
+                        "[WEB] Could not open the browser automatically: "
+                        f"{browser_exc}. Open {local_url} manually."
+                    )
         except OSError as exc:
             set_runtime_status(f"Flask dashboard could not start: {exc}")
             print(f"[WEB] Could not start Flask dashboard: {exc}")
@@ -1321,7 +1336,10 @@ class CarlaLaneDrivingApp:
 def main() -> None:
     qt_app = QApplication.instance()
     if qt_app is None:
-        qt_app = QApplication([])
+        qt_app = QApplication(sys.argv)
+    # No persistent Qt main window remains; the Flask browser dashboard owns
+    # the main UI, so modal setup dialogs must not end the application loop.
+    qt_app.setQuitOnLastWindowClosed(False)
 
     app = CarlaLaneDrivingApp()
     app.run()

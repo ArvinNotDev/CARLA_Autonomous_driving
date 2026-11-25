@@ -75,3 +75,16 @@ def test_desktop_control_panel_is_not_part_of_main_runtime_entrypoint():
     assert "ui.control_panel" not in source
     assert "ControlPanel" not in source
     assert "QTimer" not in source
+
+def test_main_keeps_qt_alive_and_opens_the_flask_dashboard():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1] / "main.py"
+    ).read_text(encoding="utf-8")
+
+    # Closing the map/spawn dialogs must not quit the process now that Flask
+    # is the persistent runtime UI.
+    assert source.count("setQuitOnLastWindowClosed(False)") >= 2
+    assert "webbrowser.open(local_url, new=2)" in source
+
