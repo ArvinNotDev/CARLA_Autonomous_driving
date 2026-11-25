@@ -151,10 +151,10 @@ class RuntimeSettings:
     @classmethod
     def load_last_vehicle(
         cls,
-        default: str = "vehicle.tesla.model3",
+        default: str = "vehicle.ue4.ford.mustang",
         path: Path = PROFILE_PATH,
     ) -> str:
-        """Load the last successfully spawned vehicle, falling back to config."""
+        """Load the last explicitly selected vehicle, falling back to the config default."""
         try:
             profiles = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -162,7 +162,13 @@ class RuntimeSettings:
         if not isinstance(profiles, dict):
             return str(default)
         candidate = profiles.get("_last_vehicle_blueprint")
-        if isinstance(candidate, str) and candidate.strip():
+        # Older versions saved the automatically spawned default vehicle as
+        # though the user had selected it. Ignore those legacy entries once.
+        if (
+            profiles.get("_last_vehicle_explicit") is True
+            and isinstance(candidate, str)
+            and candidate.strip()
+        ):
             return candidate.strip()
         return str(default)
 
@@ -172,7 +178,7 @@ class RuntimeSettings:
         blueprint_id: str,
         path: Path = PROFILE_PATH,
     ) -> None:
-        """Persist a vehicle only after CARLA successfully spawns it."""
+        """Persist an explicitly selected vehicle after CARLA successfully spawns it."""
         candidate = str(blueprint_id).strip()
         if not candidate:
             return
@@ -183,6 +189,7 @@ class RuntimeSettings:
         except (OSError, ValueError):
             profiles = {}
         profiles["_last_vehicle_blueprint"] = candidate
+        profiles["_last_vehicle_explicit"] = True
         active = profiles.get("_active_profile")
         if isinstance(active, str) and isinstance(profiles.get(active), dict):
             profiles[active]["VEHICLE_BLUEPRINT"] = candidate

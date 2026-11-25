@@ -9,6 +9,18 @@ class InputManager:
         pygame.display.set_caption(window_title)
         self.last_exit_reason = None
         self.running = True
+        self._window_open = True
+
+    def _close_window(self) -> None:
+        if not self._window_open:
+            return
+        self._window_open = False
+        close_display = getattr(pygame.display, "quit", None)
+        if callable(close_display):
+            try:
+                close_display()
+            except Exception:
+                pass
 
     def poll(self):
         toggle_auto = False
@@ -18,10 +30,12 @@ class InputManager:
                 if event.type == pygame.QUIT:
                     self.running = False
                     self.last_exit_reason = "Pygame control window was closed"
+                    self._close_window()
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         self.running = False
                         self.last_exit_reason = "Escape key was pressed"
+                        self._close_window()
                     elif event.key == pygame.K_e:
                         toggle_auto = True
 
