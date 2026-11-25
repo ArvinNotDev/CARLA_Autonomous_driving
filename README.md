@@ -166,10 +166,15 @@ The AVIS runtime is an independent backend. It does not initialize or import the
 CARLA Python API, and it does not alter the normal `python main.py` startup path.
 It has its own Flask dashboard, AVIS-only settings file, manual controls, and
 vision pipeline. The Ultralytics backend reuses the StableV2 camera perception
-model and AVIS PID/speed defaults. The optional classical backend performs HLS
-white/yellow thresholding, Gaussian blur, Canny edges, trapezoidal ROI masking,
-and HoughLinesP lane fitting. Its drivable-area view is an estimated lane
-corridor, not a semantic road-surface prediction.
+model and AVIS PID/speed defaults. The Classical CV backend does not run a
+segmentation model to obtain lane pixels: it independently crops the configured
+left-lane (LL) and right-lane (RL) rectangles, then runs HLS white/yellow
+thresholding, Gaussian blur, Canny, morphology, and HoughLinesP strictly inside
+each crop. Its resulting binary mask follows the same downstream procedure as
+the model-backed lane mask: median x-coordinate per ROI, line-angle estimation,
+sticky-side selection, lane-offset calculation, and centre smoothing. The
+classical drivable-area view is an estimated corridor, not a semantic
+road-surface prediction.
 
 Use the Python API revision compatible with AVIS 1.2.4 (the vendor's
 `FIRA-ACL` branch). Clone it beside the project:
@@ -190,13 +195,17 @@ python main.py --avis
 The AVIS Flask dashboard starts at `http://127.0.0.1:5001`. It provides
 live camera/overlay views, the lane and drivable-area masks, Auto / Manual /
 Emergency Stop modes, forward/reverse manual controls, and live controller
-and classical-vision settings. Settings are saved separately in
+and classical-vision settings. The live ROI editor overlays the camera image:
+select LL or RL, drag the rectangle to move it, or drag a corner to resize it.
+Exact normalized coordinates can also be entered numerically. These two ROIs
+are shared by Ultralytics and Classical CV. Settings are saved separately in
 `avis_settings.json`; this file is local and git-ignored. They do not modify
 `runtime_profiles.json`, CARLA configuration, or CARLA controllers.
 
 Select **Classical CV** in the Vision backend field to use the adjustable HLS,
-blur, Canny, ROI, morphology, and HoughLinesP pipeline. Select **Ultralytics**
-to use the trained semantic checkpoint. When the configured Ultralytics
+blur, Canny, morphology, and HoughLinesP pipeline. Both backends use the same
+LL/RL ROI rectangles and the same downstream lane-centre calculation. Select
+**Ultralytics** to use the trained semantic checkpoint. When the configured Ultralytics
 checkpoint is missing, AVIS starts in classical mode and reports the fallback.
 
 For manual driving, switch to **Manual** and use `W` / `S` for forward /
