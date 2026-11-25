@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import faulthandler
+import os
 import sys
 import threading
 import time
@@ -15,6 +16,41 @@ try:
     faulthandler.enable(file=_CRASH_LOG_HANDLE, all_threads=True)
 except (OSError, RuntimeError, ValueError) as _crash_log_error:
     print(f"[DIAGNOSTICS] Could not enable crash log: {_crash_log_error}")
+
+if _CRASH_LOG_HANDLE is not None:
+    print(f"[DIAGNOSTICS] Crash and exception log: {os.path.abspath(_CRASH_LOG_HANDLE.name)}")
+
+
+def _write_exception_to_crash_log(label, exc_type, exc_value, exc_traceback) -> None:
+    if _CRASH_LOG_HANDLE is None:
+        return
+    try:
+        print(f"\\n[{label}] Unhandled exception", file=_CRASH_LOG_HANDLE)
+        traceback.print_exception(
+            exc_type, exc_value, exc_traceback, file=_CRASH_LOG_HANDLE
+        )
+        _CRASH_LOG_HANDLE.flush()
+    except (OSError, ValueError):
+        pass
+
+
+def _runtime_sys_exception_hook(exc_type, exc_value, exc_traceback) -> None:
+    _write_exception_to_crash_log("PYTHON", exc_type, exc_value, exc_traceback)
+    sys.__excepthook__(exc_type, exc_value, exc_traceback)
+
+
+def _runtime_thread_exception_hook(args) -> None:
+    _write_exception_to_crash_log(
+        f"THREAD {getattr(args.thread, 'name', 'unknown')}",
+        args.exc_type,
+        args.exc_value,
+        args.exc_traceback,
+    )
+    threading.__excepthook__(args)
+
+
+sys.excepthook = _runtime_sys_exception_hook
+threading.excepthook = _runtime_thread_exception_hook
 
 # The CARLA API must be configured before importing carla or any module that
 # imports it. On a normal GUI launch, show the first-run folder picker and
@@ -82,7 +118,7 @@ def cfg(name: str, default: Any) -> Any:
 class _RuntimeSignals(QObject):
     """Deliver restart requests from Flask/timer threads to the Qt main thread."""
 
-    restart_requested = Signal()
+    restart_requested = Signal(int)
 
     def __init__(self, restart_callback) -> None:
         super().__init__()
@@ -92,9 +128,9 @@ class _RuntimeSignals(QObject):
             Qt.ConnectionType.QueuedConnection,
         )
 
-    @Slot()
-    def _run_restart(self) -> None:
-        self._restart_callback()
+    @Slot(int)
+    def _run_restart(self, request_generation: int) -> None:
+        self._restart_callback(request_generation)
 
 
 class CarlaLaneDrivingApp:
@@ -111,7 +147,7 @@ class CarlaLaneDrivingApp:
         self.world = None
         self.vehicle = None
         self.spawn_transform = None
-        self.vehicle_blueprint = str(cfg("VEHICLE_BLUEPRINT", "vehicle.tesla.model3"))
+        self.vehicle_blueprint = str(cfg("VEHICLE_BLUEPRINT", "vehicle.ue4.ford.mustang"))
 
         self.camera_manager: Optional[CameraManager] = None
         self.lidar_manager: Optional[LidarManager] = None
@@ -150,6 +186,11 @@ class CarlaLaneDrivingApp:
         self._restart_in_progress = False
         self._restart_timer: Optional[threading.Timer] = None
         self._restart_timer_lock = threading.Lock()
+        self._restart_request_generation = 0
+        self._last_started_restart_generation = 0
+        self._restart_reason = "dashboard requested restart"
+        self._steering_center_until = 0.0
+        self._setup_generation = 0
 
         self.intersection_sequence = False
         self.is_intersection = False
@@ -695,6 +736,19 @@ class CarlaLaneDrivingApp:
             self.lane_change_manager.defer_new_maneuvers(delay)
         self._junction_lane_change_cooldown_pending = False
 
+    def _request_steering_center(self, reason: str) -> None:
+        """Center steering briefly after a completed maneuver and clear PID memory."""
+        duration = max(
+            0.0, min(2.0, float(cfg("MANEUVER_STEERING_CENTER_SECONDS", 0.4)))
+        )
+        self._steering_center_until = time.monotonic() + duration
+        if self.controller is not None:
+            self.controller.reset()
+        print(
+            f"[CONTROL] Maneuver completed ({reason}); centering steering "
+            f"for {duration:.2f}s."
+        )
+
     def _disable_trajectory_model(self) -> None:
         if self._junction_lane_change_cooldown_pending:
             self._defer_lane_changes_after_junction()
@@ -755,8 +809,10 @@ class CarlaLaneDrivingApp:
             except Exception:
                 set_runtime_status("Camera mount update failed; restart may be required.")
 
-    def _request_car_reset(self) -> bool:
-        """Debounce a runtime rebuild from the Flask request thread."""
+    def _request_car_reset(
+        self, reason: str = "dashboard requested restart"
+    ) -> bool:
+        """Debounce a runtime rebuild and discard stale queued restart requests."""
         if (
             not self.running
             or self.world is None
@@ -767,15 +823,23 @@ class CarlaLaneDrivingApp:
         with self._restart_timer_lock:
             if self._restart_timer is not None:
                 self._restart_timer.cancel()
-            # Timer only debounces the Flask request. The signal runs the
-            # actual CARLA/Pygame rebuild on the Qt main thread.
+            self._restart_request_generation += 1
+            request_generation = self._restart_request_generation
+            self._restart_reason = str(reason)
+            # A generation token makes an already-queued Qt signal harmless
+            # when a newer request replaces its timer.
             timer = threading.Timer(
                 0.45,
                 self._runtime_signals.restart_requested.emit,
+                args=(request_generation,),
             )
             timer.daemon = True
             self._restart_timer = timer
             timer.start()
+        print(
+            f"[RUNTIME] Restart request {request_generation} scheduled "
+            f"(reason={self._restart_reason})."
+        )
         set_runtime_status("CARLA runtime restart scheduled")
         return True
 
@@ -784,7 +848,9 @@ class CarlaLaneDrivingApp:
             return True
         previous = self.vehicle_blueprint
         self.vehicle_blueprint = blueprint_id
-        if self._request_car_reset():
+        if self._request_car_reset(
+            reason=f"vehicle changed: {previous} -> {blueprint_id}"
+        ):
             return True
         self.vehicle_blueprint = previous
         return False
@@ -811,6 +877,7 @@ class CarlaLaneDrivingApp:
         self._last_traj_command = "LANE_FOLLOW"
         self._vision_result = None
         self._last_intersection_attempt_at = 0.0
+        self._steering_center_until = 0.0
 
         self.junction_trigger = JunctionTriggerLatch(
             clear_duration=max(
@@ -853,11 +920,11 @@ class CarlaLaneDrivingApp:
         self.vision_processor = None
 
         if self.inference_worker is not None:
-            try:
-                self.inference_worker.set_trajectory_agent(None)
-                self.inference_worker.stop()
-            except Exception:
-                pass
+            worker = self.inference_worker
+            worker.set_trajectory_agent(None)
+            # Do not release/reload CUDA models while an old inference call is
+            # still executing. stop() waits for its active task to finish.
+            worker.stop()
             self.inference_worker = None
 
         self.trajectory_steering_agent = None
@@ -919,13 +986,29 @@ class CarlaLaneDrivingApp:
             except Exception:
                 pass
 
-    def _restart_simulation(self) -> None:
-        """Rebuild CARLA actors/sensors at the previous spawn without a desktop UI."""
-        if self._restart_in_progress or not self.running or self.world is None:
-            return
-        self._restart_in_progress = True
+    def _restart_simulation(self, request_generation: int) -> None:
+        """Rebuild CARLA actors/sensors once for the latest accepted request."""
         with self._restart_timer_lock:
+            if (
+                request_generation != self._restart_request_generation
+                or request_generation <= self._last_started_restart_generation
+            ):
+                print(
+                    f"[RUNTIME] Ignoring stale restart request {request_generation}; "
+                    f"latest={self._restart_request_generation}."
+                )
+                return
+            if self._restart_in_progress or not self.running or self.world is None:
+                return
+            self._last_started_restart_generation = request_generation
             self._restart_timer = None
+            reason = self._restart_reason
+            self._restart_in_progress = True
+
+        print(
+            f"[RUNTIME] Restarting runtime for request {request_generation} "
+            f"(reason={reason})."
+        )
         set_runtime_status("Restarting CARLA runtime and respawning the vehicle…")
 
         stop_event = self._stop_event
@@ -995,6 +1078,11 @@ class CarlaLaneDrivingApp:
                     pass
 
     def setup(self, *, restart: bool = False) -> None:
+        self._setup_generation += 1
+        print(
+            f"[RUNTIME] Setup generation {self._setup_generation} "
+            f"(restart={restart})."
+        )
         if restart:
             # Reuse the currently loaded world and the user's original spawn/goal.
             # No map picker or spawn dialog is shown during a settings restart.
@@ -1037,7 +1125,7 @@ class CarlaLaneDrivingApp:
         candidates = vehicle_spawn_candidates(
             available_vehicles,
             preferred_id=self.vehicle_blueprint,
-            fallback_id="vehicle.tesla.model3",
+            fallback_id="vehicle.ue4.ford.mustang",
         )
         if not candidates:
             raise RuntimeError("CARLA did not report any usable vehicle blueprints.")
@@ -1425,6 +1513,7 @@ class CarlaLaneDrivingApp:
                     self.next_maneuver = None
                     self.trajectory_takeover_until = 0.0
                     self._defer_lane_changes_after_junction()
+                    self._request_steering_center("junction static maneuver")
 
         if command_changed and self.inference_worker is not None:
             # Do not wait for the normal inference interval after a junction
@@ -1475,6 +1564,11 @@ class CarlaLaneDrivingApp:
         phase = (
             self.intersection_manager.phase_name()
             if self.intersection_manager is not None
+            else "IDLE"
+        )
+        lane_change_phase_before = (
+            self.lane_change_manager.phase_name()
+            if self.lane_change_manager is not None
             else "IDLE"
         )
         candidate_out_checker = False
@@ -1534,6 +1628,7 @@ class CarlaLaneDrivingApp:
                         # Start the quiet period after the trajectory maneuver
                         # finishes, not when the crosswalk was first detected.
                         self._defer_lane_changes_after_junction()
+                    self._request_steering_center("junction trajectory maneuver")
                 candidate_out_checker, screen, control = self.auto_driver.update(
                     rgb_packet.bgr,
                     vision_result,
@@ -1545,6 +1640,17 @@ class CarlaLaneDrivingApp:
         else:
             self._render_mode_overlay(screen, "MANUAL", 0.0)
             control = manual_control or make_stop_control()
+
+        lane_change_phase_after = (
+            self.lane_change_manager.phase_name()
+            if self.lane_change_manager is not None
+            else "IDLE"
+        )
+        if (
+            lane_change_phase_before in {"VERIFY", "CHANGE", "STRAIGHT", "CHECK"}
+            and lane_change_phase_after == "IDLE"
+        ):
+            self._request_steering_center("lane change")
 
         lane_change_active = (
             self.lane_change_manager is not None
@@ -1577,6 +1683,18 @@ class CarlaLaneDrivingApp:
             self._last_speed_target_kmh = None
             self._last_speed_throttle = float(getattr(control, "throttle", 0.0))
             self._last_speed_brake = float(getattr(control, "brake", 0.0))
+
+        if (
+            auto_mode
+            and time.monotonic() < self._steering_center_until
+            and phase == "IDLE"
+            and static_control is None
+            and not lane_change_active
+            and not self.intersection_sequence
+        ):
+            # Do not carry the last turn/lane-change steering into the next
+            # normal-driving command. Speed control remains unchanged.
+            control.steer = 0.0
 
         self._safe_vehicle_apply_control(control)
 
