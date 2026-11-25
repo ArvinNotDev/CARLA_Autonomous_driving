@@ -293,3 +293,16 @@ def test_avis_classical_vision_stops_when_no_lane_is_detected():
     assert result["lane_valid"] is False
     assert result["error"] == 0.0
     assert np.count_nonzero(result["debug"]["drivable_mask"]) == 0
+
+
+
+def test_avis_client_sends_reverse_speed_only_for_manual_controls():
+    api = SimpleNamespace(Car=FakeCar)
+    client = AvisEngineClient(api, "127.0.0.1", 25001)
+    fake_car = client.car
+
+    client.send_manual_control(-0.3, -0.2)
+    client.close()
+
+    assert fake_car.speed_commands == [-30, 0]
+    assert fake_car.steering_commands == [-20, 0]
