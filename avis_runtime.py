@@ -84,15 +84,29 @@ def apply_avis_profile(profile: dict[str, Any], config_module: ModuleType) -> No
 
 
 def normalize_avis_controls(throttle: float, steering: float) -> tuple[int, int]:
-    """Convert normalized project controls to AVIS API inputs in [-100, 100]."""
+    """Convert autonomous throttle [0, 1] and steering [-1, 1] to AVIS commands."""
     throttle_value = float(throttle)
     steering_value = float(steering)
     if not math.isfinite(throttle_value) or not math.isfinite(steering_value):
         raise ValueError("AVIS controls must be finite numbers.")
-
     speed_command = int(round(min(1.0, max(0.0, throttle_value)) * 100.0))
     steering_command = int(round(min(1.0, max(-1.0, steering_value)) * 100.0))
     return speed_command, steering_command
+
+
+def normalize_avis_manual_controls(
+    throttle: float,
+    steering: float,
+) -> tuple[int, int]:
+    """Convert bidirectional manual throttle and steering to AVIS API commands."""
+    throttle_value = float(throttle)
+    steering_value = float(steering)
+    if not math.isfinite(throttle_value) or not math.isfinite(steering_value):
+        raise ValueError("AVIS manual controls must be finite numbers.")
+    return (
+        int(round(min(1.0, max(-1.0, throttle_value)) * 100.0)),
+        int(round(min(1.0, max(-1.0, steering_value)) * 100.0)),
+    )
 
 
 def select_avis_target_speed(
@@ -132,6 +146,22 @@ class AvisSteeringController:
         self.steer_limit = min(1.0, max(0.0, float(steer_limit)))
         self.max_steer_step = min(1.0, max(0.0, float(max_steer_step)))
         self.integral_limit = abs(float(integral_limit))
+        self.reset()
+
+    def configure(
+        self,
+        *,
+        kp: float,
+        ki: float,
+        kd: float,
+        steer_limit: float,
+        max_steer_step: float,
+    ) -> None:
+        self.kp = float(kp)
+        self.ki = float(ki)
+        self.kd = float(kd)
+        self.steer_limit = min(1.0, max(0.0, float(steer_limit)))
+        self.max_steer_step = min(1.0, max(0.0, float(max_steer_step)))
         self.reset()
 
     def reset(self) -> None:
@@ -308,6 +338,15 @@ class AvisEngineClient:
         self.car.setSpeed(speed_command)
         self.car.setSteering(steering_command)
 
+    def send_manual_control(self, throttle: float, steering: float) -> None:
+        if self._closed or not self._connected:
+            raise RuntimeError("The AVIS connection is not active.")
+        speed_command, steering_command = normalize_avis_manual_controls(
+            throttle, steering
+        )
+        self.car.setSpeed(speed_command)
+        self.car.setSteering(steering_command)
+
     def _close_socket(self) -> None:
         sock = getattr(self.car, "sock", None)
         if sock is not None:
@@ -387,18 +426,85 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--avis-headless",
         action="store_true",
-        help="Disable the OpenCV preview window.",
+        help="Disable the local OpenCV preview window; Flask remains enabled.",
+    )
+    parser.add_argument(
+        "--avis-web-host",
+        default=os.environ.get("AVIS_WEB_HOST", "127.0.0.1"),
+        help="AVIS dashboard bind address (default: 127.0.0.1).",
+    )
+    parser.add_argument(
+        "--avis-web-port",
+        type=int,
+        default=int(os.environ.get("AVIS_WEB_PORT", "5001")),
+        help="AVIS dashboard port (default: 5001).",
+    )
+    parser.add_argument(
+        "--avis-no-web",
+        action="store_true",
+        help="Disable the AVIS-only Flask dashboard.",
     )
     return parser
+
+
+def _build_avis_settings(conf: ModuleType, sensor_angle: int) -> dict[str, Any]:
+    return {
+        "vision_backend": "ultralytics",
+        "control_loop_hz": float(conf.CONTROL_LOOP_HZ),
+        "inference_interval_ms": max(
+            10.0, float(conf.VISION_INFERENCE_INTERVAL_SECONDS) * 1000.0
+        ),
+        "sensor_angle": int(sensor_angle),
+        "min_speed_kmh": float(conf.MIN_SPEED_KMH),
+        "max_speed_kmh": float(conf.MAX_SPEED_KMH),
+        "acceleration_mps2": float(conf.ACCELERATION_MPS2),
+        "kp": float(conf.KP),
+        "ki": float(conf.KI),
+        "kd": float(conf.KD),
+        "steer_limit": float(conf.STEER_LIMIT),
+        "max_steer_step": float(conf.MAX_STEER_STEP),
+    }
+
+
+def _create_avis_vision_processor(
+    backend: str,
+    settings: dict[str, Any],
+):
+    if backend == "classical":
+        from avis_classical_vision import AvisClassicalVisionProcessor
+
+        return AvisClassicalVisionProcessor(settings)
+
+    from vision.city_vision_processing import VisionProcessor
+
+    return VisionProcessor("ultralytics")
+
+
+def _encode_avis_preview(cv2_module, image) -> bytes | None:
+    if image is None:
+        return None
+    try:
+        ok, encoded = cv2_module.imencode(
+            ".jpg",
+            image,
+            [int(cv2_module.IMWRITE_JPEG_QUALITY), 78],
+        )
+    except Exception:
+        return None
+    return encoded.tobytes() if ok else None
 
 
 def run_avis(args: argparse.Namespace) -> int:
     client: Optional[AvisEngineClient] = None
     inference_worker = None
+    dashboard_server = None
     cv2_module = None
+    dashboard_state = None
 
     try:
         import config_city as conf
+
+        from avis_dashboard import AvisDashboardServer, AvisDashboardState
 
         profile = load_avis_profile()
         apply_avis_profile(profile, conf)
@@ -411,19 +517,76 @@ def run_avis(args: argparse.Namespace) -> int:
         import numpy as np
         from controllers.speed_controller import SpeedPIDController
         from trajectory.worker import InferenceWorker
-        from vision.city_vision_processing import VisionProcessor
 
         cv2_module = cv2
+        print(f"[AVIS] Loading AVIS-specific profile: {AVIS_PROFILE_NAME}")
 
-        print(f"[AVIS] Loading runtime profile: {AVIS_PROFILE_NAME}")
-        print("[AVIS] Loading the existing StableV2 lane-perception model...")
-        vision_processor = VisionProcessor(str(getattr(conf, "VISION_MODE", "ultralytics")))
+        dashboard_state = AvisDashboardState(
+            initial_settings=_build_avis_settings(conf, args.avis_sensor_angle),
+            settings_path=PROJECT_ROOT / "avis_settings.json",
+        )
+        settings, settings_revision = dashboard_state.settings_snapshot()
+
+        try:
+            vision_processor = _create_avis_vision_processor(
+                settings["vision_backend"], settings
+            )
+        except (FileNotFoundError, ImportError) as exc:
+            if settings["vision_backend"] != "ultralytics":
+                raise
+            print(
+                "[AVIS] Ultralytics model is unavailable; switching this AVIS "
+                f"session to classical lane detection: {exc}"
+            )
+            settings = dashboard_state.update_settings(
+                {"vision_backend": "classical"}
+            )
+            settings_revision = dashboard_state.settings_snapshot()[1]
+            vision_processor = _create_avis_vision_processor("classical", settings)
+
         inference_worker = InferenceWorker(vision_processor=vision_processor)
         inference_worker.start()
 
         client = AvisEngineClient(avis_api, args.avis_host, args.avis_port)
         client.send_control(0.0, 0.0)
-        client.set_sensor_angle(args.avis_sensor_angle)
+        client.set_sensor_angle(int(settings["sensor_angle"]))
+
+        steering_controller = AvisSteeringController(
+            kp=float(settings["kp"]),
+            ki=float(settings["ki"]),
+            kd=float(settings["kd"]),
+            steer_limit=float(settings["steer_limit"]),
+            max_steer_step=float(settings["max_steer_step"]),
+        )
+        speed_controller = SpeedPIDController(
+            acceleration_mps2=float(settings["acceleration_mps2"]),
+            min_speed_kmh=float(settings["min_speed_kmh"]),
+            max_speed_kmh=float(settings["max_speed_kmh"]),
+        )
+
+        if not bool(conf.AUTO_MODE_DEFAULT):
+            dashboard_state.set_mode("stopped")
+
+        if not args.avis_no_web:
+            dashboard_server = AvisDashboardServer(
+                dashboard_state,
+                host=args.avis_web_host,
+                port=args.avis_web_port,
+            )
+            dashboard_server.start()
+            dashboard_address = (
+                "127.0.0.1"
+                if args.avis_web_host in {"0.0.0.0", "::"}
+                else args.avis_web_host
+            )
+            print(
+                f"[AVIS WEB] Dashboard: http://{dashboard_address}:{args.avis_web_port}"
+            )
+            if args.avis_web_host not in {"127.0.0.1", "localhost", "::1"}:
+                print(
+                    "[AVIS WEB] WARNING: the dashboard has no authentication. "
+                    "Do not expose it to untrusted networks."
+                )
 
         print(f"[AVIS] Connected to {args.avis_host}:{args.avis_port}.")
         print(
@@ -432,32 +595,22 @@ def run_avis(args: argparse.Namespace) -> int:
         )
         time.sleep(max(0.0, float(args.avis_startup_delay)))
 
-        steering_controller = AvisSteeringController(
-            kp=float(conf.KP),
-            ki=float(conf.KI),
-            kd=float(conf.KD),
-            steer_limit=float(conf.STEER_LIMIT),
-            max_steer_step=float(conf.MAX_STEER_STEP),
-        )
-        speed_controller = SpeedPIDController(
-            acceleration_mps2=float(conf.ACCELERATION_MPS2),
-            min_speed_kmh=float(conf.MIN_SPEED_KMH),
-            max_speed_kmh=float(conf.MAX_SPEED_KMH),
-        )
-
-        auto_mode = bool(conf.AUTO_MODE_DEFAULT)
-        control_period = 1.0 / max(10.0, min(60.0, float(conf.CONTROL_LOOP_HZ)))
-        inference_interval = max(0.01, float(conf.VISION_INFERENCE_INTERVAL_SECONDS))
+        control_period = 1.0 / float(settings["control_loop_hz"])
+        inference_interval = float(settings["inference_interval_ms"]) / 1000.0
+        active_backend = str(settings["vision_backend"])
+        active_sensor_angle = int(settings["sensor_angle"])
         last_inference_submit = 0.0
         last_vision_result = None
+        last_dashboard_publish = 0.0
         frame_id = 0
         last_error_message = None
         consecutive_connection_errors = 0
         last_control_time = time.perf_counter()
         next_tick = last_control_time
 
-        print("[AVIS] Autonomous lane-following is ready.")
-        print("[AVIS] Press Q or Esc in the preview window to stop.")
+        print("[AVIS] AVIS runtime is ready.")
+        print("[AVIS] Use the web dashboard for auto/manual mode and live tuning.")
+        print("[AVIS] Press Q or Esc in the local preview window to stop.")
 
         while True:
             try:
@@ -476,26 +629,65 @@ def run_avis(args: argparse.Namespace) -> int:
                     ) from exc
                 continue
 
+            current_settings, current_revision = dashboard_state.settings_snapshot()
+            if current_revision != settings_revision:
+                try:
+                    if int(current_settings["sensor_angle"]) != active_sensor_angle:
+                        client.set_sensor_angle(int(current_settings["sensor_angle"]))
+                        active_sensor_angle = int(current_settings["sensor_angle"])
+
+                    steering_controller.configure(
+                        kp=float(current_settings["kp"]),
+                        ki=float(current_settings["ki"]),
+                        kd=float(current_settings["kd"]),
+                        steer_limit=float(current_settings["steer_limit"]),
+                        max_steer_step=float(current_settings["max_steer_step"]),
+                    )
+                    speed_controller.configure(
+                        acceleration_mps2=float(current_settings["acceleration_mps2"]),
+                        min_speed_kmh=float(current_settings["min_speed_kmh"]),
+                        max_speed_kmh=float(current_settings["max_speed_kmh"]),
+                    )
+
+                    selected_backend = str(current_settings["vision_backend"])
+                    if selected_backend != active_backend:
+                        replacement = _create_avis_vision_processor(
+                            selected_backend, current_settings
+                        )
+                        inference_worker.set_vision_processor(replacement)
+                        active_backend = selected_backend
+                        print(f"[AVIS] Vision backend changed to {active_backend}.")
+                    elif active_backend == "classical":
+                        vision_processor.update_settings(current_settings)
+
+                    control_period = 1.0 / float(current_settings["control_loop_hz"])
+                    inference_interval = (
+                        float(current_settings["inference_interval_ms"]) / 1000.0
+                    )
+                    last_vision_result = None
+                    last_inference_submit = 0.0
+                    settings_revision = current_revision
+                    settings = current_settings
+                except Exception as exc:
+                    error_message = (
+                        f"Could not apply AVIS settings: {type(exc).__name__}: {exc}"
+                    )
+                    print(f"[AVIS] {error_message}")
+                    previous_backend = active_backend
+                    dashboard_state.update_settings(
+                        {"vision_backend": previous_backend}, persist=True
+                    )
+                    settings, settings_revision = dashboard_state.settings_snapshot()
+
             valid_frame = (
                 isinstance(frame, np.ndarray)
                 and frame.ndim == 3
                 and frame.shape[2] >= 3
                 and frame.size > 0
             )
-            if not valid_frame:
-                client.send_control(0.0, 0.0)
-                display = np.zeros((360, 720, 3), dtype=np.uint8)
-                cv2.putText(
-                    display,
-                    "WAITING FOR AVIS CAMERA...",
-                    (28, 185),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.9,
-                    (0, 220, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
-            else:
+            vision_error = None
+            vision_data: dict[str, Any] = {}
+            if valid_frame:
                 frame_id += 1
                 frame_bgr = np.ascontiguousarray(frame[:, :, :3])
                 now = time.perf_counter()
@@ -513,73 +705,93 @@ def run_avis(args: argparse.Namespace) -> int:
                 )
                 if vision_snapshot is not None and vision_snapshot.valid:
                     last_vision_result = vision_snapshot
+                if last_vision_result is not None:
+                    vision_data = last_vision_result.result or {}
 
+                drive_mode, manual_throttle, manual_steering, manual_active = (
+                    dashboard_state.drive_state()
+                )
                 throttle = 0.0
                 steering = 0.0
                 target_speed = 0.0
                 coasting = False
+                lane_valid = False
+                lane_error = 0.0
                 status = "WAITING FOR FIRST PREDICTION"
 
-                if last_vision_result is not None:
-                    result_age = max(
-                        0.0,
-                        time.perf_counter() - last_vision_result.completed_at,
+                if drive_mode == "manual":
+                    throttle = manual_throttle if manual_active else 0.0
+                    steering = manual_steering if manual_active else 0.0
+                    client.send_manual_control(throttle, steering)
+                    status = (
+                        "MANUAL"
+                        if manual_active
+                        else "MANUAL / INPUT TIMED OUT - ZERO THROTTLE"
                     )
-                    max_result_age = max(0.75, inference_interval * 8.0)
-                    if result_age > max_result_age:
+                elif drive_mode == "stopped":
+                    client.send_control(0.0, 0.0)
+                    status = "STOPPED"
+                else:
+                    result_fresh = False
+                    if last_vision_result is not None:
+                        result_age = max(
+                            0.0,
+                            time.perf_counter() - last_vision_result.completed_at,
+                        )
+                        result_fresh = result_age <= max(
+                            0.75, inference_interval * 8.0
+                        )
+
+                    if not result_fresh:
                         status = "VISION RESULT STALE - STOPPED"
                     else:
-                        vision_data = last_vision_result.result
+                        lane_valid = bool(
+                            vision_data.get(
+                                "lane_valid",
+                                vision_data.get("lane_type", "none") != "none",
+                            )
+                        )
                         lane_error = float(vision_data.get("error", 0.0) or 0.0)
-                        steering = steering_controller.update(lane_error)
-                        target_speed = select_avis_target_speed(
-                            steering,
-                            float(conf.MIN_SPEED_KMH),
-                            float(conf.MAX_SPEED_KMH),
-                        )
-                        dt = min(
-                            0.1,
-                            max(0.005, time.perf_counter() - last_control_time),
-                        )
-                        throttle, requested_brake = speed_controller.update(
-                            current_speed,
-                            target_speed,
-                            dt=dt,
-                        )
-                        # AVIS 1.2.4 exposes engine power, but no independent
-                        # service-brake command. Release throttle and let it coast.
-                        coasting = requested_brake > 0.0
-                        if coasting:
-                            throttle = 0.0
-                        status = "AUTO / COAST" if coasting else "AUTO"
-
-                if auto_mode:
+                        if not lane_valid:
+                            status = "LANE NOT DETECTED - STOPPED"
+                        else:
+                            steering = steering_controller.update(lane_error)
+                            target_speed = select_avis_target_speed(
+                                steering,
+                                float(current_settings["min_speed_kmh"]),
+                                float(current_settings["max_speed_kmh"]),
+                            )
+                            dt = min(
+                                0.1,
+                                max(
+                                    0.005,
+                                    time.perf_counter() - last_control_time,
+                                ),
+                            )
+                            throttle, requested_brake = speed_controller.update(
+                                current_speed,
+                                target_speed,
+                                dt=dt,
+                            )
+                            # AVIS 1.2.4 has no independent service-brake command.
+                            coasting = requested_brake > 0.0
+                            if coasting:
+                                throttle = 0.0
+                            status = "AUTO / COAST" if coasting else "AUTO"
                     client.send_control(throttle, steering)
-                else:
-                    client.send_control(0.0, 0.0)
-                    status = "MANUAL / INPUT NOT CONFIGURED"
 
-                vision_data = (
-                    last_vision_result.result
-                    if last_vision_result is not None
-                    else {}
-                )
-                debug_data = (
-                    vision_data.get("debug", {})
-                    if isinstance(vision_data, dict)
-                    else {}
-                )
-                combined = (
-                    debug_data.get("combined")
-                    if isinstance(debug_data, dict)
-                    else None
-                )
+                debug_data = vision_data.get("debug", {})
+                if not isinstance(debug_data, dict):
+                    debug_data = {}
+                combined = debug_data.get("combined")
+                line_mask = debug_data.get("lane_mask")
+                drivable_mask = debug_data.get("drivable_mask")
+
                 display = (
                     np.ascontiguousarray(combined).copy()
                     if isinstance(combined, np.ndarray) and combined.size
                     else frame_bgr.copy()
                 )
-
                 cv2.putText(
                     display,
                     f"AVIS | {status}",
@@ -625,25 +837,101 @@ def run_avis(args: argparse.Namespace) -> int:
                         1,
                         cv2.LINE_AA,
                     )
-                if vision_error and last_vision_result is None:
-                    status_message = f"VISION ERROR: {vision_error}"
-                    if status_message != last_error_message:
-                        print(f"[AVIS] {status_message}")
-                        last_error_message = status_message
+
+                now = time.perf_counter()
+                if now - last_dashboard_publish >= 0.10:
+                    black_mask = np.zeros(frame_bgr.shape[:2], dtype=np.uint8)
+                    dashboard_state.publish_images(
+                        {
+                            "camera": _encode_avis_preview(cv2, frame_bgr),
+                            "combined": _encode_avis_preview(cv2, display),
+                            "line-mask": _encode_avis_preview(
+                                cv2,
+                                line_mask if isinstance(line_mask, np.ndarray) else black_mask,
+                            ),
+                            "drivable-mask": _encode_avis_preview(
+                                cv2,
+                                drivable_mask
+                                if isinstance(drivable_mask, np.ndarray)
+                                else black_mask,
+                            ),
+                        }
+                    )
+                    last_dashboard_publish = now
+
+                lane_valid = bool(
+                    vision_data.get(
+                        "lane_valid",
+                        vision_data.get("lane_type", "none") != "none",
+                    )
+                )
+                if drive_mode == "auto":
+                    lane_error = float(vision_data.get("error", 0.0) or 0.0)
+                dashboard_state.publish_telemetry(
+                    {
+                        "connected": True,
+                        "status": status,
+                        "speed_kmh": round(float(current_speed), 2),
+                        "target_speed_kmh": round(float(target_speed), 2),
+                        "throttle": round(float(throttle), 3),
+                        "steering": round(float(steering), 3),
+                        "lane_error_px": round(float(lane_error), 2),
+                        "lane_valid": lane_valid,
+                        "sensors_cm": (
+                            list(sensors[:3])
+                            if isinstance(sensors, (list, tuple)) and len(sensors) >= 3
+                            else None
+                        ),
+                        "vision_error": (
+                            str(vision_error) if vision_error else None
+                        ),
+                    }
+                )
+            else:
+                client.send_control(0.0, 0.0)
+                display = np.zeros((360, 720, 3), dtype=np.uint8)
+                cv2.putText(
+                    display,
+                    "WAITING FOR AVIS CAMERA...",
+                    (28, 185),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.9,
+                    (0, 220, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+                dashboard_state.publish_telemetry(
+                    {
+                        "connected": True,
+                        "status": "Waiting for camera",
+                        "speed_kmh": float(current_speed),
+                        "target_speed_kmh": 0.0,
+                        "throttle": 0.0,
+                        "steering": 0.0,
+                        "lane_error_px": 0.0,
+                        "lane_valid": False,
+                        "sensors_cm": (
+                            list(sensors[:3])
+                            if isinstance(sensors, (list, tuple)) and len(sensors) >= 3
+                            else None
+                        ),
+                        "vision_error": "No valid AVIS camera frame.",
+                    }
+                )
 
             last_control_time = time.perf_counter()
 
             if not args.avis_headless:
                 try:
-                    cv2.imshow("CARLA Autonomous Driving | AVIS Engine", display)
+                    cv2.imshow("AVIS Engine | AVIS Runtime", display)
                     key = cv2.waitKey(1) & 0xFF
                     if key in (ord("q"), 27):
                         break
                 except cv2.error as exc:
-                    print(f"[AVIS] OpenCV preview unavailable; continuing headless: {exc}")
+                    print(
+                        f"[AVIS] OpenCV preview unavailable; continuing headless: {exc}"
+                    )
                     args.avis_headless = True
-
-            conf.debug_frame_buffer = np.ascontiguousarray(display)
 
             next_tick += control_period
             now = time.perf_counter()
@@ -660,8 +948,12 @@ def run_avis(args: argparse.Namespace) -> int:
         print(f"[AVIS] Runtime failed: {type(exc).__name__}: {exc}")
         return 1
     finally:
+        if dashboard_state is not None:
+            dashboard_state.set_mode("stopped")
         if client is not None:
             client.close()
+        if dashboard_server is not None:
+            dashboard_server.stop()
         if inference_worker is not None:
             try:
                 inference_worker.stop()
@@ -684,6 +976,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if not 10 <= args.avis_sensor_angle <= 90:
         print("[AVIS] Sensor angle must be between 10 and 90 degrees.")
+        return 2
+    if not 1 <= args.avis_web_port <= 65535:
+        print("[AVIS] Web dashboard port must be between 1 and 65535.")
         return 2
     return run_avis(args)
 
