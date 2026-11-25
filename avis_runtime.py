@@ -515,7 +515,81 @@ def _create_avis_vision_processor(
     from vision.city_vision_processing import VisionProcessor
 
     class AvisVisionProcessor(VisionProcessor):
-        """Keep model debug visuals AVIS-specific; never paint vehicle masks."""
+        """AVIS model adapter; vehicle segmentation is optional and never drawn."""
+
+        @staticmethod
+        def _class_ids_from_names(
+            class_names: dict[int, str],
+        ) -> tuple[int, int, int | None]:
+            # Lane and drivable-area classes are required by AVIS lane following.
+            # Vehicle segmentation is not used by AVIS, so checkpoints without
+            # that class must remain valid.
+            required_ids = []
+            for class_name, label in (
+                ("lane_lines", "lane"),
+                ("ego_drivable_area", "drivable-area"),
+            ):
+                matches = [
+                    class_id
+                    for class_id, name in class_names.items()
+                    if name == class_name
+                ]
+                if len(matches) != 1:
+                    raise RuntimeError(
+                        "The AVIS Ultralytics checkpoint must contain exactly "
+                        f"one '{class_name}' class for {label} masks; "
+                        f"found names {class_names!r}"
+                    )
+                required_ids.append(matches[0])
+
+            vehicle_ids = [
+                class_id
+                for class_id, name in class_names.items()
+                if name == "vehicles"
+            ]
+            if len(vehicle_ids) > 1:
+                raise RuntimeError(
+                    "The AVIS Ultralytics checkpoint may contain at most one "
+                    f"'vehicles' class; found names {class_names!r}"
+                )
+            vehicle_class_id = vehicle_ids[0] if vehicle_ids else None
+            return required_ids[0], required_ids[1], vehicle_class_id
+
+        @staticmethod
+        def _semantic_map_to_masks(
+            semantic_map,
+            lane_class_id: int,
+            drivable_class_id: int,
+            vehicles_class_id: int | None,
+            frame_shape: tuple[int, int],
+        ):
+            if vehicles_class_id is not None:
+                return VisionProcessor._semantic_map_to_masks(
+                    semantic_map,
+                    lane_class_id,
+                    drivable_class_id,
+                    vehicles_class_id,
+                    frame_shape,
+                )
+
+            # Reuse the shared mask decoder for the required classes, then
+            # explicitly report that no vehicle mask exists for this model.
+            drivable_mask, lane_mask, _ = VisionProcessor._semantic_map_to_masks(
+                semantic_map,
+                lane_class_id,
+                drivable_class_id,
+                -1,
+                frame_shape,
+            )
+            return drivable_mask, lane_mask, None
+
+        def __init__(self, mode: str):
+            super().__init__(mode)
+            if getattr(self, "vehicles_class_id", None) is None:
+                print(
+                    "[AVIS] Model has no 'vehicles' class; "
+                    "continuing without vehicle masks."
+                )
 
         def _draw_debug(
             self,

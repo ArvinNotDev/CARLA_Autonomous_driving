@@ -458,6 +458,100 @@ def test_avis_client_sends_reverse_speed_only_for_manual_controls():
 
 
 
+def test_avis_model_allows_missing_vehicle_class_without_changing_shared_processor(monkeypatch):
+    import numpy as np
+    import vision.city_vision_processing as shared_vision
+
+    class FakeVisionProcessor:
+        def __init__(self, mode):
+            self.mode = mode
+            self.vehicles_class_id = None
+
+        @staticmethod
+        def _semantic_map_to_masks(
+            semantic_map,
+            lane_class_id,
+            drivable_class_id,
+            vehicles_class_id,
+            frame_shape,
+        ):
+            class_map = np.asarray(semantic_map).squeeze()
+            if class_map.shape != frame_shape:
+                class_map = np.resize(class_map, frame_shape)
+            drivable = (class_map == drivable_class_id).astype(np.uint8) * 255
+            lane = (class_map == lane_class_id).astype(np.uint8) * 255
+            vehicles = (class_map == vehicles_class_id).astype(np.uint8) * 255
+            return drivable, lane, vehicles
+
+    monkeypatch.setattr(shared_vision, "VisionProcessor", FakeVisionProcessor)
+    processor = _create_avis_vision_processor("ultralytics", {})
+
+    class_names = {
+        0: "background",
+        1: "ego_drivable_area",
+        2: "lane_lines",
+    }
+    lane_id, drivable_id, vehicles_id = processor._class_ids_from_names(class_names)
+    assert (lane_id, drivable_id, vehicles_id) == (2, 1, None)
+
+    semantic_map = np.array([[0, 1, 2]], dtype=np.uint8)
+    drivable_mask, lane_mask, vehicles_mask = processor._semantic_map_to_masks(
+        semantic_map,
+        lane_class_id=lane_id,
+        drivable_class_id=drivable_id,
+        vehicles_class_id=vehicles_id,
+        frame_shape=(1, 3),
+    )
+
+    assert drivable_mask.tolist() == [[0, 255, 0]]
+    assert lane_mask.tolist() == [[0, 0, 255]]
+    assert vehicles_mask is None
+
+
+def test_avis_model_still_uses_vehicle_class_when_checkpoint_has_it(monkeypatch):
+    import numpy as np
+    import vision.city_vision_processing as shared_vision
+
+    class FakeVisionProcessor:
+        def __init__(self, mode):
+            self.mode = mode
+            self.vehicles_class_id = 3
+
+        @staticmethod
+        def _semantic_map_to_masks(
+            semantic_map,
+            lane_class_id,
+            drivable_class_id,
+            vehicles_class_id,
+            frame_shape,
+        ):
+            class_map = np.asarray(semantic_map).squeeze()
+            return (
+                (class_map == drivable_class_id).astype(np.uint8) * 255,
+                (class_map == lane_class_id).astype(np.uint8) * 255,
+                (class_map == vehicles_class_id).astype(np.uint8) * 255,
+            )
+
+    monkeypatch.setattr(shared_vision, "VisionProcessor", FakeVisionProcessor)
+    processor = _create_avis_vision_processor("ultralytics", {})
+
+    assert processor._class_ids_from_names({
+        0: "background",
+        1: "ego_drivable_area",
+        2: "lane_lines",
+        3: "vehicles",
+    }) == (2, 1, 3)
+
+    _, _, vehicles_mask = processor._semantic_map_to_masks(
+        np.array([[3]], dtype=np.uint8),
+        lane_class_id=2,
+        drivable_class_id=1,
+        vehicles_class_id=3,
+        frame_shape=(1, 1),
+    )
+    assert vehicles_mask.tolist() == [[255]]
+
+
 def test_avis_model_debug_suppresses_vehicle_mask_without_mutating_shared_processor(monkeypatch):
     import vision.city_vision_processing as shared_vision
 
