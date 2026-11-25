@@ -3,9 +3,8 @@ opencv-python
 pillow
 torch
 torchvision
-onnxruntime-gpu
-onnxruntime
 networkx>=3.2,<4
 pygame
 PySide6
 Flask>=3.0,<4
+ultralytics>=8.4.0,<9

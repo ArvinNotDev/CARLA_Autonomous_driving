@@ -379,7 +379,7 @@ const SETTING_GROUPS = [
  {name:'Trajectory model',match:key=>key.startsWith('TRAJECTORY_')},
  {name:'Junctions & crosswalks',match:key=>key.startsWith('JUNCTION_')||key.startsWith('INTERSECTION_')||key.startsWith('CROSSWALK_')||key==='RUN_LVL'},
  {name:'Lane changes',match:key=>key.startsWith('LANE_CHANGE_')||key.startsWith('POST_JUNCTION_')},
- {name:'Vision & perception',match:key=>key.startsWith('VISION_')||key.startsWith('LANE_')||key.startsWith('DRIVABLE_PROB_')||key==='MODEL_PATH'},
+ {name:'Vision & perception',match:key=>key.startsWith('VISION_')||key.startsWith('LANE_')||key.startsWith('DRIVABLE_PROB_')||key.startsWith('MODEL_')},
  {name:'Drivable recovery & LiDAR',match:key=>key.startsWith('DRIVABLE_RECOVERY_')||key.startsWith('LIDAR_')},
  {name:'ROI calibration',match:key=>key.endsWith('_ROI')},
  {name:'Debug display',match:key=>key.startsWith('DEBUG_')},

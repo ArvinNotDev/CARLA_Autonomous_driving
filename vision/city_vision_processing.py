@@ -3,7 +3,6 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-import onnxruntime as ort
 
 import config_city as conf
 from vision.color_extractor import HSVColorThresholdExtractor
@@ -13,12 +12,14 @@ from navigation.crosswalk_junction_detector import CrosswalkRoiJunctionDetector
 class VisionProcessor:
     def __init__(
         self,
-        mode: str = "onnx",
+        mode: str = "ultralytics",
         color_extractor: HSVColorThresholdExtractor | None = None,
     ):
         self.mode = mode.lower().strip()
-        if self.mode not in {"segmentation", "onnx"}:
-            raise ValueError("mode must be either 'segmentation' or 'onnx'")
+        if self.mode not in {"segmentation", "onnx", "ultralytics"}:
+            raise ValueError(
+                "mode must be 'segmentation', 'onnx', or 'ultralytics'"
+            )
 
         self.debug = bool(getattr(conf, "VISION_DEBUG", False))
 
@@ -39,6 +40,12 @@ class VisionProcessor:
         self.crosswalk_junction_detector = CrosswalkRoiJunctionDetector()
 
         self.session = None
+        self.model = None
+        self.torch = None
+        self.device = "cpu"
+        self.model_image_size = max(
+            160, int(getattr(conf, "MODEL_IMAGE_SIZE", 512))
+        )
         self.input_name = None
         self.output_name = None
         self.input_width = None
@@ -50,27 +57,229 @@ class VisionProcessor:
         self.vehicles_class_id = None
         self.class_names = {}
 
-        if self.mode == "onnx":
-            project_root = Path(__file__).resolve().parents[1]
-            model_path = Path(str(conf.MODEL_PATH)).expanduser()
-            if not model_path.is_absolute():
-                model_path = project_root / model_path
-            model_path = model_path.resolve()
-            if not model_path.exists():
-                raise FileNotFoundError(f"ONNX model not found: {model_path}")
+        if self.mode in {"onnx", "ultralytics"}:
+            model_path = self._resolve_model_path()
+            if not model_path.is_file():
+                raise FileNotFoundError(
+                    f"Vision model not found: {model_path}. "
+                    "Place the configured .pt checkpoint at this path."
+                )
+            if self.mode == "onnx":
+                try:
+                    import onnxruntime as ort
+                except ImportError as exc:
+                    raise ImportError(
+                        "Legacy ONNX mode requires onnxruntime. "
+                        "The default Ultralytics .pt mode does not."
+                    ) from exc
+                opts = ort.SessionOptions()
+                opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                opts.intra_op_num_threads = 4
+                opts.inter_op_num_threads = 1
+                self.session = ort.InferenceSession(
+                    str(model_path),
+                    sess_options=opts,
+                    providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+                )
+                print(
+                    "ONNX Runtime providers: "
+                    f"{self.session.get_providers()}"
+                )
+                self._configure_onnx_model()
+            else:
+                self._configure_ultralytics_model()
 
-            opts = ort.SessionOptions()
-            opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-            opts.intra_op_num_threads = 4
-            opts.inter_op_num_threads = 1
+    @staticmethod
+    def _resolve_model_path() -> Path:
+        project_root = Path(__file__).resolve().parents[1]
+        model_path = Path(str(conf.MODEL_PATH)).expanduser()
+        if not model_path.is_absolute():
+            model_path = project_root / model_path
+        return model_path.resolve()
 
-            self.session = ort.InferenceSession(
-                str(model_path),
-                sess_options=opts,
-                providers=['CUDAExecutionProvider', 'CPUExecutionProvider'],
+    @staticmethod
+    def select_ultralytics_device(torch_module) -> str:
+        """Return Ultralytics' explicit CUDA device, or CPU when unavailable."""
+        try:
+            if (
+                torch_module.cuda.is_available()
+                and torch_module.cuda.device_count() > 0
+            ):
+                return "0"
+        except Exception:
+            pass
+        return "cpu"
+
+    @staticmethod
+    def _normalize_class_names(raw_names) -> dict[int, str]:
+        if isinstance(raw_names, dict):
+            pairs = raw_names.items()
+        elif isinstance(raw_names, (list, tuple)):
+            pairs = enumerate(raw_names)
+        else:
+            raise RuntimeError(
+                "Ultralytics checkpoint does not expose a class-name mapping."
             )
-            print(f"ONNX Runtime providers: {self.session.get_providers()}")
-            self._configure_onnx_model()
+        names = {}
+        for class_id, label in pairs:
+            try:
+                normalized_id = int(class_id)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"Invalid class ID in Ultralytics names: {class_id!r}"
+                ) from exc
+            if not isinstance(label, str) or not label.strip():
+                raise RuntimeError(
+                    f"Invalid class name for class ID {normalized_id}: {label!r}"
+                )
+            names[normalized_id] = label.strip().lower().replace(" ", "_")
+        return names
+
+    @staticmethod
+    def _class_ids_from_names(class_names: dict[int, str]) -> tuple[int, int, int]:
+        required = (
+            ("lane_lines", "lane"),
+            ("ego_drivable_area", "drivable-area"),
+            ("vehicles", "vehicle"),
+        )
+        ids = []
+        for class_name, label in required:
+            matches = [
+                class_id
+                for class_id, name in class_names.items()
+                if name == class_name
+            ]
+            if len(matches) != 1:
+                raise RuntimeError(
+                    "The Ultralytics semantic checkpoint must contain exactly "
+                    f"one '{class_name}' class for {label} masks; "
+                    f"found names {class_names!r}"
+                )
+            ids.append(matches[0])
+        return tuple(ids)
+
+    @staticmethod
+    def _semantic_map_to_masks(
+        semantic_map,
+        lane_class_id: int,
+        drivable_class_id: int,
+        vehicles_class_id: int,
+        frame_shape: tuple[int, int],
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        class_map = np.asarray(semantic_map)
+        class_map = np.squeeze(class_map)
+        if class_map.ndim != 2:
+            raise RuntimeError(
+                "Ultralytics semantic output must be a two-dimensional "
+                f"class-ID map; received shape {class_map.shape!r}"
+            )
+        frame_height, frame_width = frame_shape
+        if class_map.shape != (frame_height, frame_width):
+            class_map = cv2.resize(
+                class_map.astype(np.float32),
+                (frame_width, frame_height),
+                interpolation=cv2.INTER_NEAREST,
+            )
+        lane_mask = (
+            (class_map == lane_class_id).astype(np.uint8) * 255
+        )
+        drivable_mask = (
+            (class_map == drivable_class_id).astype(np.uint8) * 255
+        )
+        vehicles_mask = (
+            (class_map == vehicles_class_id).astype(np.uint8) * 255
+        )
+        return drivable_mask, lane_mask, vehicles_mask
+
+    def _configure_ultralytics_model(self) -> None:
+        try:
+            import torch
+            from ultralytics import YOLO
+        except ImportError as exc:
+            raise ImportError(
+                "Ultralytics vision mode requires PyTorch and ultralytics. "
+                "Install the project requirements before starting CARLA."
+            ) from exc
+
+        self.torch = torch
+        self.device = self.select_ultralytics_device(torch)
+        self.model = YOLO(str(self._resolve_model_path()))
+        self.class_names = self._normalize_class_names(
+            getattr(self.model, "names", None)
+        )
+        (
+            self.lane_class_id,
+            self.drivable_class_id,
+            self.vehicles_class_id,
+        ) = self._class_ids_from_names(self.class_names)
+
+        if self.device == "cpu":
+            print("Ultralytics device: CPU (CUDA is not available)")
+        else:
+            try:
+                gpu_name = torch.cuda.get_device_name(0)
+            except Exception:
+                gpu_name = "CUDA device 0"
+            print(f"Ultralytics device: CUDA:0 ({gpu_name})")
+        print(
+            "Ultralytics semantic classes: "
+            f"{self.class_names}"
+        )
+
+    def _predict_ultralytics(self, frame):
+        if self.model is None:
+            raise RuntimeError("Ultralytics vision model is not loaded.")
+
+        def predict(device):
+            return self.model.predict(
+                source=frame,
+                imgsz=self.model_image_size,
+                device=device,
+                verbose=False,
+            )
+
+        try:
+            return predict(self.device)
+        except Exception as exc:
+            if self.device == "cpu":
+                raise
+            print(
+                "Ultralytics CUDA inference failed; retrying on CPU: "
+                f"{exc}"
+            )
+            try:
+                self.torch.cuda.empty_cache()
+            except Exception:
+                pass
+            self.device = "cpu"
+            return predict("cpu")
+
+    def _extract_masks_from_ultralytics(self, camera_frame):
+        predictions = self._predict_ultralytics(camera_frame)
+        if not predictions:
+            raise RuntimeError("Ultralytics returned no prediction result.")
+        result = predictions[0]
+        semantic_output = getattr(result, "semantic_mask", None)
+        if semantic_output is None or getattr(semantic_output, "data", None) is None:
+            raise RuntimeError(
+                "The configured .pt checkpoint did not return semantic_mask. "
+                "Use an Ultralytics YOLO26-sem semantic-segmentation checkpoint "
+                "trained with lane_lines, ego_drivable_area, and vehicles classes."
+            )
+        semantic_data = semantic_output.data
+        if hasattr(semantic_data, "detach"):
+            semantic_data = semantic_data.detach()
+        if hasattr(semantic_data, "cpu"):
+            semantic_data = semantic_data.cpu()
+        if hasattr(semantic_data, "numpy"):
+            semantic_data = semantic_data.numpy()
+        return self._semantic_map_to_masks(
+            semantic_data,
+            lane_class_id=self.lane_class_id,
+            drivable_class_id=self.drivable_class_id,
+            vehicles_class_id=self.vehicles_class_id,
+            frame_shape=np.asarray(camera_frame).shape[:2],
+        )
 
     @staticmethod
     def _static_dimension(value, tensor_name, axis):
@@ -521,7 +730,7 @@ class VisionProcessor:
             - semantic_frame is used for mask extraction
             - rgb_frame is used for debug display
 
-        mode == 'onnx':
+        mode == 'onnx' or 'ultralytics':
             - rgb_frame is used for inference and debug display when available
             - semantic_frame is kept only as a fallback if rgb_frame is not provided
         """
@@ -580,6 +789,12 @@ class VisionProcessor:
 
         if self.mode == "onnx":
             drivable_mask, line_mask, vehicles_mask = self._extract_masks_from_onnx(rgb_frame)
+            green_mask = None
+            dark_purple_mask = None
+        elif self.mode == "ultralytics":
+            drivable_mask, line_mask, vehicles_mask = (
+                self._extract_masks_from_ultralytics(rgb_frame)
+            )
             green_mask = None
             dark_purple_mask = None
         else:

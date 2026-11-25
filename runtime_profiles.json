@@ -71,7 +71,7 @@
     "CAMERA_SENSOR_TICK": 0.025,
     "ENABLE_SEMANTIC_CAMERA": true,
     "ENABLE_ALT_CAMERA": true,
-    "MODEL_PATH": "models_and_datasets/lane_and_drivable-area_model.onnx",
+    "MODEL_PATH": "models_and_datasets/lane_and_drivable-area_model.pt",
     "JUNCTION_MOVEMENT_SEQUENCES": {
       "LEFT": [
         {
@@ -125,7 +125,8 @@
     "DW_TOP_ROI": 0.6,
     "DW_BOTTOM_ROI": 0.72,
     "DW_LEFT_ROI": 0.1,
-    "DW_RIGHT_ROI": 0.9
+    "DW_RIGHT_ROI": 0.9,
+    "MODEL_IMAGE_SIZE": 512
   },
   "_active_profile": "StableV2",
   "stableV1": {
@@ -188,7 +189,7 @@
     "CAMERA_SENSOR_TICK": 0.025,
     "ENABLE_SEMANTIC_CAMERA": true,
     "ENABLE_ALT_CAMERA": true,
-    "MODEL_PATH": "models_and_datasets/lane_and_drivable-area_model.onnx",
+    "MODEL_PATH": "models_and_datasets/lane_and_drivable-area_model.pt",
     "JUNCTION_MOVEMENT_SEQUENCES": {
       "LEFT": [
         {
@@ -242,7 +243,8 @@
     "DW_TOP_ROI": 0.6,
     "DW_BOTTOM_ROI": 0.72,
     "DW_LEFT_ROI": 0.1,
-    "DW_RIGHT_ROI": 0.9
+    "DW_RIGHT_ROI": 0.9,
+    "MODEL_IMAGE_SIZE": 512
   },
   "test": {
     "AUTO_MODE_DEFAULT": true,
@@ -316,7 +318,7 @@
     "CAMERA_SENSOR_TICK": 0.025,
     "ENABLE_SEMANTIC_CAMERA": true,
     "ENABLE_ALT_CAMERA": true,
-    "MODEL_PATH": "models_and_datasets/lane_and_drivable-area_model.onnx",
+    "MODEL_PATH": "models_and_datasets/lane_and_drivable-area_model.pt",
     "JUNCTION_MOVEMENT_SEQUENCES": {
       "LEFT": [
         {
@@ -370,7 +372,8 @@
     "DW_TOP_ROI": 0.6,
     "DW_BOTTOM_ROI": 0.72,
     "DW_LEFT_ROI": 0.1,
-    "DW_RIGHT_ROI": 0.9
+    "DW_RIGHT_ROI": 0.9,
+    "MODEL_IMAGE_SIZE": 512
   },
   "StableV2": {
     "AUTO_MODE_DEFAULT": true,
@@ -444,7 +447,7 @@
     "CAMERA_SENSOR_TICK": 0.025,
     "ENABLE_SEMANTIC_CAMERA": true,
     "ENABLE_ALT_CAMERA": true,
-    "MODEL_PATH": "models_and_datasets/lane_and_drivable-area_model.onnx",
+    "MODEL_PATH": "models_and_datasets/lane_and_drivable-area_model.pt",
     "JUNCTION_MOVEMENT_SEQUENCES": {
       "LEFT": [
         {
@@ -499,6 +502,7 @@
     "DW_TOP_ROI": 0.6,
     "DW_BOTTOM_ROI": 0.72,
     "DW_LEFT_ROI": 0.1,
-    "DW_RIGHT_ROI": 0.9
+    "DW_RIGHT_ROI": 0.9,
+    "MODEL_IMAGE_SIZE": 512
   }
 }

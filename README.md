@@ -64,6 +64,15 @@ The application is organized around three execution paths:
 
 A latest-frame buffer connects the control and inference paths to Flask. The browser refreshes camera frames at `DEBUG_PANEL_HZ` and telemetry independently, so web rendering and polling do not define the vehicle-control cadence.
 
+
+### Ultralytics semantic model
+
+The active lane/drivable-area/vehicle perception model uses an Ultralytics YOLO26-sem checkpoint rather than ONNX Runtime. Place your trained checkpoint at:
+
+`models_and_datasets/lane_and_drivable-area_model.pt`
+
+The checkpoint must expose semantic class IDs named `lane_lines`, `ego_drivable_area`, and `vehicles`. The input size defaults to 512 and can be adjusted in the web dashboard under **Settings → Vision & perception**. PyTorch CUDA is selected automatically when available; otherwise inference uses CPU. If CUDA inference raises an error at runtime, the processor retries on CPU.
+
 ### Runtime settings and restart behavior
 
 Settings are divided into two groups:
@@ -253,8 +262,8 @@ tests/                           Regression and GUI smoke tests
 
 **No ONNX inference**
 
-- Verify the model path in the runtime settings.
-- Confirm that ONNX Runtime is installed and that the requested execution provider is available.
+- Verify the Ultralytics `.pt` model path in the runtime settings and confirm the checkpoint contains the expected semantic class names.
+- Check the startup log for `Ultralytics device: CUDA:0` or the CPU fallback message. Confirm that the installed PyTorch build supports the NVIDIA GPU.
 - Check that the ONNX model file exists.
 
 **The dashboard does not appear**

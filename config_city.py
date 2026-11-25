@@ -94,7 +94,7 @@ AUTO_MODE_DEFAULT = True
 SHOW_OPENCV_WINDOW = False
 ENABLE_SEMANTIC_CAMERA = False
 ENABLE_ALT_CAMERA = False
-VISION_MODE = "onnx"
+VISION_MODE = "ultralytics"
 CONTROL_LOOP_HZ = 30.0
 DEBUG_PANEL_HZ = 20.0
 STREAM_HOST = "0.0.0.0"
@@ -115,7 +115,9 @@ MAX_STEER_STEP = 0.10
 # -------------------------------------------------
 # Vision model
 # -------------------------------------------------
-MODEL_PATH = "models_and_datasets/lane_and_drivable-area_model.onnx"
+# Drop the trained Ultralytics YOLO26-sem checkpoint here.
+MODEL_PATH = "models_and_datasets/lane_and_drivable-area_model.pt"
+MODEL_IMAGE_SIZE = 512
 DRIVABLE_PROB_THRESHOLD = 0.50
 
 # Drivable-area recovery: preserve the main-branch trigger/window/correction,

@@ -931,7 +931,7 @@ class CarlaLaneDrivingApp:
         self._apply_goal_to_planner()
 
         self.current_location = self.vehicle.get_location()
-        self.vision_processor = VisionProcessor(str(cfg("VISION_MODE", "onnx")))
+        self.vision_processor = VisionProcessor(str(cfg("VISION_MODE", "ultralytics")))
 
         self.controller = FixedSpeedPIDController(
             fixed_throttle=float(cfg("FIXED_THROTTLE", 0.13)),
