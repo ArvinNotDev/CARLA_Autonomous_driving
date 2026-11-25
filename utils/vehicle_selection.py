@@ -6,9 +6,9 @@ from collections.abc import Iterable
 def vehicle_spawn_candidates(
     available_vehicles: Iterable[tuple[str, str]],
     preferred_id: str | None,
-    fallback_id: str = "vehicle.tesla.model3",
+    fallback_id: str = "vehicle.ue4.ford.mustang",
 ) -> list[str]:
-    """Prioritize the last-used vehicle, then Tesla, then remaining options."""
+    """Prioritize the last-used vehicle, then Ford Mustang, then remaining options."""
     available_ids = list(dict.fromkeys(
         str(item[0]) for item in available_vehicles
         if isinstance(item, (tuple, list)) and item and item[0]
