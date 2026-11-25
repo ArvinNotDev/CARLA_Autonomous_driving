@@ -14,7 +14,7 @@ def test_last_vehicle_is_loaded_and_persisted_without_losing_profiles(tmp_path):
     }
     path.write_text(json.dumps(original), encoding="utf-8")
 
-    assert RuntimeSettings.load_last_vehicle(path=path) == "vehicle.tesla.model3"
+    assert RuntimeSettings.load_last_vehicle(path=path) == "vehicle.ue4.ford.mustang"
 
     RuntimeSettings.persist_last_vehicle("vehicle.audi.tt", path=path)
     saved = json.loads(path.read_text(encoding="utf-8"))
