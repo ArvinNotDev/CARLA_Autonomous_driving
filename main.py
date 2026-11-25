@@ -189,6 +189,7 @@ class CarlaLaneDrivingApp:
         self._restart_request_generation = 0
         self._last_started_restart_generation = 0
         self._restart_reason = "dashboard requested restart"
+        self._persist_vehicle_selection_after_spawn = False
         self._steering_center_until = 0.0
         self._setup_generation = 0
 
@@ -851,6 +852,8 @@ class CarlaLaneDrivingApp:
         if self._request_car_reset(
             reason=f"vehicle changed: {previous} -> {blueprint_id}"
         ):
+            with self._state_lock:
+                self._persist_vehicle_selection_after_spawn = True
             return True
         self.vehicle_blueprint = previous
         return False
@@ -1143,13 +1146,21 @@ class CarlaLaneDrivingApp:
                     raise RuntimeError("CARLA returned no ego vehicle actor.")
                 self.vehicle_blueprint = blueprint_id
                 conf.VEHICLE_BLUEPRINT = blueprint_id
-                try:
-                    RuntimeSettings.persist_last_vehicle(blueprint_id)
-                except OSError as exc:
-                    print(
-                        "[VEHICLE] Spawn succeeded, but the last-used vehicle "
-                        f"could not be saved: {exc}"
+                with self._state_lock:
+                    persist_vehicle_selection = (
+                        self._persist_vehicle_selection_after_spawn
                     )
+                if persist_vehicle_selection:
+                    try:
+                        RuntimeSettings.persist_last_vehicle(blueprint_id)
+                    except OSError as exc:
+                        print(
+                            "[VEHICLE] Spawn succeeded, but the selected vehicle "
+                            f"could not be saved: {exc}"
+                        )
+                    else:
+                        with self._state_lock:
+                            self._persist_vehicle_selection_after_spawn = False
                 break
             except Exception as exc:
                 spawn_errors.append(f"{blueprint_id}: {exc}")
