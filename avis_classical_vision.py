@@ -28,7 +28,7 @@ DEFAULT_CLASSICAL_SETTINGS: dict[str, Any] = {
     "yellow_s_min": 65,
     "yellow_l_min": 75,
     "morphology_kernel": 3,
-    "min_lane_angle_deg": 4.0,
+    "min_lane_angle_deg": 0.0,
     "max_lane_angle_deg": 78.0,
     "lane_width_ratio": 0.42,
     "center_smoothing": 0.35,
