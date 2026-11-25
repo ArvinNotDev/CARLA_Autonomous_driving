@@ -162,7 +162,13 @@ class RuntimeSettings:
         if not isinstance(profiles, dict):
             return str(default)
         candidate = profiles.get("_last_vehicle_blueprint")
-        if isinstance(candidate, str) and candidate.strip():
+        # Older versions saved the automatically spawned default vehicle as
+        # though the user had selected it. Ignore those legacy entries once.
+        if (
+            profiles.get("_last_vehicle_explicit") is True
+            and isinstance(candidate, str)
+            and candidate.strip()
+        ):
             return candidate.strip()
         return str(default)
 
@@ -183,6 +189,7 @@ class RuntimeSettings:
         except (OSError, ValueError):
             profiles = {}
         profiles["_last_vehicle_blueprint"] = candidate
+        profiles["_last_vehicle_explicit"] = True
         active = profiles.get("_active_profile")
         if isinstance(active, str) and isinstance(profiles.get(active), dict):
             profiles[active]["VEHICLE_BLUEPRINT"] = candidate
