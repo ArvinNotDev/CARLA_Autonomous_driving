@@ -430,6 +430,219 @@ let currentMode = "auto";
 let manualThrottle = 0;
 let manualSteering = 0;
 const settingInputs = Array.from(document.querySelectorAll("[data-setting]"));
+const roiCanvas = $("roiCanvas");
+const roiSource = $("roiSource");
+const roiContext = roiCanvas ? roiCanvas.getContext("2d") : null;
+const ROI_GROUPS = {
+  LL: {keys:["ll_top_roi","ll_bottom_roi","ll_left_roi","ll_right_roi"], color:"#52e0a0", label:"LEFT LANE ROI"},
+  RL: {keys:["rl_top_roi","rl_bottom_roi","rl_left_roi","rl_right_roi"], color:"#58c9ff", label:"RIGHT LANE ROI"}
+};
+const ROI_PROFILE_DEFAULTS = {
+  ll_top_roi:0.57, ll_bottom_roi:0.69, ll_left_roi:0.24, ll_right_roi:0.45,
+  rl_top_roi:0.57, rl_bottom_roi:0.69, rl_left_roi:0.56, rl_right_roi:0.78
+};
+let selectedROI = "LL";
+let roiDrag = null;
+let roiCanvasWidth = 0;
+let roiCanvasHeight = 0;
+function roiRect(group) {
+  const keys = ROI_GROUPS[group].keys;
+  return {
+    top:Number($(keys[0]).value), bottom:Number($(keys[1]).value),
+    left:Number($(keys[2]).value), right:Number($(keys[3]).value)
+  };
+}
+function setROIInput(key, value) {
+  $(key).value = Math.max(0,Math.min(1,value)).toFixed(3);
+}
+function drawROIOverlays() {
+  if (!roiCanvas || !roiSource || !roiContext || !roiSource.complete || !roiSource.naturalWidth) return;
+  const rect = roiCanvas.getBoundingClientRect();
+  if (rect.width < 2 || rect.height < 2) return;
+  const dpr = Math.max(1,window.devicePixelRatio || 1);
+  const pixelWidth = Math.round(rect.width*dpr);
+  const pixelHeight = Math.round(rect.height*dpr);
+  if (roiCanvas.width !== pixelWidth || roiCanvas.height !== pixelHeight) {
+    roiCanvas.width = pixelWidth;
+    roiCanvas.height = pixelHeight;
+  }
+  if (roiCanvasWidth !== rect.width || roiCanvasHeight !== rect.height) {
+    roiCanvasWidth = rect.width;
+    roiCanvasHeight = rect.height;
+  }
+  const ctx = roiContext;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,rect.width,rect.height);
+  if (!$("showRois").checked) return;
+
+  for (const group of ["LL","RL"]) {
+    const values = roiRect(group);
+    const x = values.left*rect.width;
+    const y = values.top*rect.height;
+    const width = (values.right-values.left)*rect.width;
+    const height = (values.bottom-values.top)*rect.height;
+    if (width <= 0 || height <= 0) continue;
+    const selected = group === selectedROI;
+    const color = ROI_GROUPS[group].color;
+    ctx.save();
+    ctx.fillStyle = color;
+    ctx.globalAlpha = selected ? 0.20 : 0.10;
+    ctx.fillRect(x,y,width,height);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = selected ? "#ffffff" : color;
+    ctx.lineWidth = selected ? 2.5 : 1.5;
+    ctx.setLineDash(selected ? [] : [5,4]);
+    ctx.strokeRect(x,y,width,height);
+    ctx.setLineDash([]);
+    ctx.font = "600 10px Segoe UI,Arial";
+    const label = ROI_GROUPS[group].label;
+    const labelWidth = Math.min(width,ctx.measureText(label).width+12);
+    ctx.fillStyle = color;
+    ctx.fillRect(x+2,y+2,labelWidth,17);
+    ctx.fillStyle = "#06111d";
+    ctx.fillText(label,x+7,y+14);
+    if (selected) {
+      const handles = [[x,y],[x+width,y],[x,y+height],[x+width,y+height]];
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      for (const [hx,hy] of handles) {
+        ctx.beginPath();
+        ctx.rect(hx-5,hy-5,10,10);
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+}
+function selectROI(group) {
+  selectedROI = group;
+  $("roiLeftButton").classList.toggle("active",group==="LL");
+  $("roiRightButton").classList.toggle("active",group==="RL");
+  drawROIOverlays();
+}
+async function saveROISelection() {
+  const keys = ROI_GROUPS[selectedROI].keys;
+  const payload = {};
+  keys.forEach(key => payload[key] = Number($(key).value));
+  try {
+    const data = await postJson("/api/settings",payload);
+    fillSettings(data.settings);
+    $("settingsForm").dataset.dirty = "true";
+    showMessage(selectedROI+" ROI saved.",false);
+  } catch (error) {
+    showMessage(error.message,true);
+  }
+}
+function getROIPointerPosition(event) {
+  const bounds = roiCanvas.getBoundingClientRect();
+  return {
+    x:(event.clientX-bounds.left)/bounds.width,
+    y:(event.clientY-bounds.top)/bounds.height,
+    width:bounds.width,
+    height:bounds.height
+  };
+}
+function hitTestROI(position) {
+  const values = roiRect(selectedROI);
+  const corners = {
+    nw:{x:values.left,y:values.top},
+    ne:{x:values.right,y:values.top},
+    sw:{x:values.left,y:values.bottom},
+    se:{x:values.right,y:values.bottom}
+  };
+  const toleranceX = 12/position.width;
+  const toleranceY = 12/position.height;
+  for (const [name,point] of Object.entries(corners)) {
+    if (Math.abs(position.x-point.x)<=toleranceX && Math.abs(position.y-point.y)<=toleranceY) {
+      return {type:"resize",corner:name,values};
+    }
+  }
+  if (position.x>=values.left && position.x<=values.right &&
+      position.y>=values.top && position.y<=values.bottom) {
+    return {type:"move",values};
+  }
+  return {type:"none",values};
+}
+if (roiCanvas) {
+  roiCanvas.addEventListener("pointerdown",event=>{
+    const position = getROIPointerPosition(event);
+    const hit = hitTestROI(position);
+    if (hit.type==="none") return;
+    event.preventDefault();
+    roiCanvas.setPointerCapture(event.pointerId);
+    roiDrag = {
+      pointerId:event.pointerId,
+      type:hit.type,
+      corner:hit.corner,
+      start:position,
+      original:{...hit.values}
+    };
+    roiCanvas.style.cursor = hit.type==="move" ? "grabbing" : "nwse-resize";
+  });
+  roiCanvas.addEventListener("pointermove",event=>{
+    const position = getROIPointerPosition(event);
+    if (!roiDrag || roiDrag.pointerId!==event.pointerId) {
+      const hit = hitTestROI(position);
+      roiCanvas.style.cursor = hit.type==="move" ? "move" : hit.type==="resize" ? "nwse-resize" : "crosshair";
+      return;
+    }
+    const dx = position.x-roiDrag.start.x;
+    const dy = position.y-roiDrag.start.y;
+    const next = {...roiDrag.original};
+    if (roiDrag.type==="move") {
+      const width = next.right-next.left;
+      const height = next.bottom-next.top;
+      next.left = Math.max(0,Math.min(1-width,next.left+dx));
+      next.right = next.left+width;
+      next.top = Math.max(0,Math.min(1-height,next.top+dy));
+      next.bottom = next.top+height;
+    } else {
+      const corner = roiDrag.corner;
+      if (corner.includes("n")) next.top = Math.max(0,Math.min(next.bottom-0.02,roiDrag.original.top+dy));
+      if (corner.includes("s")) next.bottom = Math.max(next.top+0.02,Math.min(1,roiDrag.original.bottom+dy));
+      if (corner.includes("w")) next.left = Math.max(0,Math.min(next.right-0.02,roiDrag.original.left+dx));
+      if (corner.includes("e")) next.right = Math.max(next.left+0.02,Math.min(1,roiDrag.original.right+dx));
+    }
+    const keys = ROI_GROUPS[selectedROI].keys;
+    setROIInput(keys[0],next.top);
+    setROIInput(keys[1],next.bottom);
+    setROIInput(keys[2],next.left);
+    setROIInput(keys[3],next.right);
+    drawROIOverlays();
+  });
+  const finishROIDrag = async event=>{
+    if (!roiDrag || roiDrag.pointerId!==event.pointerId) return;
+    roiDrag = null;
+    roiCanvas.style.cursor = "crosshair";
+    await saveROISelection();
+  };
+  roiCanvas.addEventListener("pointerup",finishROIDrag);
+  roiCanvas.addEventListener("pointercancel",finishROIDrag);
+}
+if ($("roiLeftButton")) $("roiLeftButton").addEventListener("click",()=>selectROI("LL"));
+if ($("roiRightButton")) $("roiRightButton").addEventListener("click",()=>selectROI("RL"));
+if ($("showRois")) $("showRois").addEventListener("change",drawROIOverlays);
+if ($("resetRoiButton")) $("resetRoiButton").addEventListener("click",async()=>{
+  const keys = ROI_GROUPS[selectedROI].keys;
+  const payload = {};
+  keys.forEach(key=>payload[key]=ROI_PROFILE_DEFAULTS[key]);
+  try {
+    const data=await postJson("/api/settings",payload);
+    fillSettings(data.settings);
+    showMessage(selectedROI+" ROI reset to AVIS_StableV2.",false);
+  } catch(error) {
+    showMessage(error.message,true);
+  }
+});
+ROI_GROUPS.LL.keys.concat(ROI_GROUPS.RL.keys).forEach(key=>{
+  const input=$(key);
+  if(input) input.addEventListener("input",drawROIOverlays);
+});
+window.addEventListener("resize",drawROIOverlays);
+setInterval(drawROIOverlays,120);
+selectROI("LL");
 function showMessage(text, isError) {
   $("settingsMessage").textContent = text;
   $("settingsMessage").style.color = isError ? "#ff8a9d" : "#68dfa7";
@@ -451,6 +664,7 @@ function fillSettings(settings) {
     }
   });
   $("classicalSettings").classList.toggle("hidden", settings.vision_backend !== "classical");
+  drawROIOverlays();
 }
 function collectSettings() {
   const result = {};
@@ -599,6 +813,7 @@ async function refreshStatus() {
 settingInputs.forEach(input => input.addEventListener("input", () => {
   $("settingsForm").dataset.dirty = "true";
   $("classicalSettings").classList.toggle("hidden", $("vision_backend").value !== "classical");
+  if (input.dataset.setting.endsWith("_roi")) drawROIOverlays();
 }));
 $("settingsForm").addEventListener("change", () => {$("settingsForm").dataset.dirty = "true";});
 $("settingsForm").addEventListener("submit", () => {delete $("settingsForm").dataset.dirty;});
