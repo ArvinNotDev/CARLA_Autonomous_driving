@@ -39,7 +39,7 @@ def test_last_vehicle_load_ignores_missing_or_invalid_preference(tmp_path):
     assert RuntimeSettings.load_last_vehicle("vehicle.lincoln.mkz", path=invalid) == "vehicle.lincoln.mkz"
 
 
-def test_vehicle_spawn_prefers_last_selection_then_tesla_fallback():
+def test_vehicle_spawn_prefers_last_selection_then_mustang_fallback():
     available = [
         ("vehicle.audi.tt", "Audi"),
         ("vehicle.tesla.model3", "Tesla"),
@@ -60,7 +60,7 @@ def test_vehicle_spawn_prefers_last_selection_then_tesla_fallback():
     ]
 
 
-def test_vehicle_spawn_uses_first_available_if_tesla_is_absent():
+def test_vehicle_spawn_uses_first_available_if_mustang_is_absent():
     available = [
         ("vehicle.audi.tt", "Audi"),
         ("vehicle.lincoln.mkz", "Lincoln"),
