@@ -505,8 +505,8 @@ document.addEventListener("keydown", event => {
   if (!["w","s","a","d"," "].includes(key) || currentMode !== "manual") return;
   event.preventDefault();
   pressed.add(key);
-  manualThrottle = pressed.has("w") ? 0.42 : pressed.has("s") ? -0.30 : 0;
-  manualSteering = (pressed.has("d") ? 0.45 : 0) - (pressed.has("a") ? 0.45 : 0);
+  manualThrottle = pressed.has(" ") ? 0 : pressed.has("w") ? 0.42 : pressed.has("s") ? -0.30 : 0;
+  manualSteering = pressed.has(" ") ? 0 : (pressed.has("d") ? 0.45 : 0) - (pressed.has("a") ? 0.45 : 0);
   $("throttleInput").value = String(Math.round(manualThrottle * 100));
   $("steeringInput").value = String(Math.round(manualSteering * 100));
   updateManualLabels();
@@ -515,8 +515,8 @@ document.addEventListener("keyup", event => {
   const key = event.key.toLowerCase();
   pressed.delete(key);
   if (currentMode === "manual" && ["w","s","a","d"," "].includes(key)) {
-    manualThrottle = pressed.has("w") ? 0.42 : 0;
-    manualSteering = (pressed.has("d") ? 0.45 : 0) - (pressed.has("a") ? 0.45 : 0);
+    manualThrottle = pressed.has(" ") ? 0 : pressed.has("w") ? 0.42 : pressed.has("s") ? -0.30 : 0;
+    manualSteering = pressed.has(" ") ? 0 : (pressed.has("d") ? 0.45 : 0) - (pressed.has("a") ? 0.45 : 0);
     $("throttleInput").value = String(Math.round(manualThrottle * 100));
     $("steeringInput").value = String(Math.round(manualSteering * 100));
     updateManualLabels();
