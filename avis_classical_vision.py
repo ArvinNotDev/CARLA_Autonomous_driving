@@ -221,6 +221,7 @@ class AvisClassicalVisionProcessor:
         min_angle = float(settings["min_lane_angle_deg"])
         max_angle = float(settings["max_lane_angle_deg"])
         valid_segments = 0
+        roi_line_mask = np.zeros((roi_height, roi_width), dtype=np.uint8)
         if segments is not None:
             for raw_segment in segments:
                 x1, y1, x2, y2 = (
@@ -231,18 +232,19 @@ class AvisClassicalVisionProcessor:
                 ):
                     continue
 
-                start = (left + x1, top + y1)
-                end = (left + x2, top + y2)
                 cv2.line(
-                    line_mask,
-                    start,
-                    end,
+                    roi_line_mask,
+                    (x1, y1),
+                    (x2, y2),
                     255,
                     thickness=3,
                     lineType=cv2.LINE_AA,
                 )
                 valid_segments += 1
 
+        # Clip antialiased/thick line strokes to the exact crop boundaries.
+        destination = line_mask[top:bottom, left:right]
+        cv2.bitwise_or(destination, roi_line_mask, dst=destination)
         return top, bottom, float(valid_segments)
 
     def _boundary_from_roi(
