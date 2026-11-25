@@ -134,6 +134,61 @@ def test_web_settings_apply_only_parses_sequence_when_it_was_edited():
     assert "input.dataset.originalValue" in source
     assert "if(currentValue===input.dataset.originalValue)return;" in source
 
+def test_speed_settings_reject_minimum_equal_to_or_above_maximum():
+    previous_min = conf.MIN_SPEED_KMH
+    previous_max = conf.MAX_SPEED_KMH
+    try:
+        with (
+            patch.object(stream, "_local_request_only", return_value=True),
+            patch.object(stream, "_notify_settings") as notify,
+        ):
+            response = stream.app.test_client().post(
+                "/set_settings",
+                json={"MIN_SPEED_KMH": previous_max},
+            )
+        assert response.status_code == 400
+        assert response.get_json()["success"] is False
+        assert conf.MIN_SPEED_KMH == previous_min
+        assert conf.MAX_SPEED_KMH == previous_max
+        notify.assert_not_called()
+    finally:
+        conf.MIN_SPEED_KMH = previous_min
+        conf.MAX_SPEED_KMH = previous_max
+
+
+def test_speed_controller_settings_are_live_runtime_settings():
+    previous = (
+        conf.ACCELERATION_MPS2,
+        conf.MIN_SPEED_KMH,
+        conf.MAX_SPEED_KMH,
+    )
+    updated = {
+        "ACCELERATION_MPS2": min(8.0, previous[0] + 0.1),
+        "MIN_SPEED_KMH": previous[1] + 0.5,
+        "MAX_SPEED_KMH": max(previous[2], previous[1] + 1.0),
+    }
+    try:
+        with (
+            patch.object(stream, "_local_request_only", return_value=True),
+            patch.object(stream, "_notify_settings") as notify,
+        ):
+            response = stream.app.test_client().post(
+                "/set_settings",
+                json=updated,
+            )
+        assert response.status_code == 200
+        assert response.get_json()["success"] is True
+        assert conf.ACCELERATION_MPS2 == updated["ACCELERATION_MPS2"]
+        assert conf.MIN_SPEED_KMH == updated["MIN_SPEED_KMH"]
+        assert conf.MAX_SPEED_KMH == updated["MAX_SPEED_KMH"]
+        notify.assert_called_once_with(updated)
+    finally:
+        (
+            conf.ACCELERATION_MPS2,
+            conf.MIN_SPEED_KMH,
+            conf.MAX_SPEED_KMH,
+        ) = previous
+
 def test_models_finish_initializing_before_dashboard_browser_startup():
     from pathlib import Path
 

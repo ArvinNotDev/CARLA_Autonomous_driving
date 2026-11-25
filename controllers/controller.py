@@ -1,10 +1,9 @@
 import carla
 
 
-class FixedSpeedPIDController:
+class SteeringPIDController:
     def __init__(
         self,
-        fixed_throttle: float = 0.04,
         kp: float = 0.005,
         ki: float = 0.0000,
         kd: float = 0.01,
@@ -12,7 +11,6 @@ class FixedSpeedPIDController:
         max_steer_step: float = 0.08,
         integral_limit: float = 3000.0,
     ):
-        self.fixed_throttle = fixed_throttle
         self.kp = kp
         self.ki = ki
         self.kd = kd
@@ -48,7 +46,7 @@ class FixedSpeedPIDController:
         self.last_steer = steer
 
         return carla.VehicleControl(
-            throttle=self.fixed_throttle,
+            throttle=0.0,
             steer=steer,
             brake=brake,
             reverse=reverse,

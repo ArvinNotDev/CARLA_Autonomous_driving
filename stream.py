@@ -1098,6 +1098,13 @@ def set_settings():
     except (TypeError, ValueError, json.JSONDecodeError, OverflowError) as exc:
         return jsonify(success=False, error=f"invalid setting: {exc}"), 400
     current = _setting_values()
+    combined = dict(current)
+    combined.update(updated)
+    if float(combined["MIN_SPEED_KMH"]) >= float(combined["MAX_SPEED_KMH"]):
+        return jsonify(
+            success=False,
+            error="Minimum speed must be lower than maximum speed.",
+        ), 400
     changed = {key: value for key, value in updated.items() if current.get(key) != value}
     reset_required = any(not specs[key][4] and not (key == "TRAJECTORY_MODEL_ENABLED" and value is False) for key, value in changed.items())
     for key, value in changed.items():
@@ -1164,6 +1171,13 @@ def load_profile():
         values = {key: _coerce_setting(specs[key], value) for key, value in profile.items() if key in specs}
     except (TypeError, ValueError, json.JSONDecodeError, OverflowError) as exc:
         return jsonify(success=False, error=f"profile contains invalid settings: {exc}"), 400
+    effective = _setting_values()
+    effective.update(values)
+    if float(effective["MIN_SPEED_KMH"]) >= float(effective["MAX_SPEED_KMH"]):
+        return jsonify(
+            success=False,
+            error="Profile minimum speed must be lower than maximum speed.",
+        ), 400
     current = _setting_values()
     changed = {key: value for key, value in values.items() if current.get(key) != value}
     reset_required = any(not specs[key][4] and not (key == "TRAJECTORY_MODEL_ENABLED" and value is False) for key, value in changed.items())

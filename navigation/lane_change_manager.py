@@ -326,10 +326,8 @@ class LaneChangeManager:
             direction = self.direction
 
         if phase == "VERIFY":
-            throttle = 0.08
             steer = 0.0
         elif phase == "CHANGE":
-            throttle = 0.10
             magnitude = max(
                 0.0,
                 min(1.0, float(getattr(conf, "LANE_CHANGE_STEER_VALUE", 0.2))),
@@ -338,13 +336,12 @@ class LaneChangeManager:
         elif phase in {"STRAIGHT", "CHECK"}:
             # STRAIGHT is an intentional attempt; CHECK keeps the vehicle
             # straight while the asynchronous GPS query is being resolved.
-            throttle = 0.10
             steer = 0.0
         else:
             return None
 
         return carla.VehicleControl(
-            throttle=throttle,
+            throttle=0.0,
             steer=steer,
             brake=0.0,
             reverse=False,

@@ -30,12 +30,12 @@ class TestPanelConstruction(unittest.TestCase):
         self.assertGreaterEqual(panel.tabs.count(), 10)
 
         from ui.control_panel import NoWheelDoubleSpinBox, NoWheelSpinBox
-        target_speed = panel.widgets["TARGET_SPEED_KMH"]
+        target_speed = panel.widgets["MAX_SPEED_KMH"]
         pid_gain = panel.widgets["KP"]
         self.assertIsInstance(target_speed, NoWheelDoubleSpinBox)
         self.assertIsInstance(pid_gain, NoWheelDoubleSpinBox)
         self.assertIsInstance(panel.widgets["CAMERA_IMAGE_WIDTH"], NoWheelSpinBox)
-        panel.settings_search.setText("TARGET_SPEED_KMH")
+        panel.settings_search.setText("MAX_SPEED_KMH")
         self.assertFalse(target_speed.isHidden())
         self.assertTrue(pid_gain.isHidden())
         panel.settings_search.clear()
@@ -56,7 +56,7 @@ class TestPanelConstruction(unittest.TestCase):
         app = QApplication.instance() or QApplication([])
         settings = RuntimeSettings(path=__import__("pathlib").Path("test_runtime_profiles.json"))
         panel = ControlPanel(settings, display_metrics=DisplayMetrics(), frame_store=DebugFrameStore())
-        self.assertIsInstance(panel.widgets["TARGET_SPEED_KMH"], NoWheelDoubleSpinBox)
+        self.assertIsInstance(panel.widgets["MAX_SPEED_KMH"], NoWheelDoubleSpinBox)
         self.assertIn("road_width", panel.live_values)
         self.assertIn("lane_change", panel.live_values)
         panel.close()

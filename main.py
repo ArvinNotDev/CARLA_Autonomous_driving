@@ -40,7 +40,8 @@ from PySide6.QtWidgets import QApplication, QDialog
 
 import config_city as conf
 from carla_manager import CarlaManager
-from controllers.controller import FixedSpeedPIDController
+from controllers.controller import SteeringPIDController
+from controllers.speed_controller import SpeedPIDController
 from controllers.input_manager import InputManager
 from driving.auto_driver import AutoDriver
 from driving.recovery_gate import ContinuousConditionGate
@@ -117,7 +118,11 @@ class CarlaLaneDrivingApp:
         self.vision_processor: Optional[VisionProcessor] = None
         self._vision_model_status = "not_started"
         self._vision_model_error: Optional[str] = None
-        self.controller: Optional[FixedSpeedPIDController] = None
+        self.controller: Optional[SteeringPIDController] = None
+        self.speed_controller: Optional[SpeedPIDController] = None
+        self._last_speed_target_kmh: Optional[float] = None
+        self._last_speed_throttle = 0.0
+        self._last_speed_brake = 1.0
         self.input_manager: Optional[InputManager] = None
         self.renderer = Renderer()
         self.drivable_debugger = DrivableAreaDebugger()
@@ -249,6 +254,9 @@ class CarlaLaneDrivingApp:
             "vision_busy": False,
             "vision_model_status": self._vision_model_status.replace("_", " ").upper(),
             "vision_model_error": self._vision_model_error,
+            "target_speed_kmh": self._last_speed_target_kmh,
+            "longitudinal_throttle": self._last_speed_throttle,
+            "longitudinal_brake": self._last_speed_brake,
             "junction_phase": (
                 self.intersection_manager.phase_name()
                 if self.intersection_manager is not None
@@ -348,6 +356,44 @@ class CarlaLaneDrivingApp:
             "heading_deg": float(heading_deg),
             "display_range_m": float(cfg("LIDAR_DISPLAY_RANGE_M", 80.0)),
         }
+
+    def _get_current_speed_kmh(self) -> float:
+        if self.vehicle is None:
+            return 0.0
+        try:
+            velocity = self.vehicle.get_velocity()
+            return float(
+                (velocity.x ** 2 + velocity.y ** 2 + velocity.z ** 2) ** 0.5
+            ) * 3.6
+        except Exception:
+            return 0.0
+
+    def _select_target_speed_kmh(
+        self,
+        *,
+        control: carla.VehicleControl,
+        phase: str,
+        lane_change_active: bool,
+    ) -> float:
+        """Select a moving-speed target; zero is reserved for explicit stop states."""
+        minimum = float(cfg("MIN_SPEED_KMH", 8.0))
+        maximum = float(cfg("MAX_SPEED_KMH", 25.0))
+
+        if phase == "CROSSWALK" or float(getattr(control, "brake", 0.0)) >= 0.99:
+            return 0.0
+
+        if phase == "STATIC" or lane_change_active:
+            return minimum
+
+        if self.intersection_sequence and self.next_maneuver in {"LEFT", "RIGHT"}:
+            return minimum
+
+        # Reduce speed progressively for stronger steering demand. Straight
+        # driving naturally uses MAX_SPEED_KMH; tighter turns approach MIN_SPEED_KMH.
+        steering = abs(float(getattr(control, "steer", 0.0) or 0.0))
+        steering = min(1.0, max(0.0, steering))
+        turn_factor = min(1.0, max(0.0, (steering - 0.15) / 0.55))
+        return maximum - ((maximum - minimum) * turn_factor)
 
     def _submit_inference(self, rgb_packet, semantic_packet, now: float) -> None:
         if self.inference_worker is None or rgb_packet is None:
@@ -494,16 +540,15 @@ class CarlaLaneDrivingApp:
 
         return trajectory, self._vision_result
 
-    def _force_left_correction(self) -> None:
-        control = carla.VehicleControl(
-            throttle=float(cfg("DRIVABLE_RECOVERY_THROTTLE", cfg("FIXED_THROTTLE", 0.3))),
-            steer=-abs(float(cfg("DRIVABLE_RECOVERY_STEER", cfg("STEER_LIMIT", 0.35)))),
-            brake=0.0,
-            hand_brake=False,
-            reverse=False,
-            manual_gear_shift=False,
+    def _force_left_correction(self, control: carla.VehicleControl) -> None:
+        """Override steering only; longitudinal control remains centralized."""
+        if control is None:
+            return
+        control.steer = -abs(
+            float(cfg("DRIVABLE_RECOVERY_STEER", cfg("STEER_LIMIT", 0.35)))
         )
-        self._safe_vehicle_apply_control(control)
+        control.reverse = False
+        control.hand_brake = False
 
     @staticmethod
     def _extract_drivable_error(drive_info: Any) -> float:
@@ -554,7 +599,12 @@ class CarlaLaneDrivingApp:
         evidence["scan_age_s"] = scan_age
         return evidence
 
-    def _update_out_checker_logic(self, candidate_out_checker: bool, drive_info: Any) -> None:
+    def _update_out_checker_logic(
+        self,
+        candidate_out_checker: bool,
+        drive_info: Any,
+        control: carla.VehicleControl,
+    ) -> None:
         """Require a sustained drivable-area error before applying recovery steering."""
         if not bool(cfg("DRIVABLE_RECOVERY_ENABLED", True)):
             self._out_checker = False
@@ -609,7 +659,7 @@ class CarlaLaneDrivingApp:
             lidar_info = self._inspect_recovery_side_for_obstacle(error)
             self._last_recovery_lidar_info = lidar_info
             if not bool(lidar_info.get("blocked", False)):
-                self._force_left_correction()
+                self._force_left_correction(control)
 
         if self._out_checker_started_at is not None and now - self._out_checker_started_at >= float(
             cfg("DRIVABLE_RECOVERY_WINDOW_SECONDS", 10.0)
@@ -666,6 +716,16 @@ class CarlaLaneDrivingApp:
     def _on_settings_changed(self, values: dict) -> None:
         """Apply web-panel changes to the running simulation without a Qt UI."""
         self.settings.apply(values)
+        if self.speed_controller is not None and any(
+            key in values
+            for key in ("ACCELERATION_MPS2", "MIN_SPEED_KMH", "MAX_SPEED_KMH")
+        ):
+            self.speed_controller.configure(
+                acceleration_mps2=float(cfg("ACCELERATION_MPS2", 2.5)),
+                min_speed_kmh=float(cfg("MIN_SPEED_KMH", 8.0)),
+                max_speed_kmh=float(cfg("MAX_SPEED_KMH", 25.0)),
+            )
+            self.speed_controller.reset()
         if "LIDAR_ENABLED" in values:
             enabled = bool(values["LIDAR_ENABLED"])
             try:
@@ -1036,14 +1096,21 @@ class CarlaLaneDrivingApp:
         self._draw_debug_status(loading_frame, "LOADING DRIVING MODEL...")
         self._publish_debug_frame(loading_frame)
 
-        self.controller = FixedSpeedPIDController(
-            fixed_throttle=float(cfg("FIXED_THROTTLE", 0.13)),
+        self.controller = SteeringPIDController(
             kp=float(cfg("KP", 0.015)),
             ki=float(cfg("KI", 0.0)),
             kd=float(cfg("KD", 0.002)),
             steer_limit=float(cfg("STEER_LIMIT", 0.75)),
             max_steer_step=float(cfg("MAX_STEER_STEP", 0.10)),
         )
+        self.speed_controller = SpeedPIDController(
+            acceleration_mps2=float(cfg("ACCELERATION_MPS2", 2.5)),
+            min_speed_kmh=float(cfg("MIN_SPEED_KMH", 8.0)),
+            max_speed_kmh=float(cfg("MAX_SPEED_KMH", 25.0)),
+        )
+        self._last_speed_target_kmh = None
+        self._last_speed_throttle = 0.0
+        self._last_speed_brake = 1.0
 
         self.input_manager = InputManager()
         with self._state_lock:
@@ -1249,6 +1316,8 @@ class CarlaLaneDrivingApp:
                 self.auto_mode = not self.auto_mode
             if self.controller is not None:
                 self.controller.reset()
+            if self.speed_controller is not None:
+                self.speed_controller.reset()
 
         with self._state_lock:
             auto_mode = bool(self.auto_mode)
@@ -1261,11 +1330,8 @@ class CarlaLaneDrivingApp:
             if auto_mode and (model_loading or model_failed):
                 control = make_stop_control()
             else:
-                control = (
-                    carla.VehicleControl(throttle=0.18)
-                    if auto_mode and time.monotonic() < self._startup_drive_until
-                    else (manual_control if not auto_mode else make_stop_control())
-                )
+                # Do not move autonomously until a valid camera frame is ready.
+                control = manual_control if not auto_mode else make_stop_control()
             self._safe_vehicle_apply_control(control)
             screen = blank_frame()
             if model_loading:
@@ -1433,7 +1499,7 @@ class CarlaLaneDrivingApp:
 
                 if matching_trajectory is not None and matching_trajectory.steer is not None:
                     control = carla.VehicleControl(
-                        throttle=0.15,
+                        throttle=0.0,
                         steer=float(matching_trajectory.steer),
                         brake=0.0,
                         hand_brake=False,
@@ -1474,7 +1540,6 @@ class CarlaLaneDrivingApp:
             self._render_mode_overlay(screen, "MANUAL", 0.0)
             control = manual_control or make_stop_control()
 
-        self._safe_vehicle_apply_control(control)
         lane_change_active = (
             self.lane_change_manager is not None
             and self.lane_change_manager.movement_active()
@@ -1483,7 +1548,31 @@ class CarlaLaneDrivingApp:
             self._update_out_checker_logic(
                 candidate_out_checker=candidate_out_checker,
                 drive_info=self._last_drivable_info,
+                control=control,
             )
+
+        if auto_mode and self.speed_controller is not None:
+            current_speed_kmh = self._get_current_speed_kmh()
+            target_speed_kmh = self._select_target_speed_kmh(
+                control=control,
+                phase=phase,
+                lane_change_active=lane_change_active,
+            )
+            throttle, brake = self.speed_controller.update(
+                current_speed_kmh,
+                target_speed_kmh,
+            )
+            control.throttle = throttle
+            control.brake = brake
+            self._last_speed_target_kmh = target_speed_kmh
+            self._last_speed_throttle = throttle
+            self._last_speed_brake = brake
+        else:
+            self._last_speed_target_kmh = None
+            self._last_speed_throttle = float(getattr(control, "throttle", 0.0))
+            self._last_speed_brake = float(getattr(control, "brake", 0.0))
+
+        self._safe_vehicle_apply_control(control)
 
         if (
             self._trajectory_runtime_enabled

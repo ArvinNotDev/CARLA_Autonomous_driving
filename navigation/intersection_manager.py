@@ -63,7 +63,6 @@ class IntersectionManager:
     def _segments_for_maneuver(
         maneuver: Optional[str],
     ) -> list[Tuple[float, float, bool, float, float]]:
-        throttle = float(getattr(conf, "JUNCTION_STATIC_THROTTLE", 0.2))
         timeout = float(getattr(conf, "JUNCTION_STATIC_TIMEOUT_SECONDS", 20.0))
         configured = getattr(conf, "JUNCTION_MOVEMENT_SEQUENCES", {})
         sequence = configured.get(str(maneuver or "").upper(), [])
@@ -78,7 +77,7 @@ class IntersectionManager:
                 continue
             if distance_m <= 0.0:
                 continue
-            segments.append((distance_m, steering_value, True, throttle, timeout))
+            segments.append((distance_m, steering_value, True, 0.0, timeout))
         return segments
 
     def movement_active(self) -> bool:
@@ -231,9 +230,9 @@ class IntersectionManager:
         if phase == "CROSSWALK":
             values = dict(throttle=0.0, steer=0.0, brake=1.0, reverse=False, hand_brake=False, manual_gear_shift=False)
         elif phase == "STATIC" and segment is not None:
-            _, steer, forward, throttle, _ = segment
+            _, steer, forward, _throttle, _ = segment
             values = dict(
-                throttle=max(0.0, min(1.0, float(throttle))),
+                throttle=0.0,
                 steer=max(-1.0, min(1.0, float(steer))),
                 brake=0.0,
                 reverse=not bool(forward),

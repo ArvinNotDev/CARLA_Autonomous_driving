@@ -83,7 +83,7 @@ def test_junction_crosswalk_precedes_static(monkeypatch):
     assert jm.static_control(Loc()).brake == 1.0
     jm.update(Loc()); time.sleep(0.04); jm.update(Loc())
     assert jm.phase_name() == "STATIC"
-    assert jm.static_control(Loc()).throttle > 0.0
+    assert jm.static_control(Loc()).throttle == 0.0
 
 
 def test_manual_controls_are_immediate():
