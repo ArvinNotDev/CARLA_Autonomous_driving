@@ -164,8 +164,12 @@ On every application launch, choose **Use saved installation** or **Choose anoth
 
 The AVIS runtime is an independent backend. It does not initialize or import the
 CARLA Python API, and it does not alter the normal `python main.py` startup path.
-It reuses the existing StableV2 camera perception, lane-centre error, steering
-PID, and target-speed logic against the AVIS RGB camera.
+It has its own Flask dashboard, AVIS-only settings file, manual controls, and
+vision pipeline. The Ultralytics backend reuses the StableV2 camera perception
+model and AVIS PID/speed defaults. The optional classical backend performs HLS
+white/yellow thresholding, Gaussian blur, Canny edges, trapezoidal ROI masking,
+and HoughLinesP lane fitting. Its drivable-area view is an estimated lane
+corridor, not a semantic road-surface prediction.
 
 Use the Python API revision compatible with AVIS 1.2.4 (the vendor's
 `FIRA-ACL` branch). Clone it beside the project:
@@ -182,6 +186,35 @@ Then run:
 ```powershell
 python main.py --avis
 ```
+
+The AVIS Flask dashboard starts at `http://127.0.0.1:5001`. It provides
+live camera/overlay views, the lane and drivable-area masks, Auto / Manual /
+Emergency Stop modes, forward/reverse manual controls, and live controller
+and classical-vision settings. Settings are saved separately in
+`avis_settings.json`; this file is local and git-ignored. They do not modify
+`runtime_profiles.json`, CARLA configuration, or CARLA controllers.
+
+Select **Classical CV** in the Vision backend field to use the adjustable HLS,
+blur, Canny, ROI, morphology, and HoughLinesP pipeline. Select **Ultralytics**
+to use the trained semantic checkpoint. When the configured Ultralytics
+checkpoint is missing, AVIS starts in classical mode and reports the fallback.
+
+For manual driving, switch to **Manual** and use `W` / `S` for forward /
+reverse and `A` / `D` for steering. The dashboard applies a short command
+watchdog: if browser heartbeats stop, AVIS releases throttle and centers
+steering. Use **Emergency stop** to disarm both automatic and manual commands.
+
+Optional dashboard overrides:
+
+```powershell
+python main.py --avis --avis-web-host 127.0.0.1 --avis-web-port 5001
+```
+
+To access the dashboard from another device on your LAN, bind to
+`0.0.0.0` with `--avis-web-host 0.0.0.0` and open the host PC's LAN address
+on port `5001`. The dashboard has no authentication; use this only on a
+trusted private network. Add `--avis-no-web` to disable Flask, or
+`--avis-headless` to disable only the local OpenCV preview.
 
 Optional connection overrides:
 
