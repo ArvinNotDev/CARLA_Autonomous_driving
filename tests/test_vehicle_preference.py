@@ -30,7 +30,7 @@ def test_last_vehicle_load_ignores_missing_or_invalid_preference(tmp_path):
     invalid = tmp_path / "invalid.json"
     invalid.write_text("{not-json", encoding="utf-8")
 
-    assert RuntimeSettings.load_last_vehicle(path=missing) == "vehicle.tesla.model3"
+    assert RuntimeSettings.load_last_vehicle(path=missing) == "vehicle.ue4.ford.mustang"
     assert RuntimeSettings.load_last_vehicle("vehicle.lincoln.mkz", path=invalid) == "vehicle.lincoln.mkz"
 
 
@@ -39,16 +39,19 @@ def test_vehicle_spawn_prefers_last_selection_then_tesla_fallback():
         ("vehicle.audi.tt", "Audi"),
         ("vehicle.tesla.model3", "Tesla"),
         ("vehicle.lincoln.mkz", "Lincoln"),
+        ("vehicle.ue4.ford.mustang", "Ford Mustang"),
     ]
     assert vehicle_spawn_candidates(
         available, "vehicle.audi.tt"
     ) == [
-        "vehicle.audi.tt", "vehicle.tesla.model3", "vehicle.lincoln.mkz"
+        "vehicle.audi.tt", "vehicle.ue4.ford.mustang",
+        "vehicle.tesla.model3", "vehicle.lincoln.mkz"
     ]
     assert vehicle_spawn_candidates(
         available, "vehicle.not.available"
     ) == [
-        "vehicle.tesla.model3", "vehicle.audi.tt", "vehicle.lincoln.mkz"
+        "vehicle.ue4.ford.mustang", "vehicle.audi.tt",
+        "vehicle.tesla.model3", "vehicle.lincoln.mkz"
     ]
 
 
