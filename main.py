@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import faulthandler
 import sys
 import threading
 import time
+import traceback
 import webbrowser
 from typing import Any, Optional
+
+# Keep a persistent native-crash trace for failures inside CUDA/PyTorch or SDL.
+_CRASH_LOG_HANDLE = None
+try:
+    _CRASH_LOG_HANDLE = open("carla_runtime_crash.log", "a", buffering=1)
+    faulthandler.enable(file=_CRASH_LOG_HANDLE, all_threads=True)
+except (OSError, RuntimeError, ValueError) as _crash_log_error:
+    print(f"[DIAGNOSTICS] Could not enable crash log: {_crash_log_error}")
 
 # The CARLA API must be configured before importing carla or any module that
 # imports it. On a normal GUI launch, show the first-run folder picker and
@@ -25,7 +35,7 @@ if __name__ == "__main__":
 import carla
 import cv2
 import numpy as np
-from PySide6.QtCore import QMetaObject, Qt
+from PySide6.QtCore import QMetaObject, QObject, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import QApplication, QDialog
 
 import config_city as conf
@@ -68,6 +78,24 @@ def cfg(name: str, default: Any) -> Any:
     return getattr(conf, name, default)
 
 
+class _RuntimeSignals(QObject):
+    """Deliver restart requests from Flask/timer threads to the Qt main thread."""
+
+    restart_requested = Signal()
+
+    def __init__(self, restart_callback) -> None:
+        super().__init__()
+        self._restart_callback = restart_callback
+        self.restart_requested.connect(
+            self._run_restart,
+            Qt.ConnectionType.QueuedConnection,
+        )
+
+    @Slot()
+    def _run_restart(self) -> None:
+        self._restart_callback()
+
+
 class CarlaLaneDrivingApp:
     """
     CARLA control runtime.
@@ -89,9 +117,6 @@ class CarlaLaneDrivingApp:
         self.vision_processor: Optional[VisionProcessor] = None
         self._vision_model_status = "not_started"
         self._vision_model_error: Optional[str] = None
-        self._vision_model_generation = 0
-        self._vision_model_load_lock = threading.Lock()
-        self._vision_model_thread: Optional[threading.Thread] = None
         self.controller: Optional[FixedSpeedPIDController] = None
         self.input_manager: Optional[InputManager] = None
         self.renderer = Renderer()
@@ -109,7 +134,14 @@ class CarlaLaneDrivingApp:
         self.running = True
         self._stop_event = threading.Event()
         self._control_thread: Optional[threading.Thread] = None
+        self._input_timer: Optional[QTimer] = None
+        self._input_running = True
+        self._toggle_auto_pending = False
+        self._manual_control = make_stop_control()
+        self._input_exit_logged = False
+        self._last_control_error: Optional[str] = None
         self._state_lock = threading.Lock()
+        self._runtime_signals = _RuntimeSignals(self._restart_simulation)
         self._restart_in_progress = False
         self._restart_timer: Optional[threading.Timer] = None
         self._restart_timer_lock = threading.Lock()
@@ -173,61 +205,6 @@ class CarlaLaneDrivingApp:
             self.intersection_model = IntersectionModel(
                 "models_and_datasets/models/junction_model_resnet18.pt"
             )
-
-    def _start_vision_model_load(self, worker: InferenceWorker) -> None:
-        """Load the driving model away from the control/UI thread."""
-        mode = str(cfg("VISION_MODE", "ultralytics"))
-        with self._state_lock:
-            self._vision_model_generation += 1
-            generation = self._vision_model_generation
-            self._vision_model_status = "loading"
-            self._vision_model_error = None
-
-        def load_model() -> None:
-            # Serialize loads to avoid duplicate CUDA allocations if a restart
-            # occurs while a previous checkpoint is still being deserialized.
-            with self._vision_model_load_lock:
-                with self._state_lock:
-                    if (
-                        generation != self._vision_model_generation
-                        or worker is not self.inference_worker
-                        or not self.running
-                    ):
-                        return
-
-                try:
-                    processor = VisionProcessor(mode)
-                except Exception as exc:
-                    with self._state_lock:
-                        if (
-                            generation == self._vision_model_generation
-                            and worker is self.inference_worker
-                        ):
-                            self._vision_model_status = "failed"
-                            self._vision_model_error = str(exc)
-                    print(f"[VISION] Driving model failed to load: {exc}")
-                    return
-
-                with self._state_lock:
-                    if (
-                        generation != self._vision_model_generation
-                        or worker is not self.inference_worker
-                        or not self.running
-                    ):
-                        return
-                    self.vision_processor = processor
-                    # Keep the loading banner until the first valid prediction.
-                    self._vision_model_status = "warming_up"
-
-                worker.set_vision_processor(processor)
-                print("[VISION] Driving model loaded; waiting for first prediction.")
-
-        self._vision_model_thread = threading.Thread(
-            target=load_model,
-            name="carla-vision-model-loader",
-            daemon=True,
-        )
-        self._vision_model_thread.start()
 
     def _draw_debug_status(self, screen: np.ndarray, message: str) -> None:
         """Draw a readable status banner directly over the live camera frame."""
@@ -730,7 +707,12 @@ class CarlaLaneDrivingApp:
         with self._restart_timer_lock:
             if self._restart_timer is not None:
                 self._restart_timer.cancel()
-            timer = threading.Timer(0.45, self._restart_simulation)
+            # Timer only debounces the Flask request. The signal runs the
+            # actual CARLA/Pygame rebuild on the Qt main thread.
+            timer = threading.Timer(
+                0.45,
+                self._runtime_signals.restart_requested.emit,
+            )
             timer.daemon = True
             self._restart_timer = timer
             timer.start()
@@ -806,14 +788,9 @@ class CarlaLaneDrivingApp:
         stop_stream_server: bool = False,
     ) -> None:
         """Stop actors and workers; optionally retain the CARLA world and Flask server."""
-        with self._state_lock:
-            # Any model loader still in progress becomes stale. Its result
-            # must not be installed into a restarted or already stopped run.
-            self._vision_model_generation += 1
-            self._vision_model_status = "not_started"
-            self._vision_model_error = None
-            self.vision_processor = None
-            self._vision_model_thread = None
+        self._vision_model_status = "not_started"
+        self._vision_model_error = None
+        self.vision_processor = None
 
         if self.inference_worker is not None:
             try:
@@ -1050,9 +1027,14 @@ class CarlaLaneDrivingApp:
         self._apply_goal_to_planner()
 
         self.current_location = self.vehicle.get_location()
-        # Load the driving model asynchronously so the live camera and browser
-        # dashboard can start while Ultralytics deserializes the checkpoint.
         self.vision_processor = None
+        self._vision_model_status = "loading"
+        self._vision_model_error = None
+        # Publish the loading frame before model construction. The browser
+        # dashboard is started below, so it can display this while setup loads.
+        loading_frame = blank_frame()
+        self._draw_debug_status(loading_frame, "LOADING DRIVING MODEL...")
+        self._publish_debug_frame(loading_frame)
 
         self.controller = FixedSpeedPIDController(
             fixed_throttle=float(cfg("FIXED_THROTTLE", 0.13)),
@@ -1064,6 +1046,11 @@ class CarlaLaneDrivingApp:
         )
 
         self.input_manager = InputManager()
+        with self._state_lock:
+            self._input_running = True
+            self._toggle_auto_pending = False
+            self._manual_control = make_stop_control()
+            self._input_exit_logged = False
 
         self.lane_change_manager = LaneChangeManager(
             vehicle=self.vehicle,
@@ -1091,40 +1078,23 @@ class CarlaLaneDrivingApp:
             cfg("TRAJECTORY_MODEL_ENABLED", True)
         )
         self.trajectory_steering_agent = None
-        if self._trajectory_runtime_enabled:
-            # Import PyTorch and load the checkpoint only when this model is enabled.
-            from trajectory.steering_agent import TrajectorySteeringAgent
+        self.inference_worker = None
 
-            self.trajectory_steering_agent = TrajectorySteeringAgent(
-                "models_and_datasets/models/trajectory_modelV2.pt",
-                conf,
-                "LANE_FOLLOW",
-            )
-
-        self.inference_worker = InferenceWorker(
-            vision_processor=self.vision_processor,
-            trajectory_agent=self.trajectory_steering_agent,
-            intersection_model=self.intersection_model,
-        )
-        self.inference_worker.start()
-        self._start_vision_model_load(self.inference_worker)
-
-        self._startup_drive_until = time.monotonic() + 3.0
-
+        # Start the dashboard before importing/loading Ultralytics or optional
+        # trajectory weights. Flask serves the loading frame while the main
+        # thread performs PyTorch initialization.
         set_settings_callback(self._on_settings_changed)
         set_restart_callback(self._request_car_reset)
         set_telemetry_callback(self._metrics_for_dashboard)
         set_lidar_provider(self._lidar_snapshot_for_web)
         set_vehicle_options(available_vehicles, self.vehicle_blueprint)
         set_vehicle_callback(self._on_vehicle_changed)
+        set_runtime_status("Loading driving model…")
         try:
             started = start_stream_background(conf.STREAM_HOST, conf.STREAM_PORT)
             host = str(conf.STREAM_HOST)
             port = int(conf.STREAM_PORT)
             local_url = f"http://127.0.0.1:{port}"
-            set_runtime_status(
-                f"CARLA runtime ready · Flask dashboard at {local_url}"
-            )
             if started:
                 print(f"[WEB] Runtime dashboard: {local_url} (bind host: {host})")
                 try:
@@ -1142,6 +1112,70 @@ class CarlaLaneDrivingApp:
             set_runtime_status(f"Flask dashboard could not start: {exc}")
             print(f"[WEB] Could not start Flask dashboard: {exc}")
 
+        print("[VISION] Loading driving model on the main thread...")
+        try:
+            self.vision_processor = VisionProcessor(
+                str(cfg("VISION_MODE", "ultralytics"))
+            )
+            self._vision_model_status = "warming_up"
+            set_runtime_status("Driving model loaded; waiting for first prediction.")
+        except Exception as exc:
+            self.vision_processor = None
+            self._vision_model_status = "failed"
+            self._vision_model_error = f"{type(exc).__name__}: {exc}"
+            set_runtime_status(f"Driving model failed to load: {exc}")
+            print(f"[VISION] Driving model failed to load: {exc}")
+            traceback.print_exc()
+
+        if self._trajectory_runtime_enabled:
+            try:
+                # Optional trajectory weights are loaded only after the browser
+                # dashboard is already serving its loading frame.
+                from trajectory.steering_agent import TrajectorySteeringAgent
+
+                self.trajectory_steering_agent = TrajectorySteeringAgent(
+                    "models_and_datasets/models/trajectory_modelV2.pt",
+                    conf,
+                    "LANE_FOLLOW",
+                )
+            except Exception as exc:
+                self._trajectory_runtime_enabled = False
+                self.trajectory_steering_agent = None
+                print(f"[TRAJECTORY] Model failed to load; trajectory disabled: {exc}")
+                traceback.print_exc()
+
+        self.inference_worker = InferenceWorker(
+            vision_processor=self.vision_processor,
+            trajectory_agent=self.trajectory_steering_agent,
+            intersection_model=self.intersection_model,
+        )
+        self.inference_worker.start()
+        self._startup_drive_until = time.monotonic() + 3.0
+
+    def _poll_input_events(self) -> None:
+        """Poll Pygame only on the Qt/main thread that created its window."""
+        manager = self.input_manager
+        if manager is None:
+            return
+        try:
+            running, toggle_auto, manual_control = manager.poll()
+        except Exception as exc:
+            print(f"[INPUT] Pygame polling failed: {exc}")
+            traceback.print_exc()
+            return
+
+        with self._state_lock:
+            self._input_running = bool(running)
+            self._toggle_auto_pending = self._toggle_auto_pending or bool(toggle_auto)
+            self._manual_control = manual_control
+            should_log_exit = not running and not self._input_exit_logged
+            if should_log_exit:
+                self._input_exit_logged = True
+
+        if should_log_exit:
+            reason = getattr(manager, "last_exit_reason", None) or "input window closed"
+            print(f"[INPUT] Shutdown requested: {reason}")
+
     def _control_loop(self) -> None:
         next_tick = time.perf_counter()
 
@@ -1151,7 +1185,13 @@ class CarlaLaneDrivingApp:
             tick_started = time.perf_counter()
             try:
                 self._control_iteration(tick_started)
-            except Exception:
+                self._last_control_error = None
+            except Exception as exc:
+                signature = f"{type(exc).__name__}: {exc}"
+                if signature != self._last_control_error:
+                    print(f"[CONTROL] Runtime iteration failed: {signature}")
+                    traceback.print_exc()
+                    self._last_control_error = signature
                 try:
                     self._safe_vehicle_apply_control(make_stop_control())
                 except Exception:
@@ -1165,6 +1205,9 @@ class CarlaLaneDrivingApp:
             if next_tick < now:
                 next_tick = now
             self._stop_event.wait(max(0.0, next_tick - now))
+
+        if not self._stop_event.is_set() and not self.running:
+            print("[CONTROL] Control loop stopped because input requested shutdown.")
 
         app = QApplication.instance()
         if app is not None and not self._restart_in_progress:
@@ -1181,8 +1224,12 @@ class CarlaLaneDrivingApp:
         if self.input_manager is None or self.camera_manager is None:
             return
 
-        running, toggle_auto, manual_control = self.input_manager.poll()
-        self.running = bool(running)
+        with self._state_lock:
+            running = self._input_running
+            toggle_auto = self._toggle_auto_pending
+            self._toggle_auto_pending = False
+            manual_control = self._manual_control
+            self.running = bool(running)
         if toggle_auto:
             with self._state_lock:
                 self.auto_mode = not self.auto_mode
@@ -1445,6 +1492,9 @@ class CarlaLaneDrivingApp:
 
     def shutdown(self) -> None:
         self.running = False
+        if self._input_timer is not None:
+            self._input_timer.stop()
+            self._input_timer = None
         with self._restart_timer_lock:
             timer = self._restart_timer
             self._restart_timer = None
@@ -1466,6 +1516,13 @@ class CarlaLaneDrivingApp:
             self.shutdown()
             return
 
+        qt_app = QApplication.instance()
+        if qt_app is not None:
+            self._input_timer = QTimer()
+            self._input_timer.setInterval(16)
+            self._input_timer.timeout.connect(self._poll_input_events)
+            self._input_timer.start()
+
         self._control_thread = threading.Thread(
             target=self._control_loop,
             name="carla-control-loop",
@@ -1473,7 +1530,6 @@ class CarlaLaneDrivingApp:
         )
         self._control_thread.start()
 
-        qt_app = QApplication.instance()
         if qt_app is not None:
             qt_app.exec()
 

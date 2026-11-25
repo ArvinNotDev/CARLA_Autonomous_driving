@@ -74,7 +74,7 @@ def test_desktop_control_panel_is_not_part_of_main_runtime_entrypoint():
     source = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
     assert "ui.control_panel" not in source
     assert "ControlPanel" not in source
-    assert "QTimer" not in source
+    assert "self._input_timer.timeout.connect(self._poll_input_events)" in source
 
 def test_main_keeps_qt_alive_and_opens_the_flask_dashboard():
     from pathlib import Path
@@ -133,4 +133,43 @@ def test_web_settings_apply_only_parses_sequence_when_it_was_edited():
     )
     assert "input.dataset.originalValue" in source
     assert "if(currentValue===input.dataset.originalValue)return;" in source
+
+def test_ultralytics_load_runs_after_flask_dashboard_is_started():
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "main.py").read_text(
+        encoding="utf-8"
+    )
+    dashboard_start = source.index(
+        "started = start_stream_background(conf.STREAM_HOST, conf.STREAM_PORT)"
+    )
+    model_load = source.index(
+        "self.vision_processor = VisionProcessor("
+    )
+    assert dashboard_start < model_load
+    assert "_start_vision_model_load" not in source
+    assert 'self._vision_model_status = "warming_up"' in source
+
+
+def test_pygame_input_is_polled_on_the_main_qt_thread():
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "main.py").read_text(
+        encoding="utf-8"
+    )
+    control_iteration = source.split("def _control_iteration", 1)[1]
+    assert "self.input_manager.poll()" not in control_iteration
+    assert "def _poll_input_events" in source
+    assert "self._input_timer.timeout.connect(self._poll_input_events)" in source
+    assert "restart_requested.emit" in source
+
+
+def test_native_crash_diagnostics_are_enabled_for_all_threads():
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "main.py").read_text(
+        encoding="utf-8"
+    )
+    assert "faulthandler.enable(file=_CRASH_LOG_HANDLE, all_threads=True)" in source
+    assert "carla_runtime_crash.log" in source
 
