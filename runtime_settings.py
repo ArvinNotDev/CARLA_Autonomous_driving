@@ -151,7 +151,7 @@ class RuntimeSettings:
     @classmethod
     def load_last_vehicle(
         cls,
-        default: str = "vehicle.tesla.model3",
+        default: str = "vehicle.ue4.ford.mustang",
         path: Path = PROFILE_PATH,
     ) -> str:
         """Load the last successfully spawned vehicle, falling back to config."""
