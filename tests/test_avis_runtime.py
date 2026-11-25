@@ -281,10 +281,17 @@ def test_avis_classical_vision_uses_the_profile_ll_and_rl_rectangles():
     debug = result["debug"]
 
     assert result["lane_valid"] is True
-    # This deliberately matches VisionProcessor's sticky-side policy:
-    # the right ROI is selected first when no side is active.
-    assert result["lane_type"] == "only_right"
-    assert abs(result["error"]) < 25
+    # Both detected boundaries must be used, regardless of sticky-side state.
+    assert result["lane_type"] == "both"
+    assert debug["lane_center"] == pytest.approx(
+        (debug["left_x"] + debug["right_x"]) / 2.0
+    )
+    assert abs((debug["lane_center"] - debug["left_x"]) -
+               (debug["right_x"] - debug["lane_center"])) < 1.0
+    assert abs(result["error"]) < 5
+    assert debug["lane_half_width_px"] == pytest.approx(
+        (debug["right_x"] - debug["left_x"]) / 2.0
+    )
     assert debug["lane_mask"].shape == frame.shape[:2]
     assert debug["drivable_mask"] is None
     assert np.count_nonzero(debug["lane_mask"]) > 0
@@ -301,6 +308,50 @@ def test_avis_classical_vision_uses_the_profile_ll_and_rl_rectangles():
         round(ll["rl_left_roi"] * frame.shape[1]):round(ll["rl_right_roi"] * frame.shape[1]),
     ] = True
     assert np.count_nonzero(debug["lane_mask"][~allowed]) == 0
+
+
+@pytest.mark.parametrize("active_side", [None, "left", "right"])
+def test_avis_classical_lane_center_uses_midpoint_when_both_boundaries_exist(active_side):
+    processor = AvisClassicalVisionProcessor()
+    processor.active_side = active_side
+
+    lane_type, lane_center = processor._pick_sticky_lane(
+        left_x=100,
+        right_x=220,
+        frame_center=160.0,
+        lane_offset_px=20.0,
+    )
+
+    assert lane_type == "both"
+    assert lane_center == pytest.approx(160.0)
+    assert processor.last_lane_half_width == pytest.approx(60.0)
+    assert processor.active_side is None
+
+
+def test_avis_classical_single_boundary_uses_last_measured_half_lane_width():
+    processor = AvisClassicalVisionProcessor()
+
+    # Learn the lane width from a frame where both boundaries are visible.
+    processor._pick_sticky_lane(100, 220, 160.0, 20.0)
+
+    lane_type, left_only_center = processor._pick_sticky_lane(
+        left_x=100,
+        right_x=None,
+        frame_center=160.0,
+        lane_offset_px=20.0,
+    )
+    assert lane_type == "only_left"
+    assert left_only_center == pytest.approx(160.0)
+
+    processor.active_side = "right"
+    lane_type, right_only_center = processor._pick_sticky_lane(
+        left_x=None,
+        right_x=220,
+        frame_center=160.0,
+        lane_offset_px=20.0,
+    )
+    assert lane_type == "only_right"
+    assert right_only_center == pytest.approx(160.0)
 
 
 def test_avis_classical_hough_receives_only_cropped_left_and_right_rois(monkeypatch):

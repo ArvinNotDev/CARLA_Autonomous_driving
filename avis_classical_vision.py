@@ -69,6 +69,7 @@ class AvisClassicalVisionProcessor:
         if settings:
             self.update_settings(settings)
         self.last_lane_center: float | None = None
+        self.last_lane_half_width: float | None = None
         self.active_side: str | None = None
 
     def update_settings(self, settings: dict[str, Any]) -> None:
@@ -79,6 +80,7 @@ class AvisClassicalVisionProcessor:
                     self._settings[key] = value
             if any(previous.get(key) != self._settings.get(key) for key in self.ROI_KEYS):
                 self.last_lane_center = None
+                self.last_lane_half_width = None
                 self.active_side = None
 
     def settings_snapshot(self) -> dict[str, Any]:
@@ -307,16 +309,31 @@ class AvisClassicalVisionProcessor:
         frame_center: float,
         lane_offset_px: float,
     ) -> tuple[str, float]:
-        lane_type = "none"
+        # When both lane boundaries are visible, always target their true
+        # midpoint. The sticky-side fallback must never override this case.
+        if left_x is not None and right_x is not None and right_x > left_x:
+            self.last_lane_half_width = (right_x - left_x) / 2.0
+            self.active_side = None
+            return "both", left_x + self.last_lane_half_width
+
+        # If one boundary temporarily disappears, reuse half of the most
+        # recently measured lane width instead of a fixed image-width offset.
+        # The configured ratio is only the cold-start fallback before a full
+        # lane width has ever been observed.
+        offset_px = (
+            self.last_lane_half_width
+            if self.last_lane_half_width is not None
+            else lane_offset_px
+        )
 
         if self.active_side == "right":
             if right_x is not None:
-                return "only_right", right_x - lane_offset_px
+                return "only_right", right_x - offset_px
             if left_x is not None:
                 self.active_side = "left"
-                return "only_left", left_x + lane_offset_px
+                return "only_left", left_x + offset_px
             return (
-                lane_type,
+                "none",
                 self.last_lane_center
                 if self.last_lane_center is not None
                 else frame_center,
@@ -324,12 +341,12 @@ class AvisClassicalVisionProcessor:
 
         if self.active_side == "left":
             if left_x is not None:
-                return "only_left", left_x + lane_offset_px
+                return "only_left", left_x + offset_px
             if right_x is not None:
                 self.active_side = "right"
-                return "only_right", right_x - lane_offset_px
+                return "only_right", right_x - offset_px
             return (
-                lane_type,
+                "none",
                 self.last_lane_center
                 if self.last_lane_center is not None
                 else frame_center,
@@ -337,12 +354,12 @@ class AvisClassicalVisionProcessor:
 
         if right_x is not None:
             self.active_side = "right"
-            return "only_right", right_x - lane_offset_px
+            return "only_right", right_x - offset_px
         if left_x is not None:
             self.active_side = "left"
-            return "only_left", left_x + lane_offset_px
+            return "only_left", left_x + offset_px
         return (
-            lane_type,
+            "none",
             self.last_lane_center
             if self.last_lane_center is not None
             else frame_center,
@@ -506,6 +523,11 @@ class AvisClassicalVisionProcessor:
                 "left_x": left_x,
                 "right_x": right_x,
                 "lane_center": float(lane_center),
+                "lane_half_width_px": (
+                    float(self.last_lane_half_width)
+                    if self.last_lane_half_width is not None
+                    else None
+                ),
                 "left_line_angle_deg": left_angle,
                 "right_line_angle_deg": right_angle,
                 "left_hough_segments": int(ll_segments or 0),
