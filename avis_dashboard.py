@@ -28,13 +28,17 @@ DEFAULT_AVIS_SETTINGS: dict[str, Any] = {
     "blur_kernel": 5,
     "canny_low": 55,
     "canny_high": 150,
-    "hough_threshold": 22,
+    "hough_threshold": 12,
     "hough_min_line_length_ratio": 0.035,
     "hough_max_line_gap": 24,
-    "roi_top_ratio": 0.54,
-    "roi_bottom_ratio": 0.98,
-    "roi_top_half_width_ratio": 0.20,
-    "roi_bottom_half_width_ratio": 0.48,
+    "ll_top_roi": 0.57,
+    "ll_bottom_roi": 0.69,
+    "ll_left_roi": 0.24,
+    "ll_right_roi": 0.45,
+    "rl_top_roi": 0.57,
+    "rl_bottom_roi": 0.69,
+    "rl_left_roi": 0.56,
+    "rl_right_roi": 0.78,
     "white_l_min": 165,
     "white_s_max": 115,
     "yellow_enabled": True,
@@ -43,10 +47,11 @@ DEFAULT_AVIS_SETTINGS: dict[str, Any] = {
     "yellow_s_min": 65,
     "yellow_l_min": 75,
     "morphology_kernel": 3,
-    "min_lane_angle_deg": 4.0,
-    "max_lane_angle_deg": 78.0,
-    "lane_width_ratio": 0.42,
-    "center_smoothing": 0.35,
+    "min_lane_angle_deg": 0.0,
+    "max_lane_angle_deg": 80.0,
+    "min_side_pixels": 12,
+    "lane_offset_ratio": 0.16,
+    "center_smoothing": 0.30,
 }
 
 
@@ -68,10 +73,14 @@ _NUMERIC_LIMITS: dict[str, tuple[float, float, bool]] = {
     "hough_threshold": (1.0, 200.0, True),
     "hough_min_line_length_ratio": (0.005, 0.5, False),
     "hough_max_line_gap": (0.0, 250.0, True),
-    "roi_top_ratio": (0.1, 0.9, False),
-    "roi_bottom_ratio": (0.2, 1.0, False),
-    "roi_top_half_width_ratio": (0.02, 0.48, False),
-    "roi_bottom_half_width_ratio": (0.15, 0.5, False),
+    "ll_top_roi": (0.0, 0.98, False),
+    "ll_bottom_roi": (0.02, 1.0, False),
+    "ll_left_roi": (0.0, 0.98, False),
+    "ll_right_roi": (0.02, 1.0, False),
+    "rl_top_roi": (0.0, 0.98, False),
+    "rl_bottom_roi": (0.02, 1.0, False),
+    "rl_left_roi": (0.0, 0.98, False),
+    "rl_right_roi": (0.02, 1.0, False),
     "white_l_min": (0.0, 255.0, True),
     "white_s_max": (0.0, 255.0, True),
     "yellow_h_min": (0.0, 179.0, True),
@@ -80,8 +89,9 @@ _NUMERIC_LIMITS: dict[str, tuple[float, float, bool]] = {
     "yellow_l_min": (0.0, 255.0, True),
     "morphology_kernel": (1.0, 9.0, True),
     "min_lane_angle_deg": (0.0, 60.0, False),
-    "max_lane_angle_deg": (10.0, 89.0, False),
-    "lane_width_ratio": (0.15, 0.9, False),
+    "max_lane_angle_deg": (1.0, 89.0, False),
+    "min_side_pixels": (1.0, 500.0, True),
+    "lane_offset_ratio": (0.03, 0.45, False),
     "center_smoothing": (0.01, 1.0, False),
 }
 
@@ -128,10 +138,11 @@ def validate_avis_settings(
         raise ValueError("Canny high threshold must be greater than low threshold.")
     if result["yellow_h_min"] >= result["yellow_h_max"]:
         raise ValueError("Yellow hue maximum must be greater than its minimum.")
-    if result["roi_bottom_ratio"] <= result["roi_top_ratio"]:
-        raise ValueError("ROI bottom must be below ROI top.")
-    if result["roi_bottom_half_width_ratio"] <= result["roi_top_half_width_ratio"]:
-        raise ValueError("ROI bottom width must be greater than its top width.")
+    for side in ("ll", "rl"):
+        if result[f"{side}_bottom_roi"] <= result[f"{side}_top_roi"]:
+            raise ValueError(f"{side.upper()} ROI bottom must be below its top.")
+        if result[f"{side}_right_roi"] <= result[f"{side}_left_roi"]:
+            raise ValueError(f"{side.upper()} ROI right edge must be after its left edge.")
     if result["max_lane_angle_deg"] <= result["min_lane_angle_deg"]:
         raise ValueError("Maximum lane angle must exceed minimum lane angle.")
     return result
