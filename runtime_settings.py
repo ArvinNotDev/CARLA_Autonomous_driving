@@ -154,7 +154,7 @@ class RuntimeSettings:
         default: str = "vehicle.ue4.ford.mustang",
         path: Path = PROFILE_PATH,
     ) -> str:
-        """Load the last successfully spawned vehicle, falling back to config."""
+        """Load the last explicitly selected vehicle, falling back to the config default."""
         try:
             profiles = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -178,7 +178,7 @@ class RuntimeSettings:
         blueprint_id: str,
         path: Path = PROFILE_PATH,
     ) -> None:
-        """Persist a vehicle only after CARLA successfully spawns it."""
+        """Persist an explicitly selected vehicle after CARLA successfully spawns it."""
         candidate = str(blueprint_id).strip()
         if not candidate:
             return
