@@ -387,11 +387,21 @@ class InferenceWorker:
                 self._latest_submitted["intersection"],
             )
 
-    def stop(self, join_timeout: float = 2.0) -> None:
+    def stop(self, join_timeout: Optional[float] = None) -> None:
+        """Stop after the active inference finishes; never abandon a live model thread."""
         with self._condition:
             self._stop = True
             for key in self._pending:
                 self._pending[key] = None
             self._condition.notify_all()
         if self._started and self._thread.is_alive():
-            self._thread.join(timeout=max(0.0, float(join_timeout)))
+            timeout = (
+                None
+                if join_timeout is None
+                else max(0.0, float(join_timeout))
+            )
+            self._thread.join(timeout=timeout)
+            if self._thread.is_alive():
+                raise TimeoutError(
+                    "Inference worker is still executing; model resources were not released."
+                )
