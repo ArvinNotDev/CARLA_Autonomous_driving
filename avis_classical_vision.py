@@ -488,16 +488,17 @@ class AvisClassicalVisionProcessor:
             lane_offset_px,
         )
         lane_valid = lane_type != "none"
-        if lane_valid:
-            alpha = min(1.0, max(0.0, float(settings["center_smoothing"])))
-            lane_center = (
-                lane_center
-                if self.last_lane_center is None
-                else alpha * lane_center
-                + (1.0 - alpha) * self.last_lane_center
-            )
-            self.last_lane_center = lane_center
-        error = float(lane_center - frame_center) if lane_valid else 0.0
+        # Match VisionProcessor._smooth_lane_center exactly, including the
+        # no-detection frame path where the previous centre is retained.
+        alpha = min(1.0, max(0.0, float(settings["center_smoothing"])))
+        lane_center = (
+            lane_center
+            if self.last_lane_center is None
+            else alpha * lane_center
+            + (1.0 - alpha) * self.last_lane_center
+        )
+        self.last_lane_center = lane_center
+        error = float(lane_center - frame_center)
 
         drivable_mask = self._estimated_drivable_mask(
             (height, width),
