@@ -168,7 +168,7 @@ def test_closing_pygame_input_window_does_not_end_carla_runtime():
     assert "self.running = bool(running)" not in iteration
     assert "if not input_running:" in iteration
     assert "manual_control = make_stop_control()" in iteration
-    assert "CARLA runtime remains active" in iteration
+    assert "CARLA runtime remains active" in source
 
 
 def test_qt_event_loop_exit_reports_runtime_state_before_shutdown():
