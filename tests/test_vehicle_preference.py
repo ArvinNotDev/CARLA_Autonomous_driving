@@ -9,17 +9,22 @@ from utils.vehicle_selection import vehicle_spawn_candidates
 def test_last_vehicle_is_loaded_and_persisted_without_losing_profiles(tmp_path):
     path = tmp_path / "runtime_profiles.json"
     original = {
+        "_last_vehicle_blueprint": "vehicle.tesla.model3",
         "_active_profile": "StableV2",
         "StableV2": {"KP": 0.015, "CAMERA_IMAGE_WIDTH": 512},
     }
     path.write_text(json.dumps(original), encoding="utf-8")
 
+    # A Tesla saved automatically by the older startup code is not an
+    # explicit user preference, so the new Mustang default must take effect.
     assert RuntimeSettings.load_last_vehicle(path=path) == "vehicle.ue4.ford.mustang"
 
     RuntimeSettings.persist_last_vehicle("vehicle.audi.tt", path=path)
     saved = json.loads(path.read_text(encoding="utf-8"))
 
     assert saved["_last_vehicle_blueprint"] == "vehicle.audi.tt"
+    assert saved["_last_vehicle_explicit"] is True
+    assert RuntimeSettings.load_last_vehicle(path=path) == "vehicle.audi.tt"
     assert saved["_active_profile"] == "StableV2"
     assert saved["StableV2"]["VEHICLE_BLUEPRINT"] == "vehicle.audi.tt"
     assert saved["StableV2"]["KP"] == 0.015
