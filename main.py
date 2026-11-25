@@ -905,7 +905,13 @@ class CarlaLaneDrivingApp:
                     raise RuntimeError("CARLA returned no ego vehicle actor.")
                 self.vehicle_blueprint = blueprint_id
                 conf.VEHICLE_BLUEPRINT = blueprint_id
-                RuntimeSettings.persist_last_vehicle(blueprint_id)
+                try:
+                    RuntimeSettings.persist_last_vehicle(blueprint_id)
+                except OSError as exc:
+                    print(
+                        "[VEHICLE] Spawn succeeded, but the last-used vehicle "
+                        f"could not be saved: {exc}"
+                    )
                 break
             except Exception as exc:
                 spawn_errors.append(f"{blueprint_id}: {exc}")
