@@ -67,10 +67,9 @@ class CarlaLaneDrivingApp:
     """
     CARLA control runtime.
 
-    Qt's main thread is reserved for the PySide6 event loop. Vehicle control
-    runs on one fixed-cadence worker thread. All ML inference is serialized in
-    one dedicated inference worker, and debug frames are transferred through a
-    latest-frame store consumed by a Qt timer.
+    The browser dashboard is served by Flask. Vehicle control runs on one
+    fixed-cadence worker thread, while ML inference is serialized through one
+    dedicated inference worker.
     """
 
     def __init__(self) -> None:
@@ -146,6 +145,9 @@ class CarlaLaneDrivingApp:
         self._last_recovery_lidar_info: dict[str, Any] = {}
 
         self.settings = RuntimeSettings()
+        self.vehicle_blueprint = RuntimeSettings.load_last_vehicle(
+            default=self.vehicle_blueprint
+        )
         self.junction_detection_mode = str(
             cfg("JUNCTION_DETECTION_MODE", "model")
         ).strip().lower()
@@ -879,18 +881,45 @@ class CarlaLaneDrivingApp:
         available_vehicles = self.carla_manager.get_vehicle_blueprints()
         if not available_vehicles:
             raise RuntimeError("CARLA did not report any vehicle blueprints.")
-        available_ids = {blueprint_id for blueprint_id, _label in available_vehicles}
-        if self.vehicle_blueprint not in available_ids:
-            self.vehicle_blueprint = available_vehicles[0][0]
+
+        from utils.vehicle_selection import vehicle_spawn_candidates
+
+        candidates = vehicle_spawn_candidates(
+            available_vehicles,
+            preferred_id=self.vehicle_blueprint,
+            fallback_id="vehicle.tesla.model3",
+        )
+        if not candidates:
+            raise RuntimeError("CARLA did not report any usable vehicle blueprints.")
 
         self._reset_runtime_state()
 
-        self.vehicle = self.carla_manager.spawn_vehicle(
-            spawn_transform=spawn_tf,
-            blueprint_id=self.vehicle_blueprint,
-        )
+        spawn_errors = []
+        for blueprint_id in candidates:
+            try:
+                self.vehicle = self.carla_manager.spawn_vehicle(
+                    spawn_transform=spawn_tf,
+                    blueprint_id=blueprint_id,
+                )
+                if self.vehicle is None:
+                    raise RuntimeError("CARLA returned no ego vehicle actor.")
+                self.vehicle_blueprint = blueprint_id
+                conf.VEHICLE_BLUEPRINT = blueprint_id
+                RuntimeSettings.persist_last_vehicle(blueprint_id)
+                break
+            except Exception as exc:
+                spawn_errors.append(f"{blueprint_id}: {exc}")
+                try:
+                    self.carla_manager.destroy_vehicle()
+                except Exception:
+                    pass
+                self.vehicle = None
         if self.vehicle is None:
-            raise RuntimeError("Failed to spawn vehicle.")
+            details = "\\n".join(spawn_errors)
+            raise RuntimeError(
+                "Could not spawn the selected vehicle or any fallback vehicle.\\n"
+                + details
+            )
 
         self.camera_manager = CameraManager(self.world, self.vehicle)
         self.camera_manager.start()
@@ -962,7 +991,7 @@ class CarlaLaneDrivingApp:
 
         set_settings_callback(self._on_settings_changed)
         set_restart_callback(self._request_car_reset)
-        set_telemetry_callback(self._metrics_for_panel)
+        set_telemetry_callback(self._metrics_for_dashboard)
         set_lidar_provider(self._lidar_snapshot_for_web)
         set_vehicle_options(available_vehicles, self.vehicle_blueprint)
         set_vehicle_callback(self._on_vehicle_changed)

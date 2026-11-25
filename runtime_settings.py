@@ -148,6 +148,49 @@ class RuntimeSettings:
     def save(self) -> None:
         self.path.write_text(json.dumps(self.profiles, indent=2), encoding="utf-8")
 
+    @classmethod
+    def load_last_vehicle(
+        cls,
+        default: str = "vehicle.tesla.model3",
+        path: Path = PROFILE_PATH,
+    ) -> str:
+        """Load the last successfully spawned vehicle, falling back to config."""
+        try:
+            profiles = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return str(default)
+        if not isinstance(profiles, dict):
+            return str(default)
+        candidate = profiles.get("_last_vehicle_blueprint")
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+        return str(default)
+
+    @classmethod
+    def persist_last_vehicle(
+        cls,
+        blueprint_id: str,
+        path: Path = PROFILE_PATH,
+    ) -> None:
+        """Persist a vehicle only after CARLA successfully spawns it."""
+        candidate = str(blueprint_id).strip()
+        if not candidate:
+            return
+        try:
+            profiles = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(profiles, dict):
+                profiles = {}
+        except (OSError, ValueError):
+            profiles = {}
+        profiles["_last_vehicle_blueprint"] = candidate
+        active = profiles.get("_active_profile")
+        if isinstance(active, str) and isinstance(profiles.get(active), dict):
+            profiles[active]["VEHICLE_BLUEPRINT"] = candidate
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + ".tmp")
+        temporary.write_text(json.dumps(profiles, indent=2), encoding="utf-8")
+        temporary.replace(path)
+
     def save_profile(self, name: str, values: dict[str, Any]) -> None:
         self.profiles[name] = dict(values)
         self.save()
