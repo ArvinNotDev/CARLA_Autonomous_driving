@@ -20,7 +20,7 @@ if __name__ == "__main__":
 
 import carla
 import numpy as np
-from PySide6.QtCore import QMetaObject, QTimer, Qt
+from PySide6.QtCore import QMetaObject, Qt
 from PySide6.QtWidgets import QApplication, QDialog
 
 import config_city as conf
@@ -35,7 +35,17 @@ from navigation.global_planner import RoutePlanner
 from navigation.lane_change_manager import LaneChangeManager
 from sensors.camera_manager import CameraManager
 from sensors.lidar_manager import LidarManager
-from stream import set_settings_callback, start_stream_background, stop_stream
+from stream import (
+    set_settings_callback,
+    set_restart_callback,
+    set_telemetry_callback,
+    set_lidar_provider,
+    set_runtime_status,
+    set_vehicle_options,
+    set_vehicle_callback,
+    start_stream_background,
+    stop_stream,
+)
 from ui.renderer import Renderer
 from ui.spawn_goal_picker import SpawnGoalPicker
 from ui.map_selection_dialog import MapSelectionDialog
@@ -45,10 +55,8 @@ from vision.drivable_area_debugger import DrivableAreaDebugger
 from sensors.lidar_obstacle_filter import inspect_lidar_obstacle_on_side
 from trajectory.visualize import draw_waypoints
 from trajectory.worker import InferenceWorker
-from runtime_metrics import ControlMetrics, DisplayMetrics
+from runtime_metrics import ControlMetrics
 from runtime_settings import RuntimeSettings
-from ui.control_panel import ControlPanel
-from ui.frame_store import DebugFrameStore
 
 
 def cfg(name: str, default: Any) -> Any:
@@ -94,10 +102,8 @@ class CarlaLaneDrivingApp:
         self._control_thread: Optional[threading.Thread] = None
         self._state_lock = threading.Lock()
         self._restart_in_progress = False
-        self._restart_timer = QTimer()
-        self._restart_timer.setSingleShot(True)
-        self._restart_timer.setInterval(450)
-        self._restart_timer.timeout.connect(self._restart_simulation)
+        self._restart_timer: Optional[threading.Timer] = None
+        self._restart_timer_lock = threading.Lock()
 
         self.intersection_sequence = False
         self.is_intersection = False
@@ -131,8 +137,6 @@ class CarlaLaneDrivingApp:
         self._last_intersection_attempt_at = 0.0
 
         self.control_metrics = ControlMetrics(window_seconds=1.0)
-        self.display_metrics = DisplayMetrics(window_seconds=1.0)
-        self.frame_store = DebugFrameStore()
 
         self._startup_drive_until = 0.0
         self._out_checker = False
@@ -142,7 +146,6 @@ class CarlaLaneDrivingApp:
         self._last_recovery_lidar_info: dict[str, Any] = {}
 
         self.settings = RuntimeSettings()
-        self.control_panel: Optional[ControlPanel] = None
         self.junction_detection_mode = str(
             cfg("JUNCTION_DETECTION_MODE", "model")
         ).strip().lower()
@@ -159,7 +162,7 @@ class CarlaLaneDrivingApp:
                 "models_and_datasets/models/junction_model_resnet18.pt"
             )
 
-    def _metrics_for_panel(self) -> dict[str, Any]:
+    def _metrics_for_dashboard(self) -> dict[str, Any]:
         control = self.control_metrics.snapshot()
         data: dict[str, Any] = {
             "control_fps": control.fps,
@@ -223,7 +226,51 @@ class CarlaLaneDrivingApp:
                 data["trajectory_age_s"] = max(
                     0.0, time.perf_counter() - traj.completed_at
                 )
+        velocity = None
+        if self.vehicle is not None:
+            try:
+                velocity_vector = self.vehicle.get_velocity()
+                velocity = (
+                    float((velocity_vector.x ** 2 + velocity_vector.y ** 2 + velocity_vector.z ** 2) ** 0.5)
+                    * 3.6
+                )
+            except Exception:
+                velocity = None
+        data["speed_kmh"] = velocity
+        data["vehicle_blueprint"] = self.vehicle_blueprint
+        if self.world is not None:
+            try:
+                data["map_name"] = str(self.world.get_map().name)
+            except Exception:
+                data["map_name"] = None
+        frame = getattr(conf, "debug_frame_buffer", None)
+        data["frame_available"] = frame is not None
+        data["frame_dimensions"] = (
+            f"{int(frame.shape[1])} × {int(frame.shape[0])}"
+            if frame is not None and hasattr(frame, "shape") and len(frame.shape) >= 2
+            else None
+        )
+        data["running"] = bool(self.running)
         return data
+
+    def _lidar_snapshot_for_web(self) -> dict[str, Any]:
+        manager = self.lidar_manager
+        enabled = bool(manager is not None and manager.enabled)
+        if not enabled:
+            return {
+                "enabled": False,
+                "points": [],
+                "complete": False,
+                "display_range_m": float(cfg("LIDAR_DISPLAY_RANGE_M", 80.0)),
+            }
+        points, heading_deg, complete = manager.snapshot()
+        return {
+            "enabled": True,
+            "points": points if points is not None else [],
+            "complete": bool(complete),
+            "heading_deg": float(heading_deg),
+            "display_range_m": float(cfg("LIDAR_DISPLAY_RANGE_M", 80.0)),
+        }
 
     def _submit_inference(self, rgb_packet, semantic_packet, now: float) -> None:
         if self.inference_worker is None or rgb_packet is None:
@@ -506,7 +553,6 @@ class CarlaLaneDrivingApp:
         # per-frame text rendering and duplicated status strings.
         composed = self.renderer.compose(screen)
         conf.debug_frame_buffer = np.ascontiguousarray(composed)
-        self.frame_store.publish(composed)
 
     def _defer_lane_changes_after_junction(self) -> None:
         delay = max(
@@ -535,85 +581,68 @@ class CarlaLaneDrivingApp:
         self.trajectory_steering_agent = None
 
     def _on_settings_changed(self, values: dict) -> None:
-        # All settings are applied by RuntimeSettings in the Qt thread. The
-        # control loop only reads scalar config values at its next tick.
+        """Apply web-panel changes to the running simulation without a Qt UI."""
+        self.settings.apply(values)
         if "LIDAR_ENABLED" in values:
             enabled = bool(values["LIDAR_ENABLED"])
             try:
                 if self.lidar_manager is not None:
                     self.lidar_manager.set_enabled(enabled)
-                if self.control_panel is not None:
-                    state = "enabled" if enabled else "disabled"
-                    self.control_panel.set_lidar_enabled(
-                        enabled, f"LiDAR sensor {state} live."
-                    )
             except Exception as exc:
                 self.settings.apply({"LIDAR_ENABLED": False})
                 self.settings.persist_values({"LIDAR_ENABLED": False})
                 if self.lidar_manager is not None:
-                    self.lidar_manager.set_enabled(False)
-                if self.control_panel is not None:
-                    self.control_panel.set_lidar_enabled(
-                        False, f"Could not enable LiDAR: {exc}"
-                    )
-        if (
-            "LIDAR_DISPLAY_RANGE_M" in values
-            and self.control_panel is not None
-        ):
-            self.control_panel.lidar_radar.set_display_range(
-                float(values["LIDAR_DISPLAY_RANGE_M"])
-            )
-        if "TRAJECTORY_MODEL_ENABLED" in values:
-            if bool(values["TRAJECTORY_MODEL_ENABLED"]):
-                if not self._trajectory_runtime_enabled and self.control_panel is not None:
-                    self.control_panel.status.setText(
-                        "Trajectory model enabled — restart the run to load its checkpoint."
-                    )
-            else:
-                self._disable_trajectory_model()
-
+                    try:
+                        self.lidar_manager.set_enabled(False)
+                    except Exception:
+                        pass
+                set_runtime_status(f"Could not enable LiDAR: {exc}")
+        if "TRAJECTORY_MODEL_ENABLED" in values and not bool(values["TRAJECTORY_MODEL_ENABLED"]):
+            self._disable_trajectory_model()
         if "AUTO_MODE_DEFAULT" in values:
             with self._state_lock:
                 self.auto_mode = bool(values["AUTO_MODE_DEFAULT"])
         if self.camera_manager is not None and any(
             key in values for key in ("CAMERA_X", "CAMERA_Y", "CAMERA_Z")
         ):
-            self.camera_manager.update_mount_location(
-                conf.CAMERA_X,
-                conf.CAMERA_Y,
-                conf.CAMERA_Z,
-            )
-        if self.control_panel is not None:
-            self.control_panel.sync_external_settings(values)
+            try:
+                self.camera_manager.update_mount_location(
+                    conf.CAMERA_X, conf.CAMERA_Y, conf.CAMERA_Z
+                )
+            except Exception:
+                set_runtime_status("Camera mount update failed; restart may be required.")
 
-    def _request_car_reset(self) -> None:
-        """Debounce sensor/model changes and restart only the CARLA runtime."""
+    def _request_car_reset(self) -> bool:
+        """Debounce a runtime rebuild from the Flask request thread."""
         if (
-            self.control_panel is None
-            or not self.running
+            not self.running
+            or self.world is None
+            or self.spawn_transform is None
             or self._restart_in_progress
         ):
-            return
+            return False
+        with self._restart_timer_lock:
+            if self._restart_timer is not None:
+                self._restart_timer.cancel()
+            timer = threading.Timer(0.45, self._restart_simulation)
+            timer.daemon = True
+            self._restart_timer = timer
+            timer.start()
+        set_runtime_status("CARLA runtime restart scheduled")
+        return True
 
-        self.control_panel.status.setText(
-            "Applying settings — restarting the simulation from the selected spawn point..."
-        )
-        # A short debounce prevents spin-box edits from triggering several
-        # consecutive vehicle/sensor respawns while the user is still editing.
-        self._restart_timer.start()
-
-    def _on_vehicle_changed(self, blueprint_id: str) -> None:
+    def _on_vehicle_changed(self, blueprint_id: str) -> bool:
         if not blueprint_id or blueprint_id == self.vehicle_blueprint:
-            return
+            return True
+        previous = self.vehicle_blueprint
         self.vehicle_blueprint = blueprint_id
-        if self.control_panel is not None:
-            self.control_panel.status.setText(
-                f"Vehicle changed to {blueprint_id} — restarting at the original spawn point..."
-            )
-        self._request_car_reset()
+        if self._request_car_reset():
+            return True
+        self.vehicle_blueprint = previous
+        return False
 
     def _reset_runtime_state(self) -> None:
-        """Clear state that belongs to one driving run, keeping the Qt UI alive."""
+        """Clear state that belongs to one driving run while keeping Flask available."""
         self.auto_mode = bool(cfg("AUTO_MODE_DEFAULT", True))
         self.intersection_sequence = False
         self.is_intersection = False
@@ -668,10 +697,9 @@ class CarlaLaneDrivingApp:
         self,
         *,
         restore_world: bool,
-        close_panel: bool = False,
         stop_stream_server: bool = False,
     ) -> None:
-        """Stop actors and workers; optionally retain the world and Qt panel."""
+        """Stop actors and workers; optionally retain the CARLA world and Flask server."""
         if self.inference_worker is not None:
             try:
                 self.inference_worker.set_trajectory_agent(None)
@@ -733,12 +761,6 @@ class CarlaLaneDrivingApp:
         self.lane_change_manager = None
         self.planner = None
 
-        if close_panel and self.control_panel is not None:
-            try:
-                self.control_panel.close()
-            except Exception:
-                pass
-
         if stop_stream_server:
             try:
                 stop_stream(conf.STREAM_HOST, conf.STREAM_PORT)
@@ -746,34 +768,23 @@ class CarlaLaneDrivingApp:
                 pass
 
     def _restart_simulation(self) -> None:
-        """Rebuild CARLA actors/sensors at the previous spawn without closing Qt."""
-        if (
-            self._restart_in_progress
-            or self.control_panel is None
-            or not self.running
-        ):
+        """Rebuild CARLA actors/sensors at the previous spawn without a desktop UI."""
+        if self._restart_in_progress or not self.running or self.world is None:
             return
-
         self._restart_in_progress = True
-        panel = self.control_panel
-        panel.status.setText(
-            "Restarting CARLA runtime and respawning the vehicle..."
-        )
-        QApplication.processEvents()
+        with self._restart_timer_lock:
+            self._restart_timer = None
+        set_runtime_status("Restarting CARLA runtime and respawning the vehicle…")
 
         stop_event = self._stop_event
         stop_event.set()
         old_thread = self._control_thread
         if old_thread is not None and old_thread.is_alive():
             old_thread.join(timeout=8.0)
-
         if old_thread is not None and old_thread.is_alive():
             stop_event.clear()
             self._restart_in_progress = False
-            panel.status.setText(
-                "Restart cancelled: the control loop did not stop safely. "
-                "The current simulation is still running."
-            )
+            set_runtime_status("Restart cancelled: control loop did not stop safely.")
             return
 
         self._control_thread = None
@@ -782,25 +793,21 @@ class CarlaLaneDrivingApp:
             self._stop_event = threading.Event()
             self.running = True
             self.setup(restart=True)
-
             if self.vehicle is None:
                 raise RuntimeError("The vehicle was not respawned.")
-
             self._control_thread = threading.Thread(
                 target=self._control_loop,
                 name="carla-control-loop",
                 daemon=True,
             )
             self._control_thread.start()
-            panel.status.setText(
-                "Settings applied. Vehicle respawned at the selected spawn point."
-            )
+            set_runtime_status("Settings applied. Vehicle respawned at the selected spawn point.")
         except Exception as exc:
             self._stop_event.set()
             self._cleanup_runtime_resources(restore_world=False)
             self._stop_event = threading.Event()
             self.running = True
-            panel.status.setText(f"Simulation restart failed: {exc}")
+            set_runtime_status(f"Simulation restart failed: {exc}")
         finally:
             self._restart_in_progress = False
 
@@ -953,58 +960,25 @@ class CarlaLaneDrivingApp:
 
         self._startup_drive_until = time.monotonic() + 3.0
 
-        if self.control_panel is None:
-            self.control_panel = ControlPanel(
-                self.settings,
-                display_metrics=self.display_metrics,
-                frame_store=self.frame_store,
-                lidar_manager=self.lidar_manager,
-                metrics_provider=self._metrics_for_panel,
-            )
-            self.control_panel.settings_changed.connect(self._on_settings_changed)
-            self.control_panel.reset_requested.connect(self._request_car_reset)
-            self.control_panel.vehicle_changed.connect(self._on_vehicle_changed)
-            self.control_panel.stream_toggle_requested.connect(self._toggle_flask_stream)
-            self.control_panel.set_vehicle_options(
-                available_vehicles, self.vehicle_blueprint
-            )
-            set_settings_callback(self._on_settings_changed)
-        else:
-            # Keep the existing Qt window/timers alive, but point its radar at
-            # the newly-created LiDAR manager.
-            self.control_panel.lidar_radar.lidar_manager = self.lidar_manager
-            self.control_panel.lidar_radar._points = None
-            self.control_panel.set_lidar_enabled(
-                bool(cfg("LIDAR_ENABLED", False))
-            )
-            self.control_panel.set_vehicle_options(
-                self.carla_manager.get_vehicle_blueprints(), self.vehicle_blueprint
-            )
-
-        self.control_panel.show()
-
-    def _toggle_flask_stream(self, enabled: bool) -> None:
+        set_settings_callback(self._on_settings_changed)
+        set_restart_callback(self._request_car_reset)
+        set_telemetry_callback(self._metrics_for_panel)
+        set_lidar_provider(self._lidar_snapshot_for_web)
+        set_vehicle_options(available_vehicles, self.vehicle_blueprint)
+        set_vehicle_callback(self._on_vehicle_changed)
         try:
-            if enabled:
-                started = start_stream_background(conf.STREAM_HOST, conf.STREAM_PORT)
-                if not started:
-                    self.control_panel.set_flask_stream_state(
-                        True, "Flask editor is already running."
-                    )
-                else:
-                    self.control_panel.set_flask_stream_state(
-                        True, f"Flask editor running at {self.control_panel._flask_urls()}"
-                    )
-            else:
-                stopped = stop_stream(conf.STREAM_HOST, conf.STREAM_PORT)
-                self.control_panel.set_flask_stream_state(
-                    False,
-                    "Flask editor stopped." if stopped else "Flask editor was not running."
-                )
-        except OSError as exc:
-            self.control_panel.set_flask_stream_state(
-                False, f"Could not start Flask editor: {exc}"
+            started = start_stream_background(conf.STREAM_HOST, conf.STREAM_PORT)
+            host = str(conf.STREAM_HOST)
+            port = int(conf.STREAM_PORT)
+            local_url = f"http://127.0.0.1:{port}"
+            set_runtime_status(
+                f"CARLA runtime ready · Flask dashboard at {local_url}"
             )
+            if started:
+                print(f"[WEB] Runtime dashboard: {local_url} (bind host: {host})")
+        except OSError as exc:
+            set_runtime_status(f"Flask dashboard could not start: {exc}")
+            print(f"[WEB] Could not start Flask dashboard: {exc}")
 
     def _control_loop(self) -> None:
         next_tick = time.perf_counter()
@@ -1274,7 +1248,11 @@ class CarlaLaneDrivingApp:
 
     def shutdown(self) -> None:
         self.running = False
-        self._restart_timer.stop()
+        with self._restart_timer_lock:
+            timer = self._restart_timer
+            self._restart_timer = None
+        if timer is not None:
+            timer.cancel()
         self._stop_event.set()
 
         if self._control_thread is not None and self._control_thread.is_alive():
@@ -1282,7 +1260,6 @@ class CarlaLaneDrivingApp:
 
         self._cleanup_runtime_resources(
             restore_world=True,
-            close_panel=True,
             stop_stream_server=True,
         )
 

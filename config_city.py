@@ -89,8 +89,8 @@ ALT_CAMERA_PITCH_DEG = -25.0
 # UI / stream
 # -------------------------------------------------
 AUTO_MODE_DEFAULT = True
-# The PySide6 runtime panel is the primary debug view.  OpenCV can still be
-# enabled from the panel when a separate legacy window is useful.
+# Flask is the primary runtime/debug dashboard. OpenCV can still be enabled
+# separately when a legacy diagnostic window is useful.
 SHOW_OPENCV_WINDOW = False
 ENABLE_SEMANTIC_CAMERA = False
 ENABLE_ALT_CAMERA = False

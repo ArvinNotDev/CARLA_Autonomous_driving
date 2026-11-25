@@ -8,3 +8,4 @@ onnxruntime
 networkx>=3.2,<4
 pygame
 PySide6
+Flask>=3.0,<4

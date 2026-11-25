@@ -3,9 +3,9 @@
 [![GUI smoke tests](https://github.com/ArvinNotDev/CARLA_Autonomous_driving/actions/workflows/gui-smoke-tests.yml/badge.svg?branch=main)](https://github.com/ArvinNotDev/CARLA_Autonomous_driving/actions/workflows/gui-smoke-tests.yml)
 ![Python](https://img.shields.io/badge/Python-3.12%20recommended-3776AB?logo=python&logoColor=white)
 ![CARLA](https://img.shields.io/badge/CARLA-1.0-222222)
-![Interface](https://img.shields.io/badge/Interface-PySide6-41CD52)
+![Interface](https://img.shields.io/badge/Interface-Flask%20Web%20Dashboard-0F9D8A)
 
-An experimental autonomous-driving research project built around **CARLA 1.0**. The stack combines camera-based lane and drivable-area perception, route planning, junction handling, lane-change control, optional trajectory steering, and a live PySide6 runtime dashboard.
+An experimental autonomous-driving research project built around **CARLA 1.0**. The stack combines camera-based lane and drivable-area perception, route planning, junction handling, lane-change control, optional trajectory steering, and a live Flask browser dashboard.
 
 > **Current development target:** CARLA 1.0 (UE5) on the `main` branch. The legacy CARLA 0.9.16 baseline is preserved separately on `main_9.16`.
 
@@ -58,20 +58,20 @@ git pull --ff-only origin main_9.16
 
 The application is organized around three execution paths:
 
-1. **Qt interface:** PySide6 owns the main application event loop and runtime dashboard.
+1. **Web dashboard:** Flask serves the live browser console for perception frames, telemetry, LiDAR, ROI calibration, profiles, vehicle selection, and every runtime setting. PySide6 is no longer used for runtime settings or debugging; it remains for the initial CARLA installation, map, and spawn/goal selectors.
 2. **Vehicle control:** one dedicated control thread owns vehicle commands and runs at the configured `CONTROL_LOOP_HZ`.
 3. **Inference:** a serialized inference worker handles vision, optional trajectory prediction, and model-based junction inference. It keeps the newest pending work rather than building an unbounded queue of stale camera frames.
 
-A latest-frame buffer connects the control and inference paths to the UI. The dashboard refreshes independently at `DEBUG_PANEL_HZ`, so rendering and telemetry updates do not define the vehicle-control cadence.
+A latest-frame buffer connects the control and inference paths to Flask. The browser refreshes camera frames at `DEBUG_PANEL_HZ` and telemetry independently, so web rendering and polling do not define the vehicle-control cadence.
 
 ### Runtime settings and restart behavior
 
 Settings are divided into two groups:
 
 - **Live settings** update the active controller, thresholds, ROI values, or display behavior without rebuilding the simulation.
-- **Sensor/model settings** trigger an automatic in-place runtime restart. The control loop is stopped, the active sensors and ego vehicle are cleaned up, and the vehicle is spawned again at the previously selected spawn transform. The application window and settings panel remain open; the map and goal selection are retained.
+- **Sensor/model settings** trigger an automatic in-place runtime restart. The control loop is stopped, the active sensors and ego vehicle are cleaned up, and the vehicle is spawned again at the previously selected spawn transform. The web dashboard remains available; the map and goal selection are retained.
 
-The restart is debounced so that editing a setting does not create a sequence of unnecessary respawns.
+Vehicle selection schedules a debounced restart. Explicit settings restarts avoid respawning while you are still editing.
 
 ---
 
@@ -148,7 +148,7 @@ CarlaUnreal.exe -quality-level=Low -ResX=1280 -ResY=720 -windowed
 
 The simulator window resolution and the ego camera sensor resolution are separate settings. The bundled `StableV2` profile retains its own camera configuration.
 
-On every application launch, choose **Use saved installation** or **Choose another folder** in the CARLA installation dialog. After connecting, select the map, spawn point, and goal. The runtime dashboard then opens.
+On every application launch, choose **Use saved installation** or **Choose another folder** in the CARLA installation dialog. After connecting, select the map, spawn point, and goal. The Flask runtime dashboard starts automatically. Open `http://127.0.0.1:5000` in your browser (or use the configured `STREAM_PORT`).
 
 ### Controls
 
@@ -159,7 +159,7 @@ On every application launch, choose **Use saved installation** or **Choose anoth
 | `Space` | Brake in manual mode |
 | `Esc` | Exit the control window/application |
 
-The ROI/advanced editor can also be started separately:
+The ROI editor can also be started separately when no CARLA session is running:
 
 ```bash
 python stream.py
@@ -186,7 +186,7 @@ Key camera and runtime values in that profile:
 | Trajectory model | Disabled by default |
 | Junction detection | Crosswalk ROI |
 
-Use the profile controls in the runtime panel to load or save named configurations. Profile values are stored in `runtime_profiles.json`.
+Use the **Settings** tab in the browser dashboard to search settings, load or save named profiles, choose a vehicle, and apply or restart runtime changes. Profile values are stored in `runtime_profiles.json`.
 
 **Hardware note:** CARLA 1.0 is a demanding UE5-based simulator. Lowering the server's render quality and display resolution may reduce GPU load, but does not guarantee compatibility with GPUs below CARLA's recommended hardware level. The project's sensor resolution is controlled separately by the runtime profile.
 
@@ -226,7 +226,7 @@ navigation/                     Route, junction, and lane-change logic
 sensors/                        RGB/semantic cameras and optional LiDAR
 trajectory/                     Waypoint model, steering agent, visualization
 vision/                         ONNX/segmentation perception and debug views
-ui/                             PySide6 dashboard, renderers, spawn/goal tools
+ui/                             Legacy desktop panel, renderers, spawn/goal startup dialogs
 models_and_datasets/             Model checkpoints and ONNX assets
 tests/                           Regression and GUI smoke tests
 ```
@@ -248,7 +248,7 @@ tests/                           Regression and GUI smoke tests
 **The vehicle does not move after spawning**
 
 - Confirm that the server is running and that the selected spawn point is on a drivable lane.
-- Check that the runtime panel is in Auto mode.
+- Open the web dashboard and confirm that Auto mode is enabled in **Settings → Driving & PID**.
 - Allow the camera stream to initialize after a restart.
 
 **No ONNX inference**
@@ -260,7 +260,7 @@ tests/                           Regression and GUI smoke tests
 **The dashboard does not appear**
 
 - Install the dependencies from `requirements.txt`.
-- Run `python main.py` from the repository root and check the terminal output for import or Qt errors.
+- Run `python main.py` from the repository root, then open `http://127.0.0.1:5000`. Check the terminal output for Flask bind or startup errors.
 
 ---
 
@@ -272,7 +272,7 @@ Run the local regression tests with:
 python -m pytest -q
 ```
 
-The GitHub Actions GUI smoke-test workflow compiles the application modules and runs the CARLA installation, dashboard, perception-debugger, and StableV2-profile checks. The CI checks do not replace an end-to-end run against a locally installed CARLA 1.0 server.
+The GitHub Actions smoke-test workflow compiles the application modules and runs the CARLA installation, legacy component, perception-debugger, and StableV2-profile checks. The Flask dashboard tests cover settings validation and browser routes. The CI checks do not replace an end-to-end run against a locally installed CARLA 1.0 server. The CI checks do not replace an end-to-end run against a locally installed CARLA 1.0 server.
 
 ## Third-party notice
 

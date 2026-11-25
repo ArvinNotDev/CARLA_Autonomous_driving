@@ -9,7 +9,7 @@ from utils.vehicle_utils import blank_frame
 
 
 class Renderer:
-    """Prepare clean camera frames for the PySide6 runtime panel."""
+    """Prepare clean camera frames for the Flask runtime dashboard."""
 
     def __init__(self, window_name: str = "CARLA") -> None:
         self.window_name = window_name
@@ -24,7 +24,7 @@ class Renderer:
         return np.ascontiguousarray(arr[:, :, :3])
 
     def compose(self, screen: Optional[np.ndarray], overlay: Optional[dict] = None) -> np.ndarray:
-        """Return an unannotated image; telemetry is drawn once in the Qt sidebar."""
+        """Return an unannotated image; telemetry is rendered separately by Flask."""
         if screen is None:
             return blank_frame()
         return self._ensure_bgr(screen).copy()
@@ -34,5 +34,5 @@ class Renderer:
         return self.compose(screen, overlay)
 
     def render_mode_overlay(self, screen: np.ndarray, mode: str, error: float) -> None:
-        """Compatibility no-op; mode and error are shown in the Qt telemetry panel."""
+        """Compatibility no-op; mode and error are shown in the Flask telemetry panel."""
         return
