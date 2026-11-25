@@ -425,8 +425,14 @@ document.getElementById('settings_search').addEventListener('input',event=>filte
 document.getElementById('refresh_runtime').addEventListener('click',()=>fetch('/get_settings').then(r=>r.json()).then(data=>{runtimeValues=data.values||{};renderRuntimeSettings();startFrameLoop();showToast('Runtime settings refreshed');}).catch(()=>showToast('Refresh failed')));
 document.getElementById('apply_runtime').addEventListener('click',()=>{
  const payload={};
- try{document.querySelectorAll('#runtime_settings [data-key]').forEach(input=>{const key=input.dataset.key,spec=runtimeSpecs.find(item=>item[0]===key);if(spec[2]==='bool')payload[key]=input.checked;else if(spec[2]==='sequence')payload[key]=JSON.parse(input.value);else if(spec[2]==='int'){if(!input.value.trim())throw new Error(key+' is required');payload[key]=parseInt(input.value,10);}else if(spec[2]==='float'){if(!input.value.trim())throw new Error(key+' is required');payload[key]=parseFloat(input.value);}else payload[key]=input.value;});}
- catch(error){const msg=document.getElementById('runtime_msg');msg.textContent=error.message.includes('JSON')?'Invalid junction movement JSON.':error.message;msg.className='message error';return;}
+ try{document.querySelectorAll('#runtime_settings [data-key]').forEach(input=>{const key=input.dataset.key,spec=runtimeSpecs.find(item=>item[0]===key);if(spec[2]==='bool')payload[key]=input.checked;else if(spec[2]==='sequence'){
+   try{
+    const parsed=JSON.parse(input.value);
+    if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('Expected an object with LEFT, RIGHT and STRAIGHT arrays.');
+    payload[key]=parsed;
+   }catch(error){throw new Error('Invalid JSON in '+key+': '+error.message);}
+  }else if(spec[2]==='int'){if(!input.value.trim())throw new Error(key+' is required');payload[key]=parseInt(input.value,10);}else if(spec[2]==='float'){if(!input.value.trim())throw new Error(key+' is required');payload[key]=parseFloat(input.value);}else payload[key]=input.value;});}
+ catch(error){const msg=document.getElementById('runtime_msg');msg.textContent=error.message;msg.className='message error';return;}
  fetch('/set_settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
  .then(response=>response.json().then(data=>({ok:response.ok,data}))).then(({ok,data})=>{
   if(!ok||!data.success)throw new Error(data.error||'Could not apply settings');runtimeValues=data.values||runtimeValues;renderRuntimeSettings();startFrameLoop();
@@ -443,55 +449,11 @@ function loadVehicles(){fetch('/get_vehicles').then(r=>r.json()).then(data=>{con
 document.getElementById('apply_vehicle').addEventListener('click',()=>{const blueprint=document.getElementById('vehicle_select').value;fetch('/set_vehicle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({blueprint})}).then(r=>r.json().then(data=>({ok:r.ok,data}))).then(({ok,data})=>{if(!ok||!data.success)throw new Error(data.error||'Could not change vehicle');const msg=document.getElementById('vehicle_msg');msg.textContent='Vehicle change queued. CARLA will respawn it at the current spawn point.';msg.className='message warning';showToast('Vehicle change scheduled');}).catch(error=>{const msg=document.getElementById('vehicle_msg');msg.textContent=error.message;msg.className='message error';});});
 document.querySelectorAll('.panel-tab').forEach(button=>button.addEventListener('click',()=>{const panel=button.dataset.panel;document.querySelectorAll('.panel-tab').forEach(item=>item.classList.toggle('active',item===button));document.querySelectorAll('.panel-content').forEach(item=>item.classList.toggle('active',item.id==='panel-'+panel));}));
 function metricCard(label,value,compact=false){const card=document.createElement('div');card.className='metric';const title=document.createElement('span');title.className='metric-label';title.textContent=label;const content=document.createElement('span');content.className='metric-value'+(compact?' compact':'');content.textContent=value??'—';card.append(title,content);return card;}
-function refreshTelemetry(){fetch('/get_telemetry').then(r=>r.json()).then(data=>{const root=document.getElementById('telemetry_grid');root.innerHTML='';const items=[['Control FPS',data.control_fps==null?'—':Number(data.control_fps).toFixed(1)],['Driving mode',data.driving_mode||'—'],['Vision FPS',data.vision_fps==null?'—':Number(data.vision_fps).toFixed(1)],['Trajectory FPS',data.trajectory_fps==null?'—':Number(data.trajectory_fps).toFixed(1)],['Vehicle speed',data.speed_kmh==null?'—':Number(data.speed_kmh).toFixed(1)+' km/h'],['Junction phase',data.junction_phase||'—'],['Lane change',data.lane_change_phase||'—'],['Lane error',data.lane_error_px==null?'—':Number(data.lane_error_px).toFixed(1)+' px'],['Road width',data.road_width_index_px==null?'—':Number(data.road_width_index_px).toFixed(0)+' px'],['GPS',Array.isArray(data.gps)?data.gps.map(v=>Number(v).toFixed(1)).join(', '):'—'],['Vehicle',data.vehicle_blueprint||'—'],['Map',data.map_name||'—']];items.forEach(item=>root.appendChild(metricCard(item[0],item[1],['GPS','Vehicle','Map'].includes(item[0]))));document.getElementById('telemetry_updated').textContent='Updated '+new Date().toLocaleTimeString();document.getElementById('runtime_status').textContent=data.runtime_status||'Runtime connected';document.getElementById('runtime_dot').style.background=data.running===false?'#ef8080':'#62d6a3';document.getElementById('camera_status').textContent=data.frame_available?'STREAMING':'WAITING FOR FRAME';document.getElementById('frame_dimensions').textContent=data.frame_dimensions||'FRAME —';}).catch(()=>{document.getElementById('runtime_status').textContent='Telemetry unavailable';document.getElementById('runtime_dot').style.background='#ef8080';});}
+function refreshTelemetry(){fetch('/get_telemetry').then(r=>r.json()).then(data=>{const root=document.getElementById('telemetry_grid');root.innerHTML='';const items=[['Control FPS',data.control_fps==null?'—':Number(data.control_fps).toFixed(1)],['Driving mode',data.driving_mode||'—'],['Driving model',data.vision_model_status||'LOADING'],['Vision FPS',data.vision_fps==null?'—':Number(data.vision_fps).toFixed(1)],['Trajectory FPS',data.trajectory_fps==null?'—':Number(data.trajectory_fps).toFixed(1)],['Vehicle speed',data.speed_kmh==null?'—':Number(data.speed_kmh).toFixed(1)+' km/h'],['Junction phase',data.junction_phase||'—'],['Lane change',data.lane_change_phase||'—'],['Lane error',data.lane_error_px==null?'—':Number(data.lane_error_px).toFixed(1)+' px'],['Road width',data.road_width_index_px==null?'—':Number(data.road_width_index_px).toFixed(0)+' px'],['GPS',Array.isArray(data.gps)?data.gps.map(v=>Number(v).toFixed(1)).join(', '):'—'],['Vehicle',data.vehicle_blueprint||'—'],['Map',data.map_name||'—']];items.forEach(item=>root.appendChild(metricCard(item[0],item[1],['GPS','Vehicle','Map'].includes(item[0]))));document.getElementById('telemetry_updated').textContent='Updated '+new Date().toLocaleTimeString();document.getElementById('runtime_status').textContent=data.runtime_status||'Runtime connected';document.getElementById('runtime_dot').style.background=data.running===false?'#ef8080':'#62d6a3';document.getElementById('camera_status').textContent=data.frame_available?'STREAMING':'WAITING FOR FRAME';document.getElementById('frame_dimensions').textContent=data.frame_dimensions||'FRAME —';}).catch(()=>{document.getElementById('runtime_status').textContent='Telemetry unavailable';document.getElementById('runtime_dot').style.background='#ef8080';});}
 function lidarHeightColor(z){if(z<0)return '#3b83d0';if(z<1)return '#2db7d0';if(z<2)return '#5bd77b';if(z<4)return '#f1c64e';return '#ec6754';}
 function drawLidar(data){const canvas=document.getElementById('lidar_canvas'),ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height,cx=w/2,cy=h/2,radius=Math.min(w,h)*.46;ctx.clearRect(0,0,w,h);ctx.fillStyle='#071321';ctx.fillRect(0,0,w,h);const maxRange=Math.max(5,Number(data.display_range_m)||80),step=maxRange<=30?5:maxRange<=60?10:maxRange<=125?25:50;ctx.strokeStyle='#29445e';ctx.lineWidth=1;for(let d=step;d<maxRange;d+=step){ctx.beginPath();ctx.arc(cx,cy,radius*d/maxRange,0,Math.PI*2);ctx.stroke();}ctx.beginPath();ctx.arc(cx,cy,radius,0,Math.PI*2);ctx.stroke();ctx.beginPath();ctx.moveTo(cx-radius,cy);ctx.lineTo(cx+radius,cy);ctx.moveTo(cx,cy-radius);ctx.lineTo(cx,cy+radius);ctx.stroke();const points=data.points||[];if(data.enabled){const stride=Math.max(1,Math.ceil(points.length/7000));for(let i=0;i<points.length;i+=stride){const point=points[i],x=Number(point[0]),y=Number(point[1]),z=Number(point[2]);if(!Number.isFinite(x)||!Number.isFinite(y)||Math.hypot(x,y)>maxRange)continue;const px=cx+y*radius/maxRange,py=cy-x*radius/maxRange;ctx.fillStyle=lidarHeightColor(z);ctx.fillRect(px,py,2,2);}}ctx.fillStyle='#f3f7fc';ctx.strokeStyle='#0b1928';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(cx,cy-13);ctx.lineTo(cx+8,cy+10);ctx.lineTo(cx,cy+5);ctx.lineTo(cx-8,cy+10);ctx.closePath();ctx.fill();ctx.stroke();document.getElementById('lidar_status').textContent=!data.enabled?'DISABLED':data.complete?'COMPLETE SCAN':'SCANNING';}
 function refreshLidar(){fetch('/get_lidar_scan').then(r=>r.json()).then(drawLidar).catch(()=>{document.getElementById('lidar_status').textContent='UNAVAILABLE';});}
 loadProfiles();loadVehicles();refreshTelemetry();refreshLidar();setInterval(refreshTelemetry,700);setInterval(refreshLidar,1100);
-document.addEventListener('wheel',event=>{const target=event.target;if(target instanceof HTMLInputElement&&target.type==='number'&&document.activeElement===target){event.preventDefault();target.blur();}},{capture:true,passive:false});
-renderRuntimeSettings();
-
-document.getElementById('refresh_runtime').addEventListener('click', ()=>{
-  fetch('/get_settings').then(r=>r.json()).then(data=>{
-    runtimeValues = data.values || {};
-    renderRuntimeSettings();
-    showToast('Runtime settings refreshed');
-  }).catch(()=>showToast('Refresh failed'));
-});
-
-document.getElementById('apply_runtime').addEventListener('click', ()=>{
-  const payload = {};
-  try {
-    document.querySelectorAll('#runtime_settings [data-key]').forEach(input=>{
-      const key = input.dataset.key;
-      const spec = runtimeSpecs.find(item=>item[0] === key);
-      if(spec[2] === 'bool') payload[key] = input.checked;
-      else if(spec[2] === 'sequence') payload[key] = JSON.parse(input.value);
-      else if(spec[2] === 'int') payload[key] = parseInt(input.value);
-      else if(spec[2] === 'float') payload[key] = parseFloat(input.value);
-      else payload[key] = input.value;
-    });
-  } catch(error) {
-    document.getElementById('runtime_msg').textContent = 'Invalid JSON sequence.';
-    return;
-  }
-  fetch('/set_settings',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(payload)
-  }).then(r=>r.json()).then(data=>{
-    if(!data.success) throw new Error(data.error || 'failed');
-    runtimeValues = data.values || runtimeValues;
-    renderRuntimeSettings();
-    document.getElementById('runtime_msg').textContent = data.reset_required
-      ? 'Applied. Restart required for reset-marked settings.'
-      : 'Applied live.';
-    showToast(data.reset_required ? 'Applied; restart required' : 'Applied live');
-  }).catch(error=>{
-    document.getElementById('runtime_msg').textContent = error.message;
-  });
-});
-
 function clamp01(v){ return Math.max(0, Math.min(1, v)); }
 function round01(v){ return Math.round(v*100)/100; }
 

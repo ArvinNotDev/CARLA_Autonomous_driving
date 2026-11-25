@@ -23,6 +23,7 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
 import carla
+import cv2
 import numpy as np
 from PySide6.QtCore import QMetaObject, Qt
 from PySide6.QtWidgets import QApplication, QDialog
@@ -86,6 +87,11 @@ class CarlaLaneDrivingApp:
         self.camera_manager: Optional[CameraManager] = None
         self.lidar_manager: Optional[LidarManager] = None
         self.vision_processor: Optional[VisionProcessor] = None
+        self._vision_model_status = "not_started"
+        self._vision_model_error: Optional[str] = None
+        self._vision_model_generation = 0
+        self._vision_model_load_lock = threading.Lock()
+        self._vision_model_thread: Optional[threading.Thread] = None
         self.controller: Optional[FixedSpeedPIDController] = None
         self.input_manager: Optional[InputManager] = None
         self.renderer = Renderer()
@@ -168,6 +174,92 @@ class CarlaLaneDrivingApp:
                 "models_and_datasets/models/junction_model_resnet18.pt"
             )
 
+    def _start_vision_model_load(self, worker: InferenceWorker) -> None:
+        """Load the driving model away from the control/UI thread."""
+        mode = str(cfg("VISION_MODE", "ultralytics"))
+        with self._state_lock:
+            self._vision_model_generation += 1
+            generation = self._vision_model_generation
+            self._vision_model_status = "loading"
+            self._vision_model_error = None
+
+        def load_model() -> None:
+            # Serialize loads to avoid duplicate CUDA allocations if a restart
+            # occurs while a previous checkpoint is still being deserialized.
+            with self._vision_model_load_lock:
+                with self._state_lock:
+                    if (
+                        generation != self._vision_model_generation
+                        or worker is not self.inference_worker
+                        or not self.running
+                    ):
+                        return
+
+                try:
+                    processor = VisionProcessor(mode)
+                except Exception as exc:
+                    with self._state_lock:
+                        if (
+                            generation == self._vision_model_generation
+                            and worker is self.inference_worker
+                        ):
+                            self._vision_model_status = "failed"
+                            self._vision_model_error = str(exc)
+                    print(f"[VISION] Driving model failed to load: {exc}")
+                    return
+
+                with self._state_lock:
+                    if (
+                        generation != self._vision_model_generation
+                        or worker is not self.inference_worker
+                        or not self.running
+                    ):
+                        return
+                    self.vision_processor = processor
+                    # Keep the loading banner until the first valid prediction.
+                    self._vision_model_status = "warming_up"
+
+                worker.set_vision_processor(processor)
+                print("[VISION] Driving model loaded; waiting for first prediction.")
+
+        self._vision_model_thread = threading.Thread(
+            target=load_model,
+            name="carla-vision-model-loader",
+            daemon=True,
+        )
+        self._vision_model_thread.start()
+
+    def _draw_debug_status(self, screen: np.ndarray, message: str) -> None:
+        """Draw a readable status banner directly over the live camera frame."""
+        if screen is None or not isinstance(screen, np.ndarray) or screen.size == 0:
+            return
+        height, width = screen.shape[:2]
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale = max(0.48, min(0.85, width / 760.0))
+        thickness = max(1, int(round(scale * 2.0)))
+        (text_width, text_height), baseline = cv2.getTextSize(
+            message, font, scale, thickness
+        )
+        x = max(8, (width - text_width) // 2)
+        y = max(text_height + 18, int(height * 0.14))
+        cv2.rectangle(
+            screen,
+            (x - 10, y - text_height - 9),
+            (min(width - 1, x + text_width + 10), min(height - 1, y + baseline + 8)),
+            (12, 25, 40),
+            thickness=-1,
+        )
+        cv2.putText(
+            screen,
+            message,
+            (x, y),
+            font,
+            scale,
+            (0, 220, 255),
+            thickness,
+            cv2.LINE_AA,
+        )
+
     def _metrics_for_dashboard(self) -> dict[str, Any]:
         control = self.control_metrics.snapshot()
         data: dict[str, Any] = {
@@ -178,6 +270,8 @@ class CarlaLaneDrivingApp:
             "trajectory_enabled": self._trajectory_runtime_enabled,
             "trajectory_busy": False,
             "vision_busy": False,
+            "vision_model_status": self._vision_model_status.replace("_", " ").upper(),
+            "vision_model_error": self._vision_model_error,
             "junction_phase": (
                 self.intersection_manager.phase_name()
                 if self.intersection_manager is not None
@@ -356,7 +450,11 @@ class CarlaLaneDrivingApp:
                     self._accepted_trajectory_request = traj.request_id
                     trajectory = traj
 
-            vision, _, _, _ = self.inference_worker.vision_snapshot()
+            vision, _, vision_error, _ = self.inference_worker.vision_snapshot()
+            if vision_error and self._vision_model_status == "warming_up":
+                self._vision_model_status = "failed"
+                self._vision_model_error = vision_error
+                print(f"[VISION] First driving-model inference failed: {vision_error}")
             if (
                 vision is not None
                 and vision.valid
@@ -364,6 +462,8 @@ class CarlaLaneDrivingApp:
             ):
                 self._accepted_vision_request = vision.request_id
                 self._vision_result = vision.result
+                self._vision_model_status = "ready"
+                self._vision_model_error = None
 
                 manager_idle = (
                     self.intersection_manager is None
@@ -706,6 +806,15 @@ class CarlaLaneDrivingApp:
         stop_stream_server: bool = False,
     ) -> None:
         """Stop actors and workers; optionally retain the CARLA world and Flask server."""
+        with self._state_lock:
+            # Any model loader still in progress becomes stale. Its result
+            # must not be installed into a restarted or already stopped run.
+            self._vision_model_generation += 1
+            self._vision_model_status = "not_started"
+            self._vision_model_error = None
+            self.vision_processor = None
+            self._vision_model_thread = None
+
         if self.inference_worker is not None:
             try:
                 self.inference_worker.set_trajectory_agent(None)
@@ -941,7 +1050,9 @@ class CarlaLaneDrivingApp:
         self._apply_goal_to_planner()
 
         self.current_location = self.vehicle.get_location()
-        self.vision_processor = VisionProcessor(str(cfg("VISION_MODE", "ultralytics")))
+        # Load the driving model asynchronously so the live camera and browser
+        # dashboard can start while Ultralytics deserializes the checkpoint.
+        self.vision_processor = None
 
         self.controller = FixedSpeedPIDController(
             fixed_throttle=float(cfg("FIXED_THROTTLE", 0.13)),
@@ -996,6 +1107,7 @@ class CarlaLaneDrivingApp:
             intersection_model=self.intersection_model,
         )
         self.inference_worker.start()
+        self._start_vision_model_load(self.inference_worker)
 
         self._startup_drive_until = time.monotonic() + 3.0
 
@@ -1099,12 +1211,37 @@ class CarlaLaneDrivingApp:
             control = manual_control or make_stop_control()
             screen = rgb_packet.bgr.copy()
             self._render_mode_overlay(screen, "MANUAL", 0.0)
+            if self._vision_model_status in {"loading", "warming_up"}:
+                self._draw_debug_status(screen, "LOADING DRIVING MODEL...")
+            elif self._vision_model_status == "failed":
+                self._draw_debug_status(screen, "DRIVING MODEL FAILED - CHECK TERMINAL")
             self._safe_vehicle_apply_control(control)
+            self._publish_debug_frame(screen)
+            return
+
+        if self._vision_model_status == "loading":
+            self._safe_vehicle_apply_control(make_stop_control())
+            screen = rgb_packet.bgr.copy()
+            self._draw_debug_status(screen, "LOADING DRIVING MODEL...")
+            self._publish_debug_frame(screen)
+            return
+
+        if self._vision_model_status == "failed":
+            self._safe_vehicle_apply_control(make_stop_control())
+            screen = rgb_packet.bgr.copy()
+            self._draw_debug_status(screen, "DRIVING MODEL FAILED - CHECK TERMINAL")
             self._publish_debug_frame(screen)
             return
 
         self._submit_inference(rgb_packet, semantic_packet, now)
         _, vision_result = self._accept_inference_results()
+
+        if self._vision_model_status != "ready":
+            self._safe_vehicle_apply_control(make_stop_control())
+            screen = rgb_packet.bgr.copy()
+            self._draw_debug_status(screen, "LOADING DRIVING MODEL...")
+            self._publish_debug_frame(screen)
+            return
         try:
             drive_info = self.drivable_debugger.show(vision_result)
         except Exception:

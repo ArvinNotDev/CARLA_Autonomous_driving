@@ -131,6 +131,8 @@ class InferenceWorker:
         with self._condition:
             if self._stop or (
                 kind == "trajectory" and self.trajectory_agent is None
+            ) or (
+                kind == "vision" and self.vision_processor is None
             ):
                 return 0
             self._next_request_id += 1
@@ -156,6 +158,17 @@ class InferenceWorker:
             self._pending["trajectory"] = None
             self._latest_trajectory = None
             self._last_error["trajectory"] = None
+            self._condition.notify_all()
+
+    def set_vision_processor(self, processor) -> None:
+        """Install the vision model after asynchronous checkpoint loading."""
+        with self._condition:
+            if self._stop:
+                return
+            self.vision_processor = processor
+            self._pending["vision"] = None
+            self._latest_vision = None
+            self._last_error["vision"] = None
             self._condition.notify_all()
 
     def submit_vision(
@@ -291,10 +304,12 @@ class InferenceWorker:
     def _run_vision(self, task: _Task) -> None:
         completed = time.perf_counter()
         try:
-            if self.vision_processor is None:
+            with self._condition:
+                processor = self.vision_processor
+            if processor is None:
                 raise RuntimeError("Vision model is unavailable")
 
-            result = self.vision_processor.detect(task.frame_a, task.frame_b)
+            result = processor.detect(task.frame_a, task.frame_b)
             if not isinstance(result, dict):
                 raise TypeError("Vision processor returned a non-dict result")
 

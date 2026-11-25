@@ -127,3 +127,20 @@ def test_ultralytics_retries_on_cpu_if_cuda_prediction_fails():
     assert result == ["cpu-result"]
     assert calls == ["0", "cpu"]
     assert processor.device == "cpu"
+
+def test_inference_worker_accepts_vision_model_after_async_loading():
+    from trajectory.worker import InferenceWorker
+
+    worker = InferenceWorker()
+    frame = np.zeros((8, 8, 3), dtype=np.uint8)
+    assert worker.submit_vision(
+        source_frame_id=1, semantic_frame=None, rgb_frame=frame
+    ) == 0
+
+    processor = SimpleNamespace(detect=lambda _semantic, _rgb: {})
+    worker.set_vision_processor(processor)
+    assert worker.submit_vision(
+        source_frame_id=2, semantic_frame=None, rgb_frame=frame
+    ) > 0
+    worker.stop()
+
