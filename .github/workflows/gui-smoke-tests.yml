@@ -24,6 +24,7 @@ on:
       - "tests/test_carla_installation.py"
       - "tests/test_panel.py"
       - "tests/test_web_dashboard.py"
+      - "tests/test_runtime_regressions.py"
       - "tests/test_vehicle_preference.py"
       - "tests/test_drivable_area_debugger.py"
       - "tests/test_stable_v2_profile.py"
