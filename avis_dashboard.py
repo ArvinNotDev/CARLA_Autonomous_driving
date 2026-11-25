@@ -642,7 +642,9 @@ if ($("resetRoiButton")) $("resetRoiButton").addEventListener("click",async()=>{
   keys.forEach(key=>payload[key]=ROI_PROFILE_DEFAULTS[key]);
   try {
     const data=await postJson("/api/settings",payload);
-    fillSettings(data.settings);
+    keys.forEach(key => $(key).value = data.settings[key]);
+    drawROIOverlays();
+    $("settingsForm").dataset.dirty = "true";
     showMessage(selectedROI+" ROI reset to AVIS_StableV2.",false);
   } catch(error) {
     showMessage(error.message,true);
