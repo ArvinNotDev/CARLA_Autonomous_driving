@@ -46,7 +46,7 @@ HOST = "localhost"
 PORT = 2000
 TIMEOUT = 20.0
 
-VEHICLE_BLUEPRINT = "vehicle.tesla.model3"
+VEHICLE_BLUEPRINT = "vehicle.ue4.ford.mustang"
 
 # -------------------------------------------------
 # Camera
@@ -108,6 +108,8 @@ debug_frame_buffer = None
 ACCELERATION_MPS2 = 2.5
 MIN_SPEED_KMH = 8.0
 MAX_SPEED_KMH = 25.0
+# Briefly hold zero steering after a maneuver before ordinary lane following resumes.
+MANEUVER_STEERING_CENTER_SECONDS = 0.4
 KP = 0.015
 KI = 0.0000
 KD = 0.002
