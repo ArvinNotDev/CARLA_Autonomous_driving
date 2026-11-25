@@ -458,12 +458,19 @@ AVIS_ROI_CONFIG_KEYS = {
     "rl_right_roi": "RL_RIGHT_ROI",
 }
 
+AVIS_SHARED_VISION_CONFIG_KEYS = {
+    "min_side_pixels": "MIN_SIDE_PIXELS",
+    "lane_offset_ratio": "FALLBACK_LANE_OFFSET_RATIO",
+    "center_smoothing": "LANE_CENTER_SMOOTH_ALPHA",
+}
+
 
 def _apply_avis_roi_settings(conf: ModuleType, settings: dict[str, Any]) -> None:
-    """Apply AVIS-local ROI values to the in-memory vision config only."""
-    for setting_key, config_key in AVIS_ROI_CONFIG_KEYS.items():
-        if setting_key in settings:
-            setattr(conf, config_key, float(settings[setting_key]))
+    """Apply AVIS-only ROI and lane geometry values to this process's config."""
+    for mapping in (AVIS_ROI_CONFIG_KEYS, AVIS_SHARED_VISION_CONFIG_KEYS):
+        for setting_key, config_key in mapping.items():
+            if setting_key in settings:
+                setattr(conf, config_key, float(settings[setting_key]))
 
 
 def _build_avis_settings(conf: ModuleType, sensor_angle: int) -> dict[str, Any]:
@@ -692,12 +699,26 @@ def run_avis(args: argparse.Namespace) -> int:
                         print(f"[AVIS] Vision backend changed to {active_backend}.")
                     elif active_backend == "classical":
                         vision_processor.update_settings(current_settings)
-                    elif any(
+                    else:
+                        vision_processor.min_side_pixels = int(
+                            current_settings["min_side_pixels"]
+                        )
+                        vision_processor.fallback_lane_offset_ratio = float(
+                            current_settings["lane_offset_ratio"]
+                        )
+                        vision_processor.lane_center_alpha = float(
+                            current_settings["center_smoothing"]
+                        )
+
+                    if any(
                         settings.get(key) != current_settings.get(key)
-                        for key in AVIS_ROI_CONFIG_KEYS
-                    ):
-                        # VisionProcessor reads these in-memory ROI values
-                        # on each frame; reset only its AVIS-side sticky state.
+                        for key in (
+                            *AVIS_ROI_CONFIG_KEYS,
+                            *AVIS_SHARED_VISION_CONFIG_KEYS,
+                        )
+                    ) and active_backend == "ultralytics":
+                        # Reset only the AVIS-side sticky lane state after
+                        # editing shared ROI/centre geometry settings.
                         vision_processor.last_lane_center = None
                         vision_processor.active_side = None
 
