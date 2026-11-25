@@ -155,3 +155,29 @@ def test_panel_module_available_or_explicitly_skipped():
         import pytest
         pytest.skip("PySide6 not installed in test environment")
     load_module(ROOT / "ui/control_panel.py", "control_panel_test")
+
+def test_closing_pygame_input_window_does_not_end_carla_runtime():
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "main.py").read_text(
+        encoding="utf-8"
+    )
+    iteration = source.split("def _control_iteration", 1)[1].split(
+        "def _render_mode_overlay", 1
+    )[0]
+    assert "self.running = bool(running)" not in iteration
+    assert "if not input_running:" in iteration
+    assert "manual_control = make_stop_control()" in iteration
+    assert "CARLA runtime remains active" in iteration
+
+
+def test_qt_event_loop_exit_reports_runtime_state_before_shutdown():
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "main.py").read_text(
+        encoding="utf-8"
+    )
+    run_method = source.split("    def run(self) -> None:", 1)[1]
+    assert "Qt event loop returned " in run_method
+    assert "control_thread_alive=" in run_method
+    assert "Entering shutdown path" in run_method

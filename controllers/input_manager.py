@@ -8,21 +8,32 @@ class InputManager:
         pygame.display.set_mode((320, 120))
         pygame.display.set_caption(window_title)
         self.last_exit_reason = None
+        self.running = True
 
     def poll(self):
-        running = True
         toggle_auto = False
 
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-                self.last_exit_reason = "Pygame control window was closed"
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    running = False
-                    self.last_exit_reason = "Escape key was pressed"
-                elif event.key == pygame.K_e:
-                    toggle_auto = True
+        if self.running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                    self.last_exit_reason = "Pygame control window was closed"
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        self.running = False
+                        self.last_exit_reason = "Escape key was pressed"
+                    elif event.key == pygame.K_e:
+                        toggle_auto = True
+
+        if not self.running:
+            return False, False, carla.VehicleControl(
+                throttle=0.0,
+                steer=0.0,
+                brake=1.0,
+                reverse=False,
+                hand_brake=False,
+                manual_gear_shift=False,
+            )
 
         keys = pygame.key.get_pressed()
 
@@ -52,7 +63,7 @@ class InputManager:
             hand_brake=False,
         )
 
-        return running, toggle_auto, manual_control
+        return self.running, toggle_auto, manual_control
 
     def is_key_pressed(self, key_char: str) -> bool:
         keys = pygame.key.get_pressed()

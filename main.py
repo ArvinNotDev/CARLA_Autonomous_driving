@@ -1255,7 +1255,10 @@ class CarlaLaneDrivingApp:
 
         if should_log_exit:
             reason = getattr(manager, "last_exit_reason", None) or "input window closed"
-            print(f"[INPUT] Shutdown requested: {reason}")
+            print(
+                f"[INPUT] Control window unavailable: {reason}. "
+                "CARLA runtime remains active; manual input is disabled."
+            )
 
     def _control_loop(self) -> None:
         next_tick = time.perf_counter()
@@ -1306,11 +1309,14 @@ class CarlaLaneDrivingApp:
             return
 
         with self._state_lock:
-            running = self._input_running
+            input_running = self._input_running
             toggle_auto = self._toggle_auto_pending
             self._toggle_auto_pending = False
             manual_control = self._manual_control
-            self.running = bool(running)
+            if not input_running:
+                # A Pygame window close only disconnects keyboard input. It
+                # must never terminate the CARLA runtime or Qt event loop.
+                manual_control = make_stop_control()
         if toggle_auto:
             with self._state_lock:
                 self.auto_mode = not self.auto_mode
@@ -1646,14 +1652,24 @@ class CarlaLaneDrivingApp:
             # still active; only an explicit runtime shutdown should end main.
             while self.running and not self._stop_event.is_set():
                 exit_code = qt_app.exec()
+                print(
+                    "[RUNTIME] Qt event loop returned "
+                    f"(code={exit_code}, running={self.running}, "
+                    f"stop_requested={self._stop_event.is_set()}, "
+                    f"input_window_open={self._input_running}, "
+                    f"control_thread_alive={bool(self._control_thread and self._control_thread.is_alive())})."
+                )
                 if not self.running or self._stop_event.is_set():
                     break
                 print(
-                    "[RUNTIME] Qt event loop returned while CARLA is still "
-                    f"running (code={exit_code}); restarting the event loop."
+                    "[RUNTIME] Runtime is still active; restarting the Qt event loop."
                 )
                 self._stop_event.wait(0.1)
 
+        print(
+            "[RUNTIME] Entering shutdown path "
+            f"(running={self.running}, stop_requested={self._stop_event.is_set()})."
+        )
         self.shutdown()
 
 
