@@ -404,7 +404,7 @@ function renderRuntimeSettings(){
    else if(kind==='choice'){input=document.createElement('select');for(const value of (limits||[])){const option=document.createElement('option');option.value=value;option.textContent=value==='model'?'Junction model (ResNet18)':value==='crosswalk_roi'?'Crosswalk ROI — horizontal line':value;input.appendChild(option);}input.value=runtimeValues[key]??'';}
    else if(kind==='sequence'){row.classList.add('sequence-row');input=document.createElement('textarea');input.rows=8;input.spellcheck=false;input.value=JSON.stringify(runtimeValues[key]||{},null,2);}
    else{input=document.createElement('input');input.type=kind==='str'?'text':'number';if(kind!=='str'&&limits){input.min=limits[0];input.max=limits[1];input.step=limits[2];}input.value=runtimeValues[key]??'';}
-   input.dataset.key=key;input.setAttribute('aria-label',label);row.appendChild(input);
+   input.dataset.key=key;input.dataset.originalValue=kind==='bool'?String(input.checked):input.value;input.setAttribute('aria-label',label);row.appendChild(input);
    if(kind==='sequence'){const help=document.createElement('div');help.className='form-help';help.textContent='JSON format: LEFT, RIGHT and STRAIGHT arrays containing distance_m and steering_value for each action. Steering must be between −1 and 1.';row.appendChild(help);}
    body.appendChild(row);
   }
@@ -425,7 +425,7 @@ document.getElementById('settings_search').addEventListener('input',event=>filte
 document.getElementById('refresh_runtime').addEventListener('click',()=>fetch('/get_settings').then(r=>r.json()).then(data=>{runtimeValues=data.values||{};renderRuntimeSettings();startFrameLoop();showToast('Runtime settings refreshed');}).catch(()=>showToast('Refresh failed')));
 document.getElementById('apply_runtime').addEventListener('click',()=>{
  const payload={};
- try{document.querySelectorAll('#runtime_settings [data-key]').forEach(input=>{const key=input.dataset.key,spec=runtimeSpecs.find(item=>item[0]===key);if(spec[2]==='bool')payload[key]=input.checked;else if(spec[2]==='sequence'){
+ try{document.querySelectorAll('#runtime_settings [data-key]').forEach(input=>{const key=input.dataset.key,spec=runtimeSpecs.find(item=>item[0]===key);const currentValue=spec[2]==='bool'?String(input.checked):input.value;if(currentValue===input.dataset.originalValue)return;if(spec[2]==='bool')payload[key]=input.checked;else if(spec[2]==='sequence'){
    try{
     let parsed=JSON.parse(input.value);
     if(typeof parsed==='string')parsed=JSON.parse(parsed);

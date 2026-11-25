@@ -125,3 +125,12 @@ def test_junction_sequences_can_be_updated_from_the_web_dashboard():
     finally:
         conf.JUNCTION_MOVEMENT_SEQUENCES = original
 
+def test_web_settings_apply_only_parses_sequence_when_it_was_edited():
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "stream.py").read_text(
+        encoding="utf-8"
+    )
+    assert "input.dataset.originalValue" in source
+    assert "if(currentValue===input.dataset.originalValue)return;" in source
+
