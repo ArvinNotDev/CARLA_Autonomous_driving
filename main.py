@@ -1195,13 +1195,23 @@ class CarlaLaneDrivingApp:
         rgb_packet, semantic_packet, _ = self.camera_manager.snapshot()
 
         if rgb_packet is None:
-            control = (
-                carla.VehicleControl(throttle=0.18)
-                if auto_mode and time.monotonic() < self._startup_drive_until
-                else (manual_control if not auto_mode else make_stop_control())
-            )
+            model_loading = self._vision_model_status in {"loading", "warming_up"}
+            model_failed = self._vision_model_status == "failed"
+            if auto_mode and (model_loading or model_failed):
+                control = make_stop_control()
+            else:
+                control = (
+                    carla.VehicleControl(throttle=0.18)
+                    if auto_mode and time.monotonic() < self._startup_drive_until
+                    else (manual_control if not auto_mode else make_stop_control())
+                )
             self._safe_vehicle_apply_control(control)
-            self._publish_debug_frame(blank_frame())
+            screen = blank_frame()
+            if model_loading:
+                self._draw_debug_status(screen, "LOADING DRIVING MODEL...")
+            elif model_failed:
+                self._draw_debug_status(screen, "DRIVING MODEL FAILED - CHECK TERMINAL")
+            self._publish_debug_frame(screen)
             return
 
         # Manual driving must not wait for vision, trajectory, or junction

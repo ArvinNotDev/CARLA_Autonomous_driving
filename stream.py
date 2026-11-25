@@ -427,8 +427,12 @@ document.getElementById('apply_runtime').addEventListener('click',()=>{
  const payload={};
  try{document.querySelectorAll('#runtime_settings [data-key]').forEach(input=>{const key=input.dataset.key,spec=runtimeSpecs.find(item=>item[0]===key);if(spec[2]==='bool')payload[key]=input.checked;else if(spec[2]==='sequence'){
    try{
-    const parsed=JSON.parse(input.value);
+    let parsed=JSON.parse(input.value);
+    if(typeof parsed==='string')parsed=JSON.parse(parsed);
     if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('Expected an object with LEFT, RIGHT and STRAIGHT arrays.');
+    for(const direction of ['LEFT','RIGHT','STRAIGHT']){
+     if(parsed[direction]!==undefined&&!Array.isArray(parsed[direction]))throw new Error(direction+' must be an array.');
+    }
     payload[key]=parsed;
    }catch(error){throw new Error('Invalid JSON in '+key+': '+error.message);}
   }else if(spec[2]==='int'){if(!input.value.trim())throw new Error(key+' is required');payload[key]=parseInt(input.value,10);}else if(spec[2]==='float'){if(!input.value.trim())throw new Error(key+' is required');payload[key]=parseFloat(input.value);}else payload[key]=input.value;});}
