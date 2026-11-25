@@ -52,6 +52,12 @@ def _runtime_thread_exception_hook(args) -> None:
 sys.excepthook = _runtime_sys_exception_hook
 threading.excepthook = _runtime_thread_exception_hook
 
+# AVIS is an independent runtime backend. Dispatch before CARLA API setup/import.
+if __name__ == "__main__" and "--avis" in sys.argv[1:]:
+    from avis_runtime import main as avis_main
+
+    raise SystemExit(avis_main(sys.argv[1:]))
+
 # The CARLA API must be configured before importing carla or any module that
 # imports it. On a normal GUI launch, show the first-run folder picker and
 # remember the selected installation in the user's Qt settings.
