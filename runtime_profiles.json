@@ -498,8 +498,10 @@
     "DW_LEFT_ROI": 0.1,
     "DW_RIGHT_ROI": 0.9,
     "MODEL_IMAGE_SIZE": 512,
-    "ACCELERATION_MPS2": 2.5,
+    "ACCELERATION_MPS2": 1.5,
     "MIN_SPEED_KMH": 8,
-    "MAX_SPEED_KMH": 25
-  }
+    "MAX_SPEED_KMH": 12.0,
+    "VEHICLE_BLUEPRINT": "vehicle.ue4.ford.mustang"
+  },
+  "_last_vehicle_blueprint": "vehicle.ue4.ford.mustang"
 }
