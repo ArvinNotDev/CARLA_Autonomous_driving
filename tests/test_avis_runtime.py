@@ -17,7 +17,12 @@ from avis_runtime import (
 )
 
 from avis_classical_vision import AvisClassicalVisionProcessor
-from avis_dashboard import AvisDashboardState, create_avis_dashboard_app
+from avis_dashboard import (
+    DEFAULT_AVIS_SETTINGS,
+    AvisDashboardState,
+    create_avis_dashboard_app,
+    validate_avis_settings,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -262,26 +267,114 @@ def test_avis_manual_control_deadman_expires_without_dashboard_heartbeat(
     assert state.drive_state() == ("manual", 0.0, 0.0, False)
 
 
-def test_avis_classical_vision_finds_synthetic_lane_lines_and_masks():
+def test_avis_classical_vision_uses_the_profile_ll_and_rl_rectangles():
     import cv2
     import numpy as np
 
     frame = np.zeros((192, 320, 3), dtype=np.uint8)
-    cv2.line(frame, (42, 188), (145, 105), (255, 255, 255), 6)
-    cv2.line(frame, (178, 105), (278, 188), (255, 255, 255), 6)
+    cv2.line(frame, (108, 109), (100, 132), (255, 255, 255), 5)
+    cv2.line(frame, (212, 109), (220, 132), (255, 255, 255), 5)
 
     processor = AvisClassicalVisionProcessor()
     result = processor.detect(None, frame)
     debug = result["debug"]
 
     assert result["lane_valid"] is True
-    assert result["lane_type"] == "both_sides"
-    assert abs(result["error"]) < 20
+    # This deliberately matches VisionProcessor's sticky-side policy:
+    # the right ROI is selected first when no side is active.
+    assert result["lane_type"] == "only_right"
+    assert abs(result["error"]) < 25
     assert debug["lane_mask"].shape == frame.shape[:2]
     assert debug["drivable_mask"].shape == frame.shape[:2]
     assert np.count_nonzero(debug["lane_mask"]) > 0
     assert np.count_nonzero(debug["drivable_mask"]) > 0
     assert debug["combined"].shape == frame.shape
+
+    allowed = np.zeros(frame.shape[:2], dtype=bool)
+    ll = DEFAULT_AVIS_SETTINGS
+    allowed[
+        int(ll["ll_top_roi"] * frame.shape[0]):int(ll["ll_bottom_roi"] * frame.shape[0]),
+        int(ll["ll_left_roi"] * frame.shape[1]):int(ll["ll_right_roi"] * frame.shape[1]),
+    ] = True
+    allowed[
+        int(ll["rl_top_roi"] * frame.shape[0]):int(ll["rl_bottom_roi"] * frame.shape[0]),
+        int(ll["rl_left_roi"] * frame.shape[1]):int(ll["rl_right_roi"] * frame.shape[1]),
+    ] = True
+    assert np.count_nonzero(debug["lane_mask"][~allowed]) == 0
+
+
+def test_avis_classical_hough_receives_only_cropped_left_and_right_rois(monkeypatch):
+    import cv2
+    import numpy as np
+
+    settings = {
+        "ll_top_roi": 0.20,
+        "ll_bottom_roi": 0.80,
+        "ll_left_roi": 0.10,
+        "ll_right_roi": 0.30,
+        "rl_top_roi": 0.25,
+        "rl_bottom_roi": 0.75,
+        "rl_left_roi": 0.70,
+        "rl_right_roi": 0.90,
+    }
+    processor = AvisClassicalVisionProcessor(settings)
+    frame = np.zeros((200, 320, 3), dtype=np.uint8)
+    seen_shapes = []
+
+    def fake_hough(binary, **_kwargs):
+        seen_shapes.append(binary.shape)
+        return np.array([[[10, 0, 10, binary.shape[0] - 1]]], dtype=np.int32)
+
+    monkeypatch.setattr(cv2, "HoughLinesP", fake_hough)
+    result = processor.detect(None, frame)
+    debug = result["debug"]
+
+    assert seen_shapes == [(120, 64), (100, 64)]
+    assert debug["left_hough_segments"] == 1
+    assert debug["right_hough_segments"] == 1
+
+    allowed = np.zeros(frame.shape[:2], dtype=bool)
+    allowed[40:160, 32:96] = True
+    allowed[50:150, 224:288] = True
+    assert np.count_nonzero(debug["lane_mask"][~allowed]) == 0
+
+
+def test_avis_dashboard_roi_settings_validate_each_rectangle():
+    updated = validate_avis_settings(
+        DEFAULT_AVIS_SETTINGS,
+        {
+            "ll_top_roi": 0.50,
+            "ll_bottom_roi": 0.75,
+            "rl_left_roi": 0.60,
+            "rl_right_roi": 0.85,
+        },
+    )
+    assert updated["ll_top_roi"] == pytest.approx(0.50)
+    assert updated["rl_right_roi"] == pytest.approx(0.85)
+
+    with pytest.raises(ValueError, match="LL ROI bottom"):
+        validate_avis_settings(
+            DEFAULT_AVIS_SETTINGS,
+            {"ll_top_roi": 0.75, "ll_bottom_roi": 0.70},
+        )
+
+    with pytest.raises(ValueError, match="RL ROI right edge"):
+        validate_avis_settings(
+            DEFAULT_AVIS_SETTINGS,
+            {"rl_left_roi": 0.80, "rl_right_roi": 0.70},
+        )
+
+
+def test_avis_dashboard_roi_editor_is_available_for_both_vision_backends(tmp_path):
+    state = AvisDashboardState(settings_path=tmp_path / "avis_settings.json")
+    client = create_avis_dashboard_app(state).test_client()
+    response = client.get("/")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert 'id="roiCanvas"' in html
+    assert 'id="ll_top_roi"' in html
+    assert 'id="rl_top_roi"' in html
+    assert "shared by both AVIS vision backends" in html
 
 
 def test_avis_classical_vision_stops_when_no_lane_is_detected():
