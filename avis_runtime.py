@@ -655,6 +655,7 @@ def run_avis(args: argparse.Namespace) -> int:
                             selected_backend, current_settings
                         )
                         inference_worker.set_vision_processor(replacement)
+                        vision_processor = replacement
                         active_backend = selected_backend
                         print(f"[AVIS] Vision backend changed to {active_backend}.")
                     elif active_backend == "classical":
