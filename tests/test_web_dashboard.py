@@ -165,7 +165,7 @@ def test_speed_controller_settings_are_live_runtime_settings():
     updated = {
         "ACCELERATION_MPS2": min(8.0, previous[0] + 0.1),
         "MIN_SPEED_KMH": previous[1] + 0.5,
-        "MAX_SPEED_KMH": max(previous[2], previous[1] + 1.0),
+        "MAX_SPEED_KMH": previous[2] + 1.0,
     }
     try:
         with (
