@@ -293,12 +293,12 @@ def test_avis_classical_vision_uses_the_profile_ll_and_rl_rectangles():
     allowed = np.zeros(frame.shape[:2], dtype=bool)
     ll = DEFAULT_AVIS_SETTINGS
     allowed[
-        int(ll["ll_top_roi"] * frame.shape[0]):int(ll["ll_bottom_roi"] * frame.shape[0]),
-        int(ll["ll_left_roi"] * frame.shape[1]):int(ll["ll_right_roi"] * frame.shape[1]),
+        round(ll["ll_top_roi"] * frame.shape[0]):round(ll["ll_bottom_roi"] * frame.shape[0]),
+        round(ll["ll_left_roi"] * frame.shape[1]):round(ll["ll_right_roi"] * frame.shape[1]),
     ] = True
     allowed[
-        int(ll["rl_top_roi"] * frame.shape[0]):int(ll["rl_bottom_roi"] * frame.shape[0]),
-        int(ll["rl_left_roi"] * frame.shape[1]):int(ll["rl_right_roi"] * frame.shape[1]),
+        round(ll["rl_top_roi"] * frame.shape[0]):round(ll["rl_bottom_roi"] * frame.shape[0]),
+        round(ll["rl_left_roi"] * frame.shape[1]):round(ll["rl_right_roi"] * frame.shape[1]),
     ] = True
     assert np.count_nonzero(debug["lane_mask"][~allowed]) == 0
 
