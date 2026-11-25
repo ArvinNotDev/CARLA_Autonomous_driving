@@ -14,6 +14,7 @@ from avis_runtime import (
     normalize_avis_controls,
     normalize_avis_manual_controls,
     select_avis_target_speed,
+    _create_avis_vision_processor,
 )
 
 from avis_classical_vision import AvisClassicalVisionProcessor
@@ -285,9 +286,8 @@ def test_avis_classical_vision_uses_the_profile_ll_and_rl_rectangles():
     assert result["lane_type"] == "only_right"
     assert abs(result["error"]) < 25
     assert debug["lane_mask"].shape == frame.shape[:2]
-    assert debug["drivable_mask"].shape == frame.shape[:2]
+    assert debug["drivable_mask"] is None
     assert np.count_nonzero(debug["lane_mask"]) > 0
-    assert np.count_nonzero(debug["drivable_mask"]) > 0
     assert debug["combined"].shape == frame.shape
 
     allowed = np.zeros(frame.shape[:2], dtype=bool)
@@ -375,6 +375,11 @@ def test_avis_dashboard_roi_editor_is_available_for_both_vision_backends(tmp_pat
     assert 'id="ll_top_roi"' in html
     assert 'id="rl_top_roi"' in html
     assert "shared by both AVIS vision backends" in html
+    assert 'data-panel="live"' in html
+    assert 'data-panel="settings"' in html
+    assert 'data-panel="roi"' in html
+    assert 'id="drivableView"' in html
+    assert "does not construct or calculate a drivable-area mask" in html
 
 
 def test_avis_classical_vision_stops_when_no_lane_is_detected():
@@ -385,7 +390,7 @@ def test_avis_classical_vision_stops_when_no_lane_is_detected():
 
     assert result["lane_valid"] is False
     assert result["error"] == 0.0
-    assert np.count_nonzero(result["debug"]["drivable_mask"]) == 0
+    assert result["debug"]["drivable_mask"] is None
 
 
 
@@ -399,3 +404,35 @@ def test_avis_client_sends_reverse_speed_only_for_manual_controls():
 
     assert fake_car.speed_commands == [-30, 0]
     assert fake_car.steering_commands == [-20, 0]
+
+
+
+def test_avis_model_debug_suppresses_vehicle_mask_without_mutating_shared_processor(monkeypatch):
+    import vision.city_vision_processing as shared_vision
+
+    received = {}
+
+    class FakeVisionProcessor:
+        def __init__(self, mode):
+            received["mode"] = mode
+
+        def _draw_debug(self, **kwargs):
+            received["vehicles_mask"] = kwargs.get("vehicles_mask")
+            return "debug-frame"
+
+    monkeypatch.setattr(shared_vision, "VisionProcessor", FakeVisionProcessor)
+    processor = _create_avis_vision_processor("ultralytics", {})
+    result = processor._draw_debug(
+        frame=None,
+        line_mask=None,
+        drivable_mask=None,
+        left_x=None,
+        right_x=None,
+        lane_center=0.0,
+        lane_type="none",
+        vehicles_mask=object(),
+    )
+
+    assert result == "debug-frame"
+    assert received["mode"] == "ultralytics"
+    assert received["vehicles_mask"] is None

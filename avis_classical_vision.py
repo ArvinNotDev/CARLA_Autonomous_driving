@@ -48,8 +48,8 @@ class AvisClassicalVisionProcessor:
     median-boundary, angle, sticky-side, offset and smoothing procedure used
     by the project's model-backed VisionProcessor.
 
-    The drivable mask is a visual corridor estimate; it is not semantic
-    road-surface segmentation and is not used as a second steering signal.
+    Classical mode only estimates lane boundaries and the target lane centre.
+    It deliberately does not build a drivable-area mask.
     """
 
     ROI_KEYS = (
@@ -377,43 +377,6 @@ class AvisClassicalVisionProcessor:
             cv2.LINE_AA,
         )
 
-    def _estimated_drivable_mask(
-        self,
-        frame_shape: tuple[int, int],
-        settings: dict[str, Any],
-        lane_center: float,
-        lane_valid: bool,
-    ) -> np.ndarray:
-        height, width = frame_shape
-        mask = np.zeros((height, width), dtype=np.uint8)
-        if not lane_valid:
-            return mask
-
-        ll_top, ll_bottom, _, _ = self._roi_bounds(
-            frame_shape, settings, "ll"
-        )
-        rl_top, rl_bottom, _, _ = self._roi_bounds(
-            frame_shape, settings, "rl"
-        )
-        top = max(0, min(ll_top, rl_top))
-        bottom = min(height, max(ll_bottom, rl_bottom))
-        if bottom <= top:
-            return mask
-
-        half_width = max(2.0, width * float(settings["lane_offset_ratio"]))
-        middle_y = (top + bottom) * 0.5
-        points = np.array(
-            [[
-                (int(round(lane_center - half_width * 0.72)), top),
-                (int(round(lane_center + half_width * 0.72)), top),
-                (int(round(lane_center + half_width)), bottom - 1),
-                (int(round(lane_center - half_width)), bottom - 1),
-            ]],
-            dtype=np.int32,
-        )
-        cv2.fillPoly(mask, points, 255)
-        return mask
-
     def detect(
         self,
         semantic_frame: np.ndarray | None,
@@ -500,17 +463,9 @@ class AvisClassicalVisionProcessor:
         self.last_lane_center = lane_center
         error = float(lane_center - frame_center)
 
-        drivable_mask = self._estimated_drivable_mask(
-            (height, width),
-            settings,
-            lane_center,
-            lane_valid,
-        )
+        # Hough mode is lane-boundary-only: do not infer a road polygon or
+        # allocate a synthetic drivable-area mask.
         overlay = frame.copy()
-        if lane_valid and np.any(drivable_mask):
-            green = overlay.copy()
-            green[drivable_mask > 0] = (45, 150, 75)
-            overlay = cv2.addWeighted(overlay, 0.78, green, 0.22, 0)
 
         if np.any(line_mask):
             line_overlay = overlay.copy()
@@ -544,7 +499,7 @@ class AvisClassicalVisionProcessor:
             "processing_ms": (time.perf_counter() - started) * 1000.0,
             "debug": {
                 "combined": overlay,
-                "drivable_mask": drivable_mask,
+                "drivable_mask": None,
                 "vehicles_mask": None,
                 "lane_mask": line_mask,
                 "threshold_mask": threshold_mask,

@@ -514,7 +514,32 @@ def _create_avis_vision_processor(
 
     from vision.city_vision_processing import VisionProcessor
 
-    return VisionProcessor("ultralytics")
+    class AvisVisionProcessor(VisionProcessor):
+        """Keep model debug visuals AVIS-specific; never paint vehicle masks."""
+
+        def _draw_debug(
+            self,
+            frame,
+            line_mask,
+            drivable_mask,
+            left_x,
+            right_x,
+            lane_center,
+            lane_type,
+            vehicles_mask=None,
+        ):
+            return super()._draw_debug(
+                frame=frame,
+                line_mask=line_mask,
+                drivable_mask=drivable_mask,
+                left_x=left_x,
+                right_x=right_x,
+                lane_center=lane_center,
+                lane_type=lane_type,
+                vehicles_mask=None,
+            )
+
+    return AvisVisionProcessor("ultralytics")
 
 
 def _encode_avis_preview(cv2_module, image) -> bytes | None:

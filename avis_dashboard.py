@@ -321,35 +321,61 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
 .mode-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.btn{border:1px solid #304761;border-radius:10px;background:#1a2b42;color:var(--text);font:600 12px inherit;padding:11px 12px;cursor:pointer;transition:background .15s,border-color .15s,transform .15s}.btn:hover{background:#23415c;border-color:#4a8ab6}.btn:active{transform:scale(.985)}.btn.active{background:#123b54;border-color:#42bde9;color:#b9f0ff}.btn.stop{background:#3b1c2b;border-color:#713348;color:#ffc1cb}.btn.stop:hover{background:#542034}
 .manual-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:15px}.control label,.field label{display:flex;justify-content:space-between;gap:10px;color:#a9bdd2;font-size:11px;margin-bottom:8px}.control output{color:var(--cyan);font-variant-numeric:tabular-nums}input[type=range]{width:100%;accent-color:var(--accent)}.keyhelp{font-size:10px;color:#7289a2;line-height:1.6;margin-top:10px}
 .fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.field input,.field select{width:100%;background:#0a1422;border:1px solid #2a3d55;border-radius:9px;padding:9px 10px;color:var(--text);font:13px inherit;outline:none}.field input:focus,.field select:focus{border-color:var(--accent)}.field.full{grid-column:1/-1}.section-label{color:var(--cyan);font-size:10px;text-transform:uppercase;letter-spacing:.13em;margin:18px 0 10px}.section-label:first-child{margin-top:2px}.hint{font-size:10px;color:#748ba5;line-height:1.5;margin-top:5px}.actions{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:15px}.save{background:linear-gradient(120deg,#1688bb,#2166a8);border:0;color:white}.message{font-size:11px;color:var(--ok);min-height:16px}.classical-box{border-top:1px solid #26374b;margin-top:16px;padding-top:4px}.hidden{display:none!important}
-@media(max-width:980px){.grid{grid-template-columns:1fr}.topline{align-items:start;flex-direction:column}.metrics{grid-template-columns:repeat(2,1fr)}}
-@media(max-width:560px){header{padding:13px 14px}.brand h1{font-size:14px}.status{font-size:10px}.views{grid-template-columns:1fr}.manual-grid,.fields{grid-template-columns:1fr}.panel{padding:13px}.metric strong{font-size:17px}}
+.app-header{padding:16px clamp(16px,3vw,38px);border-bottom:1px solid #22364d;background:#071321ef}
+.header-main{min-width:0}.header-eyebrow{color:var(--cyan);font-size:10px;font-weight:800;letter-spacing:.15em;text-transform:uppercase}
+.header-title{font-size:clamp(18px,2.1vw,24px);font-weight:850;letter-spacing:-.035em;margin:4px 0}
+.header-subtitle{color:var(--muted);font-size:11px;line-height:1.5}
+.header-status{display:flex;justify-content:flex-end;align-items:center;gap:8px;flex-wrap:wrap}
+.status-pill{display:inline-flex;align-items:center;gap:8px;border:1px solid #2a4059;background:#102137;border-radius:999px;padding:7px 11px;color:#b5c9dc;font-size:10px}
+.right-panel{min-width:0;position:sticky;top:90px;max-height:calc(100vh - 106px);overflow:auto;scrollbar-width:thin;scrollbar-color:#35516d transparent}
+.panel-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;padding:6px;background:#0b1726;border:1px solid #263b52;border-radius:12px;margin-bottom:12px;position:sticky;top:0;z-index:3}
+.panel-tab{min-width:0;border:1px solid transparent;border-radius:8px;background:transparent;color:#91a8bf;padding:10px 7px;font:650 11px inherit;cursor:pointer}
+.panel-tab:hover{color:#e9f1fb;background:#172b41}
+.panel-tab.active{color:#b9efff;background:#123b54;border-color:#42a9d4}
+.panel-content{display:none;gap:12px}
+.panel-content.active{display:grid}
+.panel-content>.panel,.panel-content>form.panel{margin:0}
+.metrics{margin:0 0 2px}
+.views .view:first-child{grid-column:1/-1}
+.roi-editor-wrap{background:#030812}
+.roi-editor-wrap canvas{outline:0}
+@media(max-width:980px){.grid{grid-template-columns:1fr}.topline{align-items:start;flex-direction:column}.metrics{grid-template-columns:repeat(2,1fr)}.right-panel{position:static;max-height:none;overflow:visible}}
+@media(max-width:560px){header{padding:13px 14px}.brand h1{font-size:14px}.status{font-size:10px}.header-status{justify-content:flex-start}.views{grid-template-columns:1fr}.manual-grid,.fields{grid-template-columns:1fr}.panel{padding:13px}.metric strong{font-size:17px}.panel-tabs{position:static}}
 </style>
 </head>
 <body>
-<header>
-  <div class="brand"><div class="logo">AV</div><div><h1>AVIS Control Studio</h1><p>Independent vehicle runtime</p></div></div>
-  <div class="status"><span id="connectionDot" class="dot"></span><span id="connectionText">Connecting to runtime</span></div>
+<header class="app-header">
+  <div class="header-main"><div class="header-eyebrow">Autonomous Driving · AVIS Runtime Console</div><div class="header-title">AVIS Runtime Studio</div><div class="header-subtitle">Live perception, vehicle control and AVIS-only calibration in one browser workspace.</div></div>
+  <div class="header-status"><span class="status-pill"><span id="connectionDot" class="dot"></span><span id="connectionText">Connecting to AVIS</span></span><span class="status-pill" id="backendTag">VISION —</span></div>
 </header>
 <main>
-  <div class="topline"><div><div class="eyebrow">Live control / perception</div><h2>AVIS vehicle dashboard</h2><div class="muted">Runtime settings are isolated in avis_settings.json and never write to CARLA profiles.</div></div><div class="tag" id="backendTag">VISION: --</div></div>
+  <div class="topline"><div><div class="eyebrow">Live control / perception</div><h2>Vehicle perception workspace</h2><div class="muted">AVIS settings are stored independently and do not modify CARLA profiles or runtime configuration.</div></div><div class="tag">AVIS ONLY</div></div>
+  <div class="grid">
+    <section class="stack">
+      <div class="panel">
+        <div class="panel-head"><h3>Perception monitor</h3><span class="tag">Live camera / masks</span></div>
+        <div class="views">
+          <div class="view"><div class="view-title"><span>AVIS camera / ROI editor</span><small>Drag to move · handles to resize</small></div><div class="roi-editor-wrap"><img id="roiSource" class="roi-source" src="/stream/camera" alt="AVIS camera"><canvas id="roiCanvas"></canvas></div><div class="roi-toolbar"><button class="btn active" id="roiLeftButton" type="button">Left ROI</button><button class="btn" id="roiRightButton" type="button">Right ROI</button><button class="btn" id="resetRoiButton" type="button">Reset selected ROI</button><label class="hint"><input type="checkbox" id="showRois" checked> Show both ROIs</label><span class="message" id="roiCanvasMessage"></span></div><div class="roi-help">These are the same LL / RL rectangles used by the model-based lane processor. Classical CV runs thresholding, blur, Canny and HoughLinesP strictly inside the selected rectangles.</div></div>
+          <div class="view"><div class="view-title"><span>Lane overlay</span><small>Detected boundaries</small></div><img src="/stream/combined" alt="Lane overlay"></div>
+          <div class="view"><div class="view-title"><span>Lane mask</span><small>Binary lane boundaries</small></div><img src="/stream/line-mask" alt="Lane mask"></div>
+          <div class="view" id="drivableView"><div class="view-title"><span>Semantic drivable area</span><small>Model segmentation only</small></div><img src="/stream/drivable-mask" alt="Semantic drivable-area mask"></div>
+        </div>
+        <div class="hint" id="backendDescription">The semantic model provides the road-surface mask. Classical Hough mode focuses only on lane boundaries and does not estimate a drivable area.</div>
+      </div>
+    </section>
+    <aside class="right-panel">
+      <nav class="panel-tabs" aria-label="AVIS runtime workspace">
+        <button type="button" class="panel-tab active" data-panel="live">Live monitor</button>
+        <button type="button" class="panel-tab" data-panel="settings">Settings</button>
+        <button type="button" class="panel-tab" data-panel="roi">ROI tools</button>
+      </nav>
+      <section class="panel-content active" id="panel-live">
   <div class="metrics">
     <div class="metric"><span>Speed</span><strong id="speedValue">0.0 <small>km/h</small></strong></div>
     <div class="metric"><span>Target speed</span><strong id="targetValue">0.0 <small>km/h</small></strong></div>
     <div class="metric"><span>Steering</span><strong id="steerValue">0.00</strong></div>
     <div class="metric"><span>Lane error</span><strong id="errorValue">-- <small>px</small></strong></div>
   </div>
-  <div class="grid">
-    <section class="stack">
-      <div class="panel">
-        <div class="panel-head"><h3>Perception monitor</h3><span class="tag">Live camera / masks</span></div>
-        <div class="views">
-          <div class="view"><div class="view-title"><span>AVIS camera / ROI editor</span><small>Drag to move · handles to resize</small></div><div class="roi-editor-wrap"><img id="roiSource" class="roi-source" src="/stream/camera" alt="AVIS camera"><canvas id="roiCanvas"></canvas></div><div class="roi-toolbar"><button class="btn active" id="roiLeftButton" type="button">Left ROI</button><button class="btn" id="roiRightButton" type="button">Right ROI</button><button class="btn" id="resetRoiButton" type="button">Reset selected ROI</button><label class="hint"><input type="checkbox" id="showRois" checked> Show both ROIs</label></div><div class="roi-help">These are the same LL / RL rectangles used by the model-based lane processor. Classical CV runs thresholding, blur, Canny and HoughLinesP strictly inside the selected rectangles.</div></div>
-          <div class="view"><div class="view-title"><span>Lane overlay</span><small>Detected boundaries</small></div><img src="/stream/combined" alt="Lane overlay"></div>
-          <div class="view"><div class="view-title"><span>Lane mask</span><small>Binary lane boundaries</small></div><img src="/stream/line-mask" alt="Lane mask"></div>
-          <div class="view"><div class="view-title"><span>Drivable area</span><small>Semantic or estimated corridor</small></div><img src="/stream/drivable-mask" alt="Drivable-area mask"></div>
-        </div>
-        <div class="hint">Classical mode estimates a drivable corridor from lane boundaries. It is not a semantic road-surface model.</div>
-      </div>
       <div class="panel">
         <div class="panel-head"><h3>Drive mode</h3><span class="tag" id="modeTag">AUTO</span></div>
         <div class="mode-row">
@@ -367,8 +393,9 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
         <div class="panel-head"><h3>Runtime telemetry</h3><span class="tag" id="runtimeStatus">Starting</span></div>
         <div class="muted" id="runtimeDetails">Waiting for the first camera frame.</div>
       </div>
-    </section>
-    <aside class="stack">
+
+      </section>
+      <section class="panel-content" id="panel-settings">
       <form class="panel" id="settingsForm">
         <div class="panel-head"><h3>AVIS runtime settings</h3><span class="tag">Live apply</span></div>
         <div class="section-label">Vision engine</div>
@@ -392,18 +419,6 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
           <div class="field"><label for="steer_limit">Steering limit</label><input id="steer_limit" data-setting="steer_limit" type="number" min=".05" max="1" step=".01"></div>
           <div class="field full"><label for="max_steer_step">Maximum steering change / tick</label><input id="max_steer_step" data-setting="max_steer_step" type="number" min=".01" max="1" step=".01"></div>
         </div>
-        <div class="section-label">Lane ROI calibration · shared by both AVIS vision backends</div>
-        <div class="fields">
-          <div class="field"><label for="ll_top_roi">Left ROI · top</label><input id="ll_top_roi" data-setting="ll_top_roi" type="number" min="0" max=".98" step=".01"></div>
-          <div class="field"><label for="ll_bottom_roi">Left ROI · bottom</label><input id="ll_bottom_roi" data-setting="ll_bottom_roi" type="number" min=".02" max="1" step=".01"></div>
-          <div class="field"><label for="ll_left_roi">Left ROI · left</label><input id="ll_left_roi" data-setting="ll_left_roi" type="number" min="0" max=".98" step=".01"></div>
-          <div class="field"><label for="ll_right_roi">Left ROI · right</label><input id="ll_right_roi" data-setting="ll_right_roi" type="number" min=".02" max="1" step=".01"></div>
-          <div class="field"><label for="rl_top_roi">Right ROI · top</label><input id="rl_top_roi" data-setting="rl_top_roi" type="number" min="0" max=".98" step=".01"></div>
-          <div class="field"><label for="rl_bottom_roi">Right ROI · bottom</label><input id="rl_bottom_roi" data-setting="rl_bottom_roi" type="number" min=".02" max="1" step=".01"></div>
-          <div class="field"><label for="rl_left_roi">Right ROI · left</label><input id="rl_left_roi" data-setting="rl_left_roi" type="number" min="0" max=".98" step=".01"></div>
-          <div class="field"><label for="rl_right_roi">Right ROI · right</label><input id="rl_right_roi" data-setting="rl_right_roi" type="number" min=".02" max="1" step=".01"></div>
-        </div>
-        <div class="hint">Values are normalized from 0 to 1. Use the live camera overlay to move and resize the rectangles, or enter exact coordinates here.</div>
         <div class="classical-box" id="classicalSettings">
           <div class="section-label">Classical lane detection</div>
           <div class="fields">
@@ -432,6 +447,28 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
         </div>
         <div class="actions"><button class="btn save" type="submit">Apply and save settings</button><span class="message" id="settingsMessage"></span></div>
       </form>
+      </section>
+      <section class="panel-content" id="panel-roi">
+        <div class="panel">
+          <div class="panel-head"><h3>Lane ROI calibration</h3><span class="tag">LL / RL</span></div>
+          <div class="hint">Edit normalized coordinates directly or drag the coloured rectangles on the live camera. This calibration is shared by both AVIS vision backends.</div>
+        <div class="section-label">Normalized ROI coordinates</div>
+        <div class="fields">
+          <div class="field"><label for="ll_top_roi">Left ROI · top</label><input id="ll_top_roi" data-setting="ll_top_roi" type="number" min="0" max=".98" step=".01"></div>
+          <div class="field"><label for="ll_bottom_roi">Left ROI · bottom</label><input id="ll_bottom_roi" data-setting="ll_bottom_roi" type="number" min=".02" max="1" step=".01"></div>
+          <div class="field"><label for="ll_left_roi">Left ROI · left</label><input id="ll_left_roi" data-setting="ll_left_roi" type="number" min="0" max=".98" step=".01"></div>
+          <div class="field"><label for="ll_right_roi">Left ROI · right</label><input id="ll_right_roi" data-setting="ll_right_roi" type="number" min=".02" max="1" step=".01"></div>
+          <div class="field"><label for="rl_top_roi">Right ROI · top</label><input id="rl_top_roi" data-setting="rl_top_roi" type="number" min="0" max=".98" step=".01"></div>
+          <div class="field"><label for="rl_bottom_roi">Right ROI · bottom</label><input id="rl_bottom_roi" data-setting="rl_bottom_roi" type="number" min=".02" max="1" step=".01"></div>
+          <div class="field"><label for="rl_left_roi">Right ROI · left</label><input id="rl_left_roi" data-setting="rl_left_roi" type="number" min="0" max=".98" step=".01"></div>
+          <div class="field"><label for="rl_right_roi">Right ROI · right</label><input id="rl_right_roi" data-setting="rl_right_roi" type="number" min=".02" max="1" step=".01"></div>
+        </div>
+        <div class="hint">Values are normalized from 0 to 1. Use the live camera overlay to move and resize the rectangles, or enter exact coordinates here.</div>
+
+          <div class="actions"><button class="btn save" id="saveRoiButton" type="button">Save selected ROI</button><span class="message" id="roiMessage"></span></div>
+          <div class="hint">Tip: keep each rectangle tightly around its corresponding lane marking. Avoid including road texture, vehicle edges or neighbouring lane markings.</div>
+        </div>
+      </section>
     </aside>
   </div>
 </main>
@@ -533,6 +570,18 @@ function selectROI(group) {
   $("roiRightButton").classList.toggle("active",group==="RL");
   drawROIOverlays();
 }
+function setActivePanel(panelName) {
+  document.querySelectorAll(".panel-tab").forEach(button =>
+    button.classList.toggle("active", button.dataset.panel === panelName)
+  );
+  document.querySelectorAll(".panel-content").forEach(panel =>
+    panel.classList.toggle("active", panel.id === "panel-" + panelName)
+  );
+  requestAnimationFrame(drawROIOverlays);
+}
+document.querySelectorAll(".panel-tab").forEach(button =>
+  button.addEventListener("click", () => setActivePanel(button.dataset.panel))
+);
 async function saveROISelection() {
   const keys = ROI_GROUPS[selectedROI].keys;
   const payload = {};
@@ -543,8 +592,14 @@ async function saveROISelection() {
     drawROIOverlays();
     $("settingsForm").dataset.dirty = "true";
     showMessage(selectedROI+" ROI saved.",false);
+    $("roiCanvasMessage").textContent = selectedROI + " ROI saved.";
+    $("roiCanvasMessage").style.color = "#68dfa7";
+    return true;
   } catch (error) {
     showMessage(error.message,true);
+    $("roiCanvasMessage").textContent = error.message;
+    $("roiCanvasMessage").style.color = "#ff8a9d";
+    return false;
   }
 }
 function getROIPointerPosition(event) {
@@ -636,6 +691,11 @@ if (roiCanvas) {
 if ($("roiLeftButton")) $("roiLeftButton").addEventListener("click",()=>selectROI("LL"));
 if ($("roiRightButton")) $("roiRightButton").addEventListener("click",()=>selectROI("RL"));
 if ($("showRois")) $("showRois").addEventListener("change",drawROIOverlays);
+if ($("saveRoiButton")) $("saveRoiButton").addEventListener("click",async()=>{
+  const saved = await saveROISelection();
+  $("roiMessage").textContent = saved ? selectedROI + " ROI saved." : "ROI could not be saved.";
+  $("roiMessage").style.color = saved ? "#68dfa7" : "#ff8a9d";
+});
 if ($("resetRoiButton")) $("resetRoiButton").addEventListener("click",async()=>{
   const keys = ROI_GROUPS[selectedROI].keys;
   const payload = {};
@@ -667,6 +727,14 @@ function setModeButtons(mode) {
   $("autoButton").classList.toggle("active", mode === "auto");
   $("manualButton").classList.toggle("active", mode === "manual");
 }
+function updateBackendVisibility(backend) {
+  const classical = backend === "classical";
+  $("classicalSettings").classList.toggle("hidden", !classical);
+  $("drivableView").classList.toggle("hidden", classical);
+  $("backendDescription").textContent = classical
+    ? "HoughLinesP mode detects lane boundaries only. It does not construct or calculate a drivable-area mask."
+    : "The semantic model provides the road-surface mask and lane-boundary visualization.";
+}
 function fillSettings(settings) {
   settingInputs.forEach(input => {
     const key = input.dataset.setting;
@@ -677,7 +745,7 @@ function fillSettings(settings) {
       input.value = settings[key];
     }
   });
-  $("classicalSettings").classList.toggle("hidden", settings.vision_backend !== "classical");
+  updateBackendVisibility(settings.vision_backend);
   drawROIOverlays();
 }
 function collectSettings() {
@@ -697,7 +765,7 @@ async function postJson(url, payload) {
   return data;
 }
 $("vision_backend").addEventListener("change", () => {
-  $("classicalSettings").classList.toggle("hidden", $("vision_backend").value !== "classical");
+  updateBackendVisibility($("vision_backend").value);
 });
 $("settingsForm").addEventListener("submit", async event => {
   event.preventDefault();
@@ -826,7 +894,7 @@ async function refreshStatus() {
 }
 settingInputs.forEach(input => input.addEventListener("input", () => {
   $("settingsForm").dataset.dirty = "true";
-  $("classicalSettings").classList.toggle("hidden", $("vision_backend").value !== "classical");
+  updateBackendVisibility($("vision_backend").value);
   if (input.dataset.setting.endsWith("_roi")) drawROIOverlays();
 }));
 $("settingsForm").addEventListener("change", () => {$("settingsForm").dataset.dirty = "true";});
