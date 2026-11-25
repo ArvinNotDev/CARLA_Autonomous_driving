@@ -1089,29 +1089,11 @@ class CarlaLaneDrivingApp:
         set_lidar_provider(self._lidar_snapshot_for_web)
         set_vehicle_options(available_vehicles, self.vehicle_blueprint)
         set_vehicle_callback(self._on_vehicle_changed)
-        set_runtime_status("Loading driving model…")
-        try:
-            started = start_stream_background(conf.STREAM_HOST, conf.STREAM_PORT)
-            host = str(conf.STREAM_HOST)
-            port = int(conf.STREAM_PORT)
-            local_url = f"http://127.0.0.1:{port}"
-            if started:
-                print(f"[WEB] Runtime dashboard: {local_url} (bind host: {host})")
-                try:
-                    if not webbrowser.open(local_url, new=2):
-                        print(
-                            "[WEB] Browser did not open automatically. "
-                            f"Open {local_url} manually."
-                        )
-                except Exception as browser_exc:
-                    print(
-                        "[WEB] Could not open the browser automatically: "
-                        f"{browser_exc}. Open {local_url} manually."
-                    )
-        except OSError as exc:
-            set_runtime_status(f"Flask dashboard could not start: {exc}")
-            print(f"[WEB] Could not start Flask dashboard: {exc}")
 
+        # Keep model initialization ahead of browser startup. This matches the
+        # previously stable startup order and prevents opening another GUI
+        # process while CUDA/PyTorch and the optional CPU models initialize.
+        set_runtime_status("Loading driving model…")
         print("[VISION] Loading driving model on the main thread...")
         try:
             self.vision_processor = VisionProcessor(
@@ -1119,6 +1101,7 @@ class CarlaLaneDrivingApp:
             )
             self._vision_model_status = "warming_up"
             set_runtime_status("Driving model loaded; waiting for first prediction.")
+            print("[VISION] Driving model initialization completed.")
         except Exception as exc:
             self.vision_processor = None
             self._vision_model_status = "failed"
@@ -1129,8 +1112,6 @@ class CarlaLaneDrivingApp:
 
         if self._trajectory_runtime_enabled:
             try:
-                # Optional trajectory weights are loaded only after the browser
-                # dashboard is already serving its loading frame.
                 from trajectory.steering_agent import TrajectorySteeringAgent
 
                 self.trajectory_steering_agent = TrajectorySteeringAgent(
@@ -1138,6 +1119,7 @@ class CarlaLaneDrivingApp:
                     conf,
                     "LANE_FOLLOW",
                 )
+                print("[TRAJECTORY] Optional trajectory model loaded.")
             except Exception as exc:
                 self._trajectory_runtime_enabled = False
                 self.trajectory_steering_agent = None
@@ -1149,8 +1131,40 @@ class CarlaLaneDrivingApp:
             trajectory_agent=self.trajectory_steering_agent,
             intersection_model=self.intersection_model,
         )
+        print("[INFERENCE] Starting inference worker...")
         self.inference_worker.start()
+        print("[INFERENCE] Inference worker started.")
         self._startup_drive_until = time.monotonic() + 3.0
+
+        # The web server is brought up only after all model setup has finished.
+        # Open the browser from the Qt event loop, not during synchronous setup.
+        set_runtime_status("CARLA runtime ready. Waiting for camera frames.")
+        try:
+            started = start_stream_background(conf.STREAM_HOST, conf.STREAM_PORT)
+            host = str(conf.STREAM_HOST)
+            port = int(conf.STREAM_PORT)
+            local_url = f"http://127.0.0.1:{port}"
+            if started:
+                print(f"[WEB] Runtime dashboard: {local_url} (bind host: {host})")
+
+                def open_dashboard() -> None:
+                    try:
+                        if not webbrowser.open(local_url, new=2):
+                            print(
+                                "[WEB] Browser did not open automatically. "
+                                f"Open {local_url} manually."
+                            )
+                    except Exception as browser_exc:
+                        print(
+                            "[WEB] Could not open the browser automatically: "
+                            f"{browser_exc}. Open {local_url} manually."
+                        )
+
+                QTimer.singleShot(0, open_dashboard)
+        except Exception as exc:
+            set_runtime_status(f"Flask dashboard could not start: {exc}")
+            print(f"[WEB] Could not start Flask dashboard: {exc}")
+            traceback.print_exc()
 
     def _poll_input_events(self) -> None:
         """Poll Pygame only on the Qt/main thread that created its window."""
@@ -1518,6 +1532,12 @@ class CarlaLaneDrivingApp:
 
         qt_app = QApplication.instance()
         if qt_app is not None:
+            # The map and spawn dialogs are temporary. Re-assert this after
+            # setup so closing their last window cannot end the runtime loop.
+            qt_app.setQuitOnLastWindowClosed(False)
+            qt_app.aboutToQuit.connect(
+                lambda: print("[QT] QApplication is about to quit.")
+            )
             self._input_timer = QTimer()
             self._input_timer.setInterval(16)
             self._input_timer.timeout.connect(self._poll_input_events)
@@ -1531,7 +1551,19 @@ class CarlaLaneDrivingApp:
         self._control_thread.start()
 
         if qt_app is not None:
-            qt_app.exec()
+            print("[RUNTIME] Entering Qt event loop.")
+            # A stale quit request can be left behind by nested modal dialogs.
+            # Re-enter the event loop if Qt returns while the CARLA runtime is
+            # still active; only an explicit runtime shutdown should end main.
+            while self.running and not self._stop_event.is_set():
+                exit_code = qt_app.exec()
+                if not self.running or self._stop_event.is_set():
+                    break
+                print(
+                    "[RUNTIME] Qt event loop returned while CARLA is still "
+                    f"running (code={exit_code}); restarting the event loop."
+                )
+                self._stop_event.wait(0.1)
 
         self.shutdown()
 

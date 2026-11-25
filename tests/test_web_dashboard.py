@@ -134,7 +134,7 @@ def test_web_settings_apply_only_parses_sequence_when_it_was_edited():
     assert "input.dataset.originalValue" in source
     assert "if(currentValue===input.dataset.originalValue)return;" in source
 
-def test_ultralytics_load_runs_after_flask_dashboard_is_started():
+def test_models_finish_initializing_before_dashboard_browser_startup():
     from pathlib import Path
 
     source = (Path(__file__).resolve().parents[1] / "main.py").read_text(
@@ -146,9 +146,23 @@ def test_ultralytics_load_runs_after_flask_dashboard_is_started():
     model_load = source.index(
         "self.vision_processor = VisionProcessor("
     )
-    assert dashboard_start < model_load
+    worker_start = source.index("self.inference_worker.start()")
+    assert model_load < worker_start < dashboard_start
+    assert "QTimer.singleShot(0, open_dashboard)" in source
     assert "_start_vision_model_load" not in source
     assert 'self._vision_model_status = "warming_up"' in source
+
+
+def test_qt_runtime_loop_reenters_when_qt_quits_unexpectedly():
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "main.py").read_text(
+        encoding="utf-8"
+    )
+    run_method = source.split("    def run(self) -> None:", 1)[1]
+    assert "qt_app.setQuitOnLastWindowClosed(False)" in run_method
+    assert "while self.running and not self._stop_event.is_set():" in run_method
+    assert "restarting the event loop." in run_method
 
 
 def test_pygame_input_is_polled_on_the_main_qt_thread():
