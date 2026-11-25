@@ -47,6 +47,7 @@ class VisionProcessor:
         self.output_height = None
         self.lane_class_id = None
         self.drivable_class_id = None
+        self.vehicles_class_id = None
         self.class_names = {}
 
         if self.mode == "onnx":
@@ -168,12 +169,11 @@ class VisionProcessor:
             ) from exc
 
         if (
-            len(class_names) != 3
-            or any(not isinstance(name, str) for name in class_names.values())
+            any(not isinstance(name, str) for name in class_names.values())
             or len(set(class_names.values())) != len(class_names)
         ):
             raise RuntimeError(
-                f"Expected exactly three unique semantic class names; "
+                "Expected unique semantic class names; "
                 f"found {class_names!r}"
             )
         lane_ids = [
@@ -186,15 +186,25 @@ class VisionProcessor:
             for class_id, name in class_names.items()
             if name == "ego_drivable_area"
         ]
-        if len(lane_ids) != 1 or len(drivable_ids) != 1:
+        vehicles_ids = [
+            class_id
+            for class_id, name in class_names.items()
+            if name == "vehicles"
+        ]
+        if (
+            len(lane_ids) != 1
+            or len(drivable_ids) != 1
+            or len(vehicles_ids) != 1
+        ):
             raise RuntimeError(
                 "ONNX class metadata must identify exactly one 'lane_lines' "
-                "and one 'ego_drivable_area' class; "
+                "'ego_drivable_area', and 'vehicles' class; "
                 f"found {class_names!r}"
             )
         self.class_names = class_names
         self.lane_class_id = lane_ids[0]
         self.drivable_class_id = drivable_ids[0]
+        self.vehicles_class_id = vehicles_ids[0]
 
     def _preprocess_onnx(self, frame):
         frame = np.asarray(frame)
@@ -293,6 +303,9 @@ class VisionProcessor:
         drivable_mask = (
             (semantic_mask == self.drivable_class_id).astype(np.uint8) * 255
         )
+        vehicles_mask = (
+            (semantic_mask == self.vehicles_class_id).astype(np.uint8) * 255
+        )
         frame_height, frame_width = np.asarray(camera_frame).shape[:2]
         if lane_mask.shape != (frame_height, frame_width):
             lane_mask = cv2.resize(
@@ -306,7 +319,13 @@ class VisionProcessor:
                 (frame_width, frame_height),
                 interpolation=cv2.INTER_NEAREST,
             )
-        return drivable_mask, lane_mask
+        if vehicles_mask.shape != (frame_height, frame_width):
+            vehicles_mask = cv2.resize(
+                vehicles_mask,
+                (frame_width, frame_height),
+                interpolation=cv2.INTER_NEAREST,
+            )
+        return drivable_mask, lane_mask, vehicles_mask
 
     def _boundary_from_roi(self, full_mask, top, bottom, left, right):
         h, w = full_mask.shape[:2]
@@ -354,7 +373,10 @@ class VisionProcessor:
         slope, _ = np.polyfit(ys, xs, 1)
         return float(np.degrees(np.arctan(slope)))
 
-    def _draw_debug(self, frame, line_mask, drivable_mask, left_x, right_x, lane_center, lane_type):
+    def _draw_debug(
+        self, frame, line_mask, drivable_mask, left_x, right_x, lane_center,
+        lane_type, vehicles_mask=None,
+    ):
         # OpenCV convention throughout the vision/control path is BGR.
         vis = np.ascontiguousarray(frame[:, :, :3]).copy()
         h, w = vis.shape[:2]
@@ -369,6 +391,24 @@ class VisionProcessor:
             overlay = vis.copy()
             overlay[drive > 0] = (50, 170, 50)
             vis = cv2.addWeighted(vis, 0.75, overlay, 0.25, 0)
+
+        if vehicles_mask is not None and getattr(conf, "DEBUG_SHOW_VEHICLES", True):
+            vehicles = np.asarray(vehicles_mask)
+            if vehicles.ndim == 3:
+                vehicles = cv2.cvtColor(vehicles, cv2.COLOR_BGR2GRAY)
+            if vehicles.shape[:2] != (h, w):
+                vehicles = cv2.resize(
+                    vehicles, (w, h), interpolation=cv2.INTER_NEAREST
+                )
+            vehicle_pixels = vehicles > 0
+            if np.any(vehicle_pixels):
+                overlay = vis.copy()
+                overlay[vehicle_pixels] = (0, 0, 255)
+                vis = cv2.addWeighted(vis, 0.55, overlay, 0.45, 0)
+                cv2.putText(
+                    vis, "Vehicles", (12, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.75, (0, 0, 255), 2, cv2.LINE_AA,
+                )
 
         if line_mask is not None and getattr(conf, "DEBUG_SHOW_LANE_MASK", False):
             lane = np.asarray(line_mask)
@@ -498,6 +538,7 @@ class VisionProcessor:
                 "debug": {
                     "combined": None,
                     "drivable_mask": None,
+                    "vehicles_mask": None,
                     "lane_mask": None,
                     "green_mask": None,
                     "dark_purple_mask": None,
@@ -520,6 +561,7 @@ class VisionProcessor:
                     "debug": {
                         "combined": None,
                         "drivable_mask": None,
+                        "vehicles_mask": None,
                         "lane_mask": None,
                         "green_mask": None,
                         "dark_purple_mask": None,
@@ -537,12 +579,13 @@ class VisionProcessor:
         lane_offset_px = width * self.fallback_lane_offset_ratio
 
         if self.mode == "onnx":
-            drivable_mask, line_mask = self._extract_masks_from_onnx(rgb_frame)
+            drivable_mask, line_mask, vehicles_mask = self._extract_masks_from_onnx(rgb_frame)
             green_mask = None
             dark_purple_mask = None
         else:
             line_mask, green_mask, dark_purple_mask = self._extract_masks_from_segmentation(semantic_frame)
             drivable_mask = None
+            vehicles_mask = None
 
         ll_top_roi = getattr(conf, "LL_TOP_ROI", 0.55)
         ll_bottom_roi = getattr(conf, "LL_BOTTOM_ROI", 0.98)
@@ -588,6 +631,7 @@ class VisionProcessor:
             bool(getattr(conf, "DEBUG_SHOW_ROIS", True)),
             bool(getattr(conf, "DEBUG_SHOW_LANE_MASK", False)),
             bool(getattr(conf, "DEBUG_SHOW_DRIVABLE_AREA", True)),
+            bool(getattr(conf, "DEBUG_SHOW_VEHICLES", True)),
         ))
         if debug_requested:
             combined = self._draw_debug(
@@ -598,6 +642,7 @@ class VisionProcessor:
                 right_x=right_x,
                 lane_center=smoothed_lane_center,
                 lane_type=lane_type,
+                vehicles_mask=vehicles_mask,
             )
         else:
             combined = np.ascontiguousarray(base_frame[:, :, :3]).copy()
@@ -621,6 +666,7 @@ class VisionProcessor:
             "debug": {
                 "combined": combined,
                 "drivable_mask": drivable_mask,
+                "vehicles_mask": vehicles_mask,
                 "lane_mask": line_mask,
                 "green_mask": green_mask,
                 "dark_purple_mask": dark_purple_mask,

@@ -70,6 +70,7 @@ class CarlaLaneDrivingApp:
         self.world = None
         self.vehicle = None
         self.spawn_transform = None
+        self.vehicle_blueprint = str(cfg("VEHICLE_BLUEPRINT", "vehicle.tesla.model3"))
 
         self.camera_manager: Optional[CameraManager] = None
         self.lidar_manager: Optional[LidarManager] = None
@@ -601,6 +602,16 @@ class CarlaLaneDrivingApp:
         # consecutive vehicle/sensor respawns while the user is still editing.
         self._restart_timer.start()
 
+    def _on_vehicle_changed(self, blueprint_id: str) -> None:
+        if not blueprint_id or blueprint_id == self.vehicle_blueprint:
+            return
+        self.vehicle_blueprint = blueprint_id
+        if self.control_panel is not None:
+            self.control_panel.status.setText(
+                f"Vehicle changed to {blueprint_id} — restarting at the original spawn point..."
+            )
+        self._request_car_reset()
+
     def _reset_runtime_state(self) -> None:
         """Clear state that belongs to one driving run, keeping the Qt UI alive."""
         self.auto_mode = bool(cfg("AUTO_MODE_DEFAULT", True))
@@ -858,9 +869,19 @@ class CarlaLaneDrivingApp:
             self.goal_location = picker.get_goal_location()
             spawn_tf = self.spawn_transform
 
+        available_vehicles = self.carla_manager.get_vehicle_blueprints()
+        if not available_vehicles:
+            raise RuntimeError("CARLA did not report any vehicle blueprints.")
+        available_ids = {blueprint_id for blueprint_id, _label in available_vehicles}
+        if self.vehicle_blueprint not in available_ids:
+            self.vehicle_blueprint = available_vehicles[0][0]
+
         self._reset_runtime_state()
 
-        self.vehicle = self.carla_manager.spawn_vehicle(spawn_transform=spawn_tf)
+        self.vehicle = self.carla_manager.spawn_vehicle(
+            spawn_transform=spawn_tf,
+            blueprint_id=self.vehicle_blueprint,
+        )
         if self.vehicle is None:
             raise RuntimeError("Failed to spawn vehicle.")
 
@@ -942,7 +963,11 @@ class CarlaLaneDrivingApp:
             )
             self.control_panel.settings_changed.connect(self._on_settings_changed)
             self.control_panel.reset_requested.connect(self._request_car_reset)
+            self.control_panel.vehicle_changed.connect(self._on_vehicle_changed)
             self.control_panel.stream_toggle_requested.connect(self._toggle_flask_stream)
+            self.control_panel.set_vehicle_options(
+                available_vehicles, self.vehicle_blueprint
+            )
             set_settings_callback(self._on_settings_changed)
         else:
             # Keep the existing Qt window/timers alive, but point its radar at
@@ -951,6 +976,9 @@ class CarlaLaneDrivingApp:
             self.control_panel.lidar_radar._points = None
             self.control_panel.set_lidar_enabled(
                 bool(cfg("LIDAR_ENABLED", False))
+            )
+            self.control_panel.set_vehicle_options(
+                self.carla_manager.get_vehicle_blueprints(), self.vehicle_blueprint
             )
 
         self.control_panel.show()

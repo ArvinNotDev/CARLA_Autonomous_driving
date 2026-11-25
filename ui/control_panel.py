@@ -190,6 +190,7 @@ class ControlPanel(QMainWindow):
     settings_changed = Signal(dict)
     external_settings_changed = Signal(dict)
     reset_requested = Signal()
+    vehicle_changed = Signal(str)
     stream_toggle_requested = Signal(bool)
 
     def __init__(
@@ -250,6 +251,20 @@ class ControlPanel(QMainWindow):
 
         header_actions = QVBoxLayout()
         header_actions.setSpacing(5)
+        vehicle_row = QHBoxLayout()
+        vehicle_label = QLabel("Vehicle")
+        vehicle_label.setObjectName("mutedLabel")
+        self.vehicle_combo = NoWheelComboBox()
+        self.vehicle_combo.setObjectName("vehicleSelector")
+        self.vehicle_combo.setMinimumWidth(220)
+        self.vehicle_combo.setToolTip(
+            "Choose an available CARLA vehicle. The simulation will restart "
+            "at the original spawn point."
+        )
+        self.vehicle_combo.currentIndexChanged.connect(self._emit_vehicle_changed)
+        vehicle_row.addWidget(vehicle_label)
+        vehicle_row.addWidget(self.vehicle_combo, 1)
+        header_actions.addLayout(vehicle_row)
         self.stream_toggle = QPushButton("ROI Studio · OFF")
         self.stream_toggle.setObjectName("primaryButton")
         self.stream_toggle.setCheckable(True)
@@ -1202,6 +1217,29 @@ class ControlPanel(QMainWindow):
     def _emit_stream_toggle(self, enabled: bool) -> None:
         self.stream_toggle.setText("ROI Studio · ON" if enabled else "ROI Studio · OFF")
         self.stream_toggle_requested.emit(bool(enabled))
+
+    def set_vehicle_options(
+        self, vehicles: list[tuple[str, str]], selected_id: str
+    ) -> None:
+        """Populate the vehicle selector without triggering a selection change."""
+        self.vehicle_combo.blockSignals(True)
+        self.vehicle_combo.clear()
+        for blueprint_id, label in vehicles:
+            self.vehicle_combo.addItem(label, blueprint_id)
+        index = self.vehicle_combo.findData(selected_id)
+        if index < 0 and self.vehicle_combo.count():
+            index = 0
+        if index >= 0:
+            self.vehicle_combo.setCurrentIndex(index)
+        self.vehicle_combo.setEnabled(self.vehicle_combo.count() > 0)
+        self.vehicle_combo.blockSignals(False)
+
+    def _emit_vehicle_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        blueprint_id = self.vehicle_combo.itemData(index)
+        if blueprint_id:
+            self.vehicle_changed.emit(str(blueprint_id))
 
     def set_flask_stream_state(self, enabled: bool, status: str | None = None) -> None:
         """Synchronize the Flask server toggle after a start/stop request."""

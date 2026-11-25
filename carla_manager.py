@@ -90,7 +90,22 @@ class CarlaManager:
 
         return self.world
 
-    def spawn_vehicle(self, spawn_transform=None, config_path: Path = MAP_CONFIG_PATH) -> carla.Vehicle:
+    def get_vehicle_blueprints(self) -> list[tuple[str, str]]:
+        """Return available vehicle blueprint IDs and their display labels."""
+        if self.world is None:
+            raise RuntimeError("World is not connected. Call connect() first.")
+        blueprints = self.world.get_blueprint_library().filter("vehicle.*")
+        return [
+            (bp.id, bp.id)
+            for bp in sorted(blueprints, key=lambda item: item.id)
+        ]
+
+    def spawn_vehicle(
+        self,
+        spawn_transform=None,
+        config_path: Path = MAP_CONFIG_PATH,
+        blueprint_id: str | None = None,
+    ) -> carla.Vehicle:
         if self.world is None:
             raise RuntimeError("World is not connected. Call connect() first.")
 
@@ -111,10 +126,13 @@ class CarlaManager:
 
         bp_lib = self.world.get_blueprint_library()
 
+        selected_blueprint = blueprint_id or conf.VEHICLE_BLUEPRINT
         try:
-            vehicle_bp = bp_lib.find(conf.VEHICLE_BLUEPRINT)
-        except Exception:
-            vehicle_bp = bp_lib.filter("vehicle.*")[0]
+            vehicle_bp = bp_lib.find(selected_blueprint)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Vehicle blueprint is unavailable: {selected_blueprint}"
+            ) from exc
 
         vehicle = self.world.try_spawn_actor(vehicle_bp, spawn_transform)
         if vehicle is None:
