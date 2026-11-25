@@ -159,7 +159,52 @@ The simulator window resolution and the ego camera sensor resolution are separat
 
 On every application launch, choose **Use saved installation** or **Choose another folder** in the CARLA installation dialog. After connecting, select the map, spawn point, and goal. The Flask runtime dashboard starts automatically. Open `http://127.0.0.1:5000` in your browser (or use the configured `STREAM_PORT`).
 
-### Controls
+#
+### AVIS Engine 1.2.4
+
+The AVIS runtime is an independent backend. It does not initialize or import the
+CARLA Python API, and it does not alter the normal `python main.py` startup path.
+It reuses the existing StableV2 camera perception, lane-centre error, steering
+PID, and target-speed logic against the AVIS RGB camera.
+
+Use the Python API revision compatible with AVIS 1.2.4 (the vendor's
+`FIRA-ACL` branch). Clone it beside the project:
+
+```powershell
+git clone --branch FIRA-ACL --single-branch https://github.com/AVISEngine/AVIS-Engine-Python-API.git
+```
+
+Alternatively, set `AVIS_ENGINE_API_PATH` to the API repository folder, or pass
+`--avis-api-path` when launching. Start AVIS Engine, select a track, open the
+Info Panel, and start its TCP server (default IP `127.0.0.1`, port `25001`).
+Then run:
+
+```powershell
+python main.py --avis
+```
+
+Optional connection overrides:
+
+```powershell
+python main.py --avis --avis-host 127.0.0.1 --avis-port 25001
+```
+
+The AVIS settings profile is `AVIS_StableV2`. It copies the StableV2 lane
+perception, PID, inference cadence, and speed settings while omitting CARLA-only
+camera placement, map navigation, junction, trajectory, and LiDAR settings.
+The AVIS API supplies only RGB frames, speed feedback, and three distance
+readings; the distance readings are displayed for diagnostics and are not used
+to introduce a different driving strategy.
+
+AVIS accepts engine power and steering commands but does not expose a separate
+brake control in this API revision. When the speed controller requests braking,
+the AVIS runtime releases engine power and allows the vehicle to coast. Use the
+simulator's own safety controls and supervise initial runs.
+
+Press `Q` or `Esc` in the OpenCV preview to stop the AVIS runtime. Add
+`--avis-headless` to disable the preview window.
+
+## Controls
 
 | Input | Action |
 | --- | --- |
