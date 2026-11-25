@@ -324,3 +324,166 @@ Thread 0x000004b4 (most recent call first):
   File "C:\Python312\Lib\socketserver.py", line 706 in process_request
   File Windows fatal exception: access violation
 
+\n[PYTHON] Unhandled exception
+Traceback (most recent call last):
+  File "C:\Users\Dj-pc\Desktop\CARLA_Autonomous_driving\main.py", line 1818, in <module>
+    main()
+  File "C:\Users\Dj-pc\Desktop\CARLA_Autonomous_driving\main.py", line 1814, in main
+    app.run()
+  File "C:\Users\Dj-pc\Desktop\CARLA_Autonomous_driving\main.py", line 1752, in run
+    self.setup()
+  File "C:\Users\Dj-pc\Desktop\CARLA_Autonomous_driving\main.py", line 1109, in setup
+    self.world = self.carla_manager.connect(map_picker.selected_map())
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Dj-pc\Desktop\CARLA_Autonomous_driving\carla_manager.py", line 83, in connect
+    self.world = client.load_world(map_name) if map_name else client.get_world()
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt
+Windows fatal exception: code 0xc0000374
+
+Thread 0x00002378 (most recent call first):
+  <no Python frame>
+
+Thread 0x00002eb8 (most recent call first):
+  File "C:\Python312\Lib\socket.py", line 346 in readinto
+  File "C:\Python312\Lib\http\server.py", line 414 in handle_one_request
+  File "C:\Python312\Lib\http\server.py", line 436 in handle
+  File "C:\Python312\Lib\site-packages\werkzeug\serving.py", line 398 in handle
+  File "C:\Python312\Lib\socketserver.py", line 761 in __init__
+  File "C:\Python312\Lib\socketserver.py", line 362 in finish_request
+  File "C:\Python312\Lib\socketserver.py", line 692 in process_request_thread
+  File "C:\Python312\Lib\threading.py", line 1012 in run
+  File "C:\Python312\Lib\threading.py", line 1075 in _bootstrap_inner
+  File "C:\Python312\Lib\threading.py", line 1032 in _bootstrap
+
+Thread 0x00002a3c (most recent call first):
+  File "C:\Users\Dj-pc\Desktop\CARLA_Autonomous_driving\sensors\camera_manager.py", line 176 in _semantic_callback
+
+Thread 0x000034c8 (most recent call first):
+  File "C:\Python312\Lib\threading.py", line 359 in wait
+  File "C:\Python312\Lib\threading.py", line 655 in wait
+  File "C:\Users\Dj-pc\Desktop\CARLA_Autonomous_driving\main.py", line 1390 in _control_loop
+  File "C:\Python312\Lib\threading.py", line 1012 in run
+  File "C:\Python312\Lib\threading.py", line 1075 in _bootstrap_inner
+  File "C:\Python312\Lib\threading.py", line 1032 in _bootstrap
+
+Thread 0x00000b04 (most recent call first):
+  File "C:\Python312\Lib\threading.py", line 355 in wait
+  File "C:\Python312\Lib\threading.py", line 655 in wait
+  File "C:\Python312\Lib\threading.py", line 999 in start
+  File "C:\Python312\Lib\socketserver.py", line 706 in process_request
+  File "C:\Python312\Lib\socketserver.py", line 318 in _handle_request_noblock
+  File "C:\Python312\Lib\socketserver.py", line 240 in serve_forever
+  File "C:\Python312\Lib\site-packages\werkzeug\serving.py", line 819 in serve_forever
+  File "C:\Python312\Lib\threading.py", line 1012 in run
+  File "C:\Python312\Lib\threading.py", line 1075 in _bootstrap_inner
+  File "C:\Python312\Lib\threading.py", line 1032 in _bootstrap
+
+Thread 0x000030bc (most recent call first):
+  File "<frozen importlib._bootstrap>", line 162 in __enter__
+  File "<frozen importlib._bootstrap>", line 311 in acquire
+  File "<frozen importlib._bootstrap>", line 418 in __enter__
+  File "<frozen importlib._bootstrap>", line 1357 in _find_and_load
+  File "C:\Python312\Lib\site-packages\sympy\matrices\eigen.py", line 15 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 995 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "C:\Python312\Lib\site-packages\sympy\matrices\solvers.py", line 6 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 995 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "C:\Python312\Lib\site-packages\sympy\matrices\matrixbase.py", line 61 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 995 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "C:\Python312\Lib\site-packages\sympy\matrices\dense.py", line 15 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 995 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "C:\Python312\Lib\site-packages\sympy\matrices\__init__.py", line 8 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 995 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "C:\Python312\Lib\site-packages\sympy\utilities\decorator.py", line 19 in threaded_factory
+  File "C:\Python312\Lib\site-packages\sympy\utilities\decorator.py", line 82 in xthreaded
+  File "C:\Python312\Lib\site-packages\sympy\polys\partfrac.py", line 13 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 995 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "C:\Python312\Lib\site-packages\sympy\polys\__init__.py", line 124 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 995 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "C:\Python312\Lib\site-packages\sympy\__init__.py", line 77 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 995 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "C:\Python312\Lib\site-packages\torch\fx\experimental\symbolic_shapes.py", line 3 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 995 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "C:\Python312\Lib\site-packages\torch\_dynamo\utils.py", line 68 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 995 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "C:\Python312\Lib\site-packages\torch\_dynamo\exc.py", line 44 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 995 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "C:\Python312\Lib\site-packages\torch\_dynamo\symbolic_convert.py", line 54 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 995 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "C:\Python312\Lib\site-packages\torch\_dynamo\convert_frame.py", line 62 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 995 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "C:\Python312\Lib\site-packages\torch\_dynamo\aot_compile.py", line 17 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 995 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap>", line 1415 in _handle_fromlist
+  File "C:\Python312\Lib\site-packages\torch\_dynamo\__init__.py", line 13 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 995 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap>", line 1310 in _find_and_load_unlocked
+  ...
+
+Current thread 0x00003278 (most recent call first):
+  Garbage-collecting
+  File "C:\Users\Dj-pc\Desktop\CARLA_Autonomous_driving\main.py", line 1783 in run
+  File "C:\Users\Dj-pc\Desktop\CARLA_Autonomous_driving\main.py", line 1814 in main
+  File "C:\Users\Dj-pc\Desktop\CARLA_Autonomous_driving\main.py", line 1818 in <module>
