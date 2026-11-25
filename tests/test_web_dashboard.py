@@ -217,7 +217,7 @@ def test_qt_runtime_loop_reenters_when_qt_quits_unexpectedly():
     run_method = source.split("    def run(self) -> None:", 1)[1]
     assert "qt_app.setQuitOnLastWindowClosed(False)" in run_method
     assert "while self.running and not self._stop_event.is_set():" in run_method
-    assert "restarting the event loop." in run_method
+    assert "Runtime is still active; restarting the Qt event loop." in run_method
 
 
 def test_pygame_input_is_polled_on_the_main_qt_thread():
