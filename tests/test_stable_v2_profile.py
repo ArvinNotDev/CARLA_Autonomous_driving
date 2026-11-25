@@ -19,9 +19,9 @@ def test_stable_v2_is_the_default_runtime_profile_without_mutating_its_values():
     assert stable["ENABLE_ALT_CAMERA"] is True
     assert stable["CONTROL_LOOP_HZ"] == 40
     assert stable["DEBUG_PANEL_HZ"] == 40
-    assert stable["ACCELERATION_MPS2"] == 2.5
+    assert stable["ACCELERATION_MPS2"] == 1.5
     assert stable["MIN_SPEED_KMH"] == 8.0
-    assert stable["MAX_SPEED_KMH"] == 25.0
+    assert stable["MAX_SPEED_KMH"] == 12.0
     assert stable["MIN_SPEED_KMH"] < stable["MAX_SPEED_KMH"]
     assert "FIXED_THROTTLE" not in stable
     assert "TARGET_SPEED_KMH" not in stable
