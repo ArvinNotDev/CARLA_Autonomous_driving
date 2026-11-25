@@ -2,6 +2,7 @@ import importlib.util
 import sys
 import types
 import time
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -181,3 +182,98 @@ def test_qt_event_loop_exit_reports_runtime_state_before_shutdown():
     assert "Qt event loop returned " in run_method
     assert "control_thread_alive=" in run_method
     assert "Entering shutdown path" in run_method
+
+
+
+def test_escape_closes_pygame_window_and_disables_future_polling():
+    calls = {"display_quit": 0, "pygame_quit": 0, "event_get": 0}
+    pygame = types.SimpleNamespace()
+    pygame.K_w = 1; pygame.K_s = 2; pygame.K_a = 3; pygame.K_d = 4
+    pygame.K_SPACE = 5; pygame.K_e = 6; pygame.K_ESCAPE = 7
+    pygame.QUIT = 8; pygame.KEYDOWN = 9
+    pygame.init = lambda: None
+    pygame.quit = lambda: calls.__setitem__("pygame_quit", calls["pygame_quit"] + 1)
+    pygame.display = types.SimpleNamespace(
+        set_mode=lambda *_: None,
+        set_caption=lambda *_: None,
+        quit=lambda: calls.__setitem__("display_quit", calls["display_quit"] + 1),
+    )
+    class Event:
+        type = pygame.KEYDOWN
+        key = pygame.K_ESCAPE
+    events = [Event()]
+    def get_events():
+        calls["event_get"] += 1
+        current = list(events)
+        events.clear()
+        return current
+    pygame.event = types.SimpleNamespace(get=get_events)
+    pygame.key = types.SimpleNamespace(get_pressed=lambda: {})
+    carla = types.ModuleType("carla")
+    class VC:
+        def __init__(self, **kw): self.__dict__.update(kw)
+    carla.VehicleControl = VC
+    sys.modules["pygame"] = pygame
+    sys.modules["carla"] = carla
+
+    module = load_module(ROOT / "controllers/input_manager.py", "input_escape_test")
+    manager = module.InputManager()
+    running, toggle, control = manager.poll()
+    assert not running and not toggle
+    assert control.brake == 1.0
+    assert calls["display_quit"] == 1
+    manager.poll()
+    assert calls["event_get"] == 1
+    manager.shutdown()
+    assert calls["display_quit"] == 1
+    assert calls["pygame_quit"] == 1
+
+
+def test_inference_worker_stop_waits_for_in_flight_inference():
+    from trajectory.worker import InferenceWorker
+
+    entered = threading.Event()
+    release = threading.Event()
+    stopped = threading.Event()
+
+    class BlockingVision:
+        def detect(self, *_args):
+            entered.set()
+            assert release.wait(2.0)
+            return {}
+
+    worker = InferenceWorker(vision_processor=BlockingVision())
+    worker.start()
+    assert worker.submit_vision(
+        source_frame_id=1,
+        semantic_frame=None,
+        rgb_frame=np.zeros((8, 8, 3), dtype=np.uint8),
+    ) > 0
+    assert entered.wait(1.0)
+
+    def stop_worker():
+        worker.stop()
+        stopped.set()
+
+    stopper = threading.Thread(target=stop_worker)
+    stopper.start()
+    assert not stopped.wait(0.05)
+    release.set()
+    stopper.join(1.0)
+    assert stopped.is_set()
+    assert not worker._thread.is_alive()
+
+
+def test_restart_requests_reject_stale_and_duplicate_generations():
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    assert "restart_requested = Signal(int)" in source
+    assert "request_generation != self._restart_request_generation" in source
+    assert "request_generation <= self._last_started_restart_generation" in source
+
+
+def test_completed_maneuvers_temporarily_center_steering():
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    assert 'self._request_steering_center("junction static maneuver")' in source
+    assert 'self._request_steering_center("junction trajectory maneuver")' in source
+    assert 'self._request_steering_center("lane change")' in source
+    assert "control.steer = 0.0" in source
