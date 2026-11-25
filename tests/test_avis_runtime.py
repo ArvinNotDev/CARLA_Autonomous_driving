@@ -12,8 +12,12 @@ from avis_runtime import (
     apply_avis_profile,
     load_avis_profile,
     normalize_avis_controls,
+    normalize_avis_manual_controls,
     select_avis_target_speed,
 )
+
+from avis_classical_vision import AvisClassicalVisionProcessor
+from avis_dashboard import AvisDashboardState, create_avis_dashboard_app
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -183,3 +187,109 @@ def test_avis_client_rejects_failed_connection():
 
     with pytest.raises(ConnectionError, match="Could not connect"):
         AvisEngineClient(SimpleNamespace(Car=DisconnectedCar), "127.0.0.1", 25001)
+
+
+
+def test_normalize_avis_manual_controls_supports_forward_and_reverse():
+    assert normalize_avis_manual_controls(0.5, -0.25) == (50, -25)
+    assert normalize_avis_manual_controls(-0.4, 0.6) == (-40, 60)
+
+
+def test_avis_dashboard_persists_only_avis_settings_and_validates_updates(tmp_path):
+    settings_path = tmp_path / "avis_settings.json"
+    state = AvisDashboardState(settings_path=settings_path)
+
+    updated = state.update_settings(
+        {"vision_backend": "classical", "canny_low": 45, "canny_high": 135}
+    )
+    assert updated["vision_backend"] == "classical"
+    assert json.loads(settings_path.read_text(encoding="utf-8"))["canny_low"] == 45
+
+    restored = AvisDashboardState(settings_path=settings_path)
+    restored_settings, _ = restored.settings_snapshot()
+    assert restored_settings["vision_backend"] == "classical"
+    assert restored_settings["canny_high"] == 135
+
+    with pytest.raises(ValueError, match="Maximum speed"):
+        state.update_settings(
+            {"min_speed_kmh": 30, "max_speed_kmh": 20},
+            persist=False,
+        )
+
+
+def test_avis_dashboard_manual_api_accepts_reverse_and_emergency_stop(tmp_path):
+    state = AvisDashboardState(settings_path=tmp_path / "avis_settings.json")
+    client = create_avis_dashboard_app(state).test_client()
+
+    assert client.get("/").status_code == 200
+    assert client.post("/api/mode", json={"mode": "manual"}).status_code == 200
+
+    response = client.post(
+        "/api/manual",
+        json={"throttle": -0.35, "steering": 0.25},
+    )
+    assert response.status_code == 200
+    mode, throttle, steering, active = state.drive_state()
+    assert mode == "manual"
+    assert throttle == pytest.approx(-0.35)
+    assert steering == pytest.approx(0.25)
+    assert active is True
+
+    assert client.post("/api/stop", json={}).status_code == 200
+    assert client.post(
+        "/api/manual",
+        json={"throttle": 0.5, "steering": 0.0},
+    ).status_code == 409
+    assert state.drive_state() == ("stopped", 0.0, 0.0, False)
+
+
+def test_avis_manual_control_deadman_expires_without_dashboard_heartbeat(
+    tmp_path, monkeypatch
+):
+    import avis_dashboard
+
+    now = [100.0]
+    monkeypatch.setattr(avis_dashboard.time, "monotonic", lambda: now[0])
+    state = AvisDashboardState(
+        settings_path=tmp_path / "avis_settings.json",
+        manual_timeout_seconds=0.2,
+    )
+    state.set_mode("manual")
+    state.set_manual_controls(0.4, -0.2)
+    assert state.drive_state() == ("manual", 0.4, -0.2, True)
+
+    now[0] += 0.3
+    assert state.drive_state() == ("manual", 0.0, 0.0, False)
+
+
+def test_avis_classical_vision_finds_synthetic_lane_lines_and_masks():
+    import cv2
+    import numpy as np
+
+    frame = np.zeros((192, 320, 3), dtype=np.uint8)
+    cv2.line(frame, (42, 188), (145, 105), (255, 255, 255), 6)
+    cv2.line(frame, (178, 105), (278, 188), (255, 255, 255), 6)
+
+    processor = AvisClassicalVisionProcessor()
+    result = processor.detect(None, frame)
+    debug = result["debug"]
+
+    assert result["lane_valid"] is True
+    assert result["lane_type"] == "both_sides"
+    assert abs(result["error"]) < 20
+    assert debug["lane_mask"].shape == frame.shape[:2]
+    assert debug["drivable_mask"].shape == frame.shape[:2]
+    assert np.count_nonzero(debug["lane_mask"]) > 0
+    assert np.count_nonzero(debug["drivable_mask"]) > 0
+    assert debug["combined"].shape == frame.shape
+
+
+def test_avis_classical_vision_stops_when_no_lane_is_detected():
+    import numpy as np
+
+    processor = AvisClassicalVisionProcessor()
+    result = processor.detect(None, np.zeros((192, 320, 3), dtype=np.uint8))
+
+    assert result["lane_valid"] is False
+    assert result["error"] == 0.0
+    assert np.count_nonzero(result["debug"]["drivable_mask"]) == 0
