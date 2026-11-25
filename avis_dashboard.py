@@ -189,6 +189,17 @@ class AvisDashboardState:
             return
         try:
             saved = json.loads(self.settings_path.read_text(encoding="utf-8"))
+            if isinstance(saved, dict):
+                # Drop settings from the previous AVIS-only trapezoid ROI
+                # implementation while preserving compatible user tuning.
+                for legacy_key in (
+                    "roi_top_ratio",
+                    "roi_bottom_ratio",
+                    "roi_top_half_width_ratio",
+                    "roi_bottom_half_width_ratio",
+                    "lane_width_ratio",
+                ):
+                    saved.pop(legacy_key, None)
             self._settings = validate_avis_settings(self._settings, saved)
         except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
             print(f"[AVIS WEB] Ignoring invalid settings file: {exc}")
@@ -528,7 +539,8 @@ async function saveROISelection() {
   keys.forEach(key => payload[key] = Number($(key).value));
   try {
     const data = await postJson("/api/settings",payload);
-    fillSettings(data.settings);
+    keys.forEach(key => $(key).value = data.settings[key]);
+    drawROIOverlays();
     $("settingsForm").dataset.dirty = "true";
     showMessage(selectedROI+" ROI saved.",false);
   } catch (error) {
