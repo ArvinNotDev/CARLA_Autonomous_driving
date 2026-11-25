@@ -447,6 +447,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+AVIS_ROI_CONFIG_KEYS = {
+    "ll_top_roi": "LL_TOP_ROI",
+    "ll_bottom_roi": "LL_BOTTOM_ROI",
+    "ll_left_roi": "LL_LEFT_ROI",
+    "ll_right_roi": "LL_RIGHT_ROI",
+    "rl_top_roi": "RL_TOP_ROI",
+    "rl_bottom_roi": "RL_BOTTOM_ROI",
+    "rl_left_roi": "RL_LEFT_ROI",
+    "rl_right_roi": "RL_RIGHT_ROI",
+}
+
+
+def _apply_avis_roi_settings(conf: ModuleType, settings: dict[str, Any]) -> None:
+    """Apply AVIS-local ROI values to the in-memory vision config only."""
+    for setting_key, config_key in AVIS_ROI_CONFIG_KEYS.items():
+        if setting_key in settings:
+            setattr(conf, config_key, float(settings[setting_key]))
+
+
 def _build_avis_settings(conf: ModuleType, sensor_angle: int) -> dict[str, Any]:
     return {
         "vision_backend": "ultralytics",
@@ -463,6 +482,14 @@ def _build_avis_settings(conf: ModuleType, sensor_angle: int) -> dict[str, Any]:
         "kd": float(conf.KD),
         "steer_limit": float(conf.STEER_LIMIT),
         "max_steer_step": float(conf.MAX_STEER_STEP),
+        "ll_top_roi": float(conf.LL_TOP_ROI),
+        "ll_bottom_roi": float(conf.LL_BOTTOM_ROI),
+        "ll_left_roi": float(conf.LL_LEFT_ROI),
+        "ll_right_roi": float(conf.LL_RIGHT_ROI),
+        "rl_top_roi": float(conf.RL_TOP_ROI),
+        "rl_bottom_roi": float(conf.RL_BOTTOM_ROI),
+        "rl_left_roi": float(conf.RL_LEFT_ROI),
+        "rl_right_roi": float(conf.RL_RIGHT_ROI),
     }
 
 
@@ -526,6 +553,7 @@ def run_avis(args: argparse.Namespace) -> int:
             settings_path=PROJECT_ROOT / "avis_settings.json",
         )
         settings, settings_revision = dashboard_state.settings_snapshot()
+        _apply_avis_roi_settings(conf, settings)
 
         try:
             vision_processor = _create_avis_vision_processor(
@@ -632,6 +660,7 @@ def run_avis(args: argparse.Namespace) -> int:
             current_settings, current_revision = dashboard_state.settings_snapshot()
             if current_revision != settings_revision:
                 try:
+                    _apply_avis_roi_settings(conf, current_settings)
                     if int(current_settings["sensor_angle"]) != active_sensor_angle:
                         client.set_sensor_angle(int(current_settings["sensor_angle"]))
                         active_sensor_angle = int(current_settings["sensor_angle"])
@@ -660,6 +689,14 @@ def run_avis(args: argparse.Namespace) -> int:
                         print(f"[AVIS] Vision backend changed to {active_backend}.")
                     elif active_backend == "classical":
                         vision_processor.update_settings(current_settings)
+                    elif any(
+                        settings.get(key) != current_settings.get(key)
+                        for key in AVIS_ROI_CONFIG_KEYS
+                    ):
+                        # VisionProcessor reads these in-memory ROI values
+                        # on each frame; reset only its AVIS-side sticky state.
+                        vision_processor.last_lane_center = None
+                        vision_processor.active_side = None
 
                     control_period = 1.0 / float(current_settings["control_loop_hz"])
                     inference_interval = (
