@@ -1145,6 +1145,7 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
     """Model-triggered right-to-left pass with right-side sensor-confirmed return."""
 
     WAIT_OBSTACLE_PASS = "WAIT_OBSTACLE_PASS"
+    WAIT_PASS_CLEARANCE = "WAIT_PASS_CLEARANCE"
     RETURN_DELAY = "RETURN_DELAY"
 
     def __init__(self) -> None:
@@ -2796,11 +2797,13 @@ def run_avis(args: argparse.Namespace) -> int:
                             throttle = 0.0
                         if lane_change_state["phase"] == "WAIT_OBSTACLE_PASS":
                             status = "OBSTACLE AVOIDANCE / WAITING FOR RIGHT SENSOR PASS CONFIRMATION"
-                        elif lane_change_state["phase"] == "RETURN_DELAY":
+                        elif lane_change_state["phase"] == "WAIT_PASS_CLEARANCE":
                             status = (
-                                "OBSTACLE AVOIDANCE / RIGHT SENSOR CLEAR · RETURN IN "
-                                f"{lane_change_state.get('return_delay_remaining_s', 0.0):.1f}s"
+                                "OBSTACLE AVOIDANCE / PASS CONFIRMED · "
+                                f"{lane_change_state.get('pass_clearance_remaining_m', 0.0):.1f}m BEFORE RETURN"
                             )
+                        elif lane_change_state["phase"] == "RETURN_DELAY":
+                            status = "OBSTACLE AVOIDANCE / LEGACY RETURN DELAY"
                         elif lane_change_state["phase"] == "LEFT_LANE":
                             status = "OBSTACLE AVOIDANCE / LEFT LANE"
                         else:
@@ -2959,9 +2962,18 @@ def run_avis(args: argparse.Namespace) -> int:
                         "obstacle_model_probability": lane_change_state.get("obstacle_model_probability"),
                         "obstacle_lane_probability": lane_change_state.get("obstacle_lane_probability"),
                         "obstacle_lane_prediction": lane_change_state.get("obstacle_lane_prediction"),
+                        "obstacle_lane_confidence": lane_change_state.get("obstacle_lane_confidence"),
+                        "model_lane_confirm_frames": lane_change_state.get("model_lane_confirm_frames", 0),
+                        "lane_change_attempt_number": lane_change_state.get("lane_change_attempt_number", 0),
+                        "lane_change_retry_steer": lane_change_state.get("lane_change_retry_steer"),
+                        "lane_change_retry_pulse_distance_m": lane_change_state.get("lane_change_retry_pulse_distance_m"),
                         "obstacle_pass_sensor_stage": lane_change_state.get("pass_sensor_stage"),
                         "obstacle_pass_right_sensor_cm": lane_change_state.get("pass_sensor_right_cm"),
+                        "obstacle_pass_initial_clear_frames": lane_change_state.get("pass_sensor_initial_clear_frames", 0),
                         "obstacle_pass_clear_frames": lane_change_state.get("pass_sensor_clear_frames", 0),
+                        "pass_clearance_distance_m": lane_change_state.get("pass_clearance_distance_m", 3.0),
+                        "pass_clearance_travelled_m": lane_change_state.get("pass_clearance_travelled_m", 0.0),
+                        "pass_clearance_remaining_m": lane_change_state.get("pass_clearance_remaining_m", 0.0),
                         "obstacle_return_delay_remaining_s": lane_change_state.get("return_delay_remaining_s", 0.0),
                         "obstacle_pass_sensor_timeout": lane_change_state.get("pass_sensor_timeout", False),
                         "active_sensor_angle": active_sensor_angle,
