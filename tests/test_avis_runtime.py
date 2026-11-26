@@ -2177,7 +2177,8 @@ def test_avis_onnx_classifier_uses_roadforge_task_metadata_and_training_preproce
     checkpoint.write_bytes(b"mock ONNX placeholder")
 
     classifier = AvisObstacleLaneClassifier(checkpoint)
-    frame_bgr = np.full((32, 48, 3), 128, dtype=np.uint8)
+    frame_bgr = np.empty((32, 48, 3), dtype=np.uint8)
+    frame_bgr[:] = [10, 128, 240]  # BGR input must become RGB [240, 128, 10].
     prediction = classifier.predict(frame_bgr)
 
     assert prediction["valid"] is True
@@ -2191,7 +2192,8 @@ def test_avis_onnx_classifier_uses_roadforge_task_metadata_and_training_preproce
     assert fake_session.feed.dtype == np.float32
     mean = np.asarray([0.485, 0.456, 0.406], dtype=np.float32)
     std = np.asarray([0.229, 0.224, 0.225], dtype=np.float32)
-    expected = (128.0 / 255.0 - mean) / std
+    rgb_values = np.asarray([240.0, 128.0, 10.0], dtype=np.float32) / 255.0
+    expected = (rgb_values - mean) / std
     for channel in range(3):
         np.testing.assert_allclose(
             fake_session.feed[0, channel],
