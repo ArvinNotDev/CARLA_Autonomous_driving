@@ -234,9 +234,14 @@ python main.py --avis --avis-host 127.0.0.1 --avis-port 25001
 The AVIS settings profile is `AVIS_StableV2`. It copies the StableV2 lane
 perception, PID, inference cadence, and speed settings while omitting CARLA-only
 camera placement, map navigation, junction, trajectory, and LiDAR settings.
-The AVIS API supplies only RGB frames, speed feedback, and three distance
-readings; the distance readings are displayed for diagnostics and are not used
-to introduce a different driving strategy.
+The AVIS API supplies RGB frames, speed feedback, and three distance readings
+in centimetres ([left, middle/front, right]). AVIS obstacle avoidance uses the
+middle sensor to initiate a right-to-left lane change below the configured
+distance threshold (700 cm / 7 m by default). It applies a short steering pulse,
+then continues straight until the target-side lane marking is reacquired in the
+corresponding LL or RL ROI. Speed feedback is integrated to measure the distance
+travelled on the left lane before returning to the right. These settings and the
+line-reacquisition safety distance are configurable in the AVIS web dashboard.
 
 AVIS accepts engine power and steering commands but does not expose a separate
 brake control in this API revision. When the speed controller requests braking,

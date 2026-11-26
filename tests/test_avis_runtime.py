@@ -9,6 +9,7 @@ from avis_runtime import (
     AVIS_PROFILE_NAME,
     AvisEngineClient,
     AvisSteeringController,
+    AvisObstacleLaneChangeController,
     apply_avis_profile,
     load_avis_profile,
     normalize_avis_controls,
@@ -388,6 +389,196 @@ def test_avis_classical_hough_receives_only_cropped_left_and_right_rois(monkeypa
     allowed[40:160, 32:96] = True
     allowed[50:150, 224:288] = True
     assert np.count_nonzero(debug["lane_mask"][~allowed]) == 0
+
+
+def _obstacle_lane_change_test_settings(**overrides):
+    settings = dict(DEFAULT_AVIS_SETTINGS)
+    settings.update({
+        "obstacle_lane_change_enabled": True,
+        "obstacle_front_threshold_cm": 700,
+        "obstacle_trigger_confirm_frames": 2,
+        "obstacle_sensor_clear_threshold_cm": 900,
+        "obstacle_sensor_clear_confirm_frames": 2,
+        "obstacle_lane_change_steer_distance_m": 2.0,
+        "obstacle_lane_change_left_steer": 0.20,
+        "obstacle_lane_change_right_steer": 0.20,
+        "obstacle_lane_line_confirm_frames": 2,
+        "obstacle_lane_line_search_max_distance_m": 20.0,
+        "obstacle_return_distance_m": 3.0,
+    })
+    settings.update(overrides)
+    return settings
+
+
+def test_avis_obstacle_lane_change_uses_middle_sensor_and_confirms_obstacle():
+    controller = AvisObstacleLaneChangeController()
+    settings = _obstacle_lane_change_test_settings()
+
+    first = controller.update(
+        sensors=[1500, 650, 1500], speed_kmh=0.0, dt=0.1,
+        left_x=100, right_x=220, settings=settings,
+        allow_new_maneuver=True, observation_id=1,
+    )
+    assert first["phase"] == "RIGHT_LANE"
+
+    second = controller.update(
+        sensors=[1500, 650, 1500], speed_kmh=0.0, dt=0.1,
+        left_x=100, right_x=220, settings=settings,
+        allow_new_maneuver=True, observation_id=2,
+    )
+    assert second["phase"] == "STEER_LEFT"
+    assert second["steering_override"] == pytest.approx(-0.20)
+    assert second["obstacle_latched"] is True
+
+
+def test_avis_obstacle_lane_change_switches_to_straight_then_waits_for_left_roi():
+    controller = AvisObstacleLaneChangeController()
+    settings = _obstacle_lane_change_test_settings()
+
+    for observation_id in (1, 2):
+        state = controller.update(
+            sensors=[1500, 600, 1500], speed_kmh=0.0, dt=0.0,
+            left_x=100, right_x=220, settings=settings,
+            observation_id=observation_id,
+        )
+    assert state["phase"] == "STEER_LEFT"
+
+    for observation_id in (3, 4):
+        state = controller.update(
+            sensors=[1500, 600, 1500], speed_kmh=36.0, dt=0.1,
+            left_x=None, right_x=220, settings=settings,
+            observation_id=observation_id,
+        )
+    assert state["phase"] == "ACQUIRE_LEFT_LINE"
+    assert state["steering_override"] == pytest.approx(0.0)
+
+    state = controller.update(
+        sensors=[1500, 600, 1500], speed_kmh=0.0, dt=0.0,
+        left_x=None, right_x=220, settings=settings, observation_id=5,
+    )
+    assert state["phase"] == "ACQUIRE_LEFT_LINE"
+    assert state["steering_override"] == pytest.approx(0.0)
+
+    for observation_id in (6, 7):
+        state = controller.update(
+            sensors=[1500, 600, 1500], speed_kmh=0.0, dt=0.0,
+            left_x=110, right_x=None, settings=settings,
+            observation_id=observation_id,
+        )
+    assert state["phase"] == "LEFT_LANE"
+    assert state["pid_reset"] is True
+    assert state["left_lane_distance_m"] == pytest.approx(0.0)
+
+
+def test_avis_obstacle_lane_change_returns_right_after_configured_distance():
+    controller = AvisObstacleLaneChangeController()
+    settings = _obstacle_lane_change_test_settings()
+
+    for observation_id in (1, 2):
+        state = controller.update(
+            sensors=[1500, 600, 1500], speed_kmh=0.0, dt=0.0,
+            left_x=100, right_x=220, settings=settings,
+            observation_id=observation_id,
+        )
+    for observation_id in (3, 4):
+        state = controller.update(
+            sensors=[1500, 600, 1500], speed_kmh=36.0, dt=0.1,
+            left_x=None, right_x=220, settings=settings,
+            observation_id=observation_id,
+        )
+    for observation_id in (5, 6):
+        state = controller.update(
+            sensors=[1500, 600, 1500], speed_kmh=0.0, dt=0.0,
+            left_x=100, right_x=None, settings=settings,
+            observation_id=observation_id,
+        )
+    assert state["phase"] == "LEFT_LANE"
+
+    for observation_id in (7, 8, 9):
+        state = controller.update(
+            sensors=[1500, 1500, 1500], speed_kmh=36.0, dt=0.1,
+            left_x=100, right_x=220, settings=settings,
+            observation_id=observation_id,
+        )
+    assert state["phase"] == "STEER_RIGHT"
+    assert state["steering_override"] == pytest.approx(0.20)
+
+    for observation_id in (10, 11):
+        state = controller.update(
+            sensors=[1500, 1500, 1500], speed_kmh=36.0, dt=0.1,
+            left_x=100, right_x=220, settings=settings,
+            observation_id=observation_id,
+        )
+    assert state["phase"] == "ACQUIRE_RIGHT_LINE"
+    assert state["steering_override"] == pytest.approx(0.0)
+
+    for observation_id in (12, 13):
+        state = controller.update(
+            sensors=[1500, 1500, 1500], speed_kmh=0.0, dt=0.0,
+            left_x=None, right_x=210, settings=settings,
+            observation_id=observation_id,
+        )
+    assert state["phase"] == "RIGHT_LANE"
+    assert state["pid_reset"] is True
+
+
+def test_avis_obstacle_lane_change_stops_if_target_roi_line_is_never_reacquired():
+    controller = AvisObstacleLaneChangeController()
+    settings = _obstacle_lane_change_test_settings(
+        obstacle_lane_line_search_max_distance_m=1.0,
+    )
+    for observation_id in (1, 2):
+        state = controller.update(
+            sensors=[1500, 600, 1500], speed_kmh=0.0, dt=0.0,
+            left_x=100, right_x=220, settings=settings,
+            observation_id=observation_id,
+        )
+    for observation_id in (3, 4):
+        state = controller.update(
+            sensors=[1500, 600, 1500], speed_kmh=36.0, dt=0.1,
+            left_x=None, right_x=220, settings=settings,
+            observation_id=observation_id,
+        )
+    assert state["phase"] == "ACQUIRE_LEFT_LINE"
+    state = controller.update(
+        sensors=[1500, 600, 1500], speed_kmh=36.0, dt=0.1,
+        left_x=None, right_x=220, settings=settings,
+        observation_id=5,
+    )
+    assert state["phase"] == "FAILED"
+    assert state["safe_stop"] is True
+
+
+def test_avis_dashboard_lane_change_settings_are_persistent_and_validated(tmp_path):
+    state = AvisDashboardState(settings_path=tmp_path / "avis_settings.json")
+    updated = state.update_settings({
+        "obstacle_lane_change_enabled": True,
+        "obstacle_front_threshold_cm": 650,
+        "obstacle_return_distance_m": 820,
+        "obstacle_lane_change_left_steer": 0.24,
+    })
+    assert updated["obstacle_front_threshold_cm"] == 650
+    assert updated["obstacle_return_distance_m"] == pytest.approx(820.0)
+    assert updated["obstacle_lane_change_left_steer"] == pytest.approx(0.24)
+
+    restored = AvisDashboardState(settings_path=tmp_path / "avis_settings.json")
+    restored_settings, _ = restored.settings_snapshot()
+    assert restored_settings["obstacle_return_distance_m"] == pytest.approx(820.0)
+
+    with pytest.raises(ValueError, match="Sensor clear threshold"):
+        state.update_settings({
+            "obstacle_front_threshold_cm": 900,
+            "obstacle_sensor_clear_threshold_cm": 800,
+        }, persist=False)
+
+
+def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
+    state = AvisDashboardState(settings_path=tmp_path / "avis_settings.json")
+    html = create_avis_dashboard_app(state).test_client().get("/").get_data(as_text=True)
+    assert 'id="obstacle_lane_change_enabled"' in html
+    assert 'id="obstacle_front_threshold_cm"' in html
+    assert 'id="obstacle_return_distance_m"' in html
+    assert 'id="obstacle_lane_line_search_max_distance_m"' in html
 
 
 def test_avis_dashboard_roi_settings_validate_each_rectangle():

@@ -199,6 +199,259 @@ class AvisSteeringController:
         return float(steer)
 
 
+class AvisObstacleLaneChangeController:
+    """AVIS-only obstacle lane-change state machine without GPS dependencies."""
+
+    RIGHT_LANE = "RIGHT_LANE"
+    STEER_LEFT = "STEER_LEFT"
+    ACQUIRE_LEFT_LINE = "ACQUIRE_LEFT_LINE"
+    LEFT_LANE = "LEFT_LANE"
+    STEER_RIGHT = "STEER_RIGHT"
+    ACQUIRE_RIGHT_LINE = "ACQUIRE_RIGHT_LINE"
+    FAILED = "FAILED"
+
+    def __init__(self) -> None:
+        self.phase = self.RIGHT_LANE
+        self.phase_distance_m = 0.0
+        self.left_lane_distance_m = 0.0
+        self.obstacle_confirm_frames = 0
+        self.sensor_clear_frames = 0
+        self.obstacle_latched = False
+        self.line_confirm_frames = 0
+        self.last_line_observation_id = None
+
+    @staticmethod
+    def front_sensor_distance_cm(sensors: Any) -> float | None:
+        """AVIS sensor order is left, middle/front, right; all values are cm."""
+        try:
+            value = float(sensors[1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            return None
+        if not math.isfinite(value) or value < 0.0:
+            return None
+        return value
+
+    @staticmethod
+    def _positive_setting(settings: dict[str, Any], key: str, default: float) -> float:
+        try:
+            value = float(settings.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return value if math.isfinite(value) and value > 0.0 else default
+
+    def _target_lane(self) -> str:
+        if self.phase in {self.STEER_LEFT, self.ACQUIRE_LEFT_LINE, self.LEFT_LANE}:
+            return "left"
+        return "right"
+
+    def snapshot(self, sensors: Any = None) -> dict[str, Any]:
+        return {
+            "phase": self.phase,
+            "lane_side": "left" if self.phase in {
+                self.LEFT_LANE, self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE
+            } else "right",
+            "target_lane": self._target_lane(),
+            "left_lane_distance_m": float(self.left_lane_distance_m),
+            "phase_distance_m": float(self.phase_distance_m),
+            "front_sensor_cm": self.front_sensor_distance_cm(sensors),
+            "active": self.phase in {
+                self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
+                self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
+            },
+            "failed": self.phase == self.FAILED,
+            "steering_override": None,
+            "safe_stop": self.phase == self.FAILED,
+            "pid_reset": False,
+        }
+
+    def update(
+        self,
+        *,
+        sensors: Any,
+        speed_kmh: float,
+        dt: float,
+        left_x: int | float | None,
+        right_x: int | float | None,
+        settings: dict[str, Any],
+        allow_new_maneuver: bool = True,
+        observation_id: Any = None,
+    ) -> dict[str, Any]:
+        front_distance = self.front_sensor_distance_cm(sensors)
+        try:
+            speed = float(speed_kmh)
+            elapsed = float(dt)
+        except (TypeError, ValueError):
+            speed, elapsed = 0.0, 0.0
+        if not math.isfinite(speed):
+            speed = 0.0
+        if not math.isfinite(elapsed):
+            elapsed = 0.0
+        travelled_m = max(0.0, speed) / 3.6 * min(0.25, max(0.0, elapsed))
+
+        if self.phase in {
+            self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
+            self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
+        }:
+            self.phase_distance_m += travelled_m
+        elif self.phase == self.LEFT_LANE:
+            self.left_lane_distance_m += travelled_m
+
+        trigger_cm = self._positive_setting(
+            settings, "obstacle_front_threshold_cm", 700.0
+        )
+        clear_cm = self._positive_setting(
+            settings, "obstacle_sensor_clear_threshold_cm", 900.0
+        )
+        trigger_frames = max(
+            1, int(self._positive_setting(settings, "obstacle_trigger_confirm_frames", 3))
+        )
+        clear_frames_required = max(
+            1, int(self._positive_setting(
+                settings, "obstacle_sensor_clear_confirm_frames", 5
+            ))
+        )
+
+        # Hysteresis prevents a noisy sensor from repeatedly starting changes.
+        if front_distance is not None and front_distance >= clear_cm:
+            self.sensor_clear_frames += 1
+            if self.sensor_clear_frames >= clear_frames_required:
+                self.obstacle_latched = False
+                self.obstacle_confirm_frames = 0
+        else:
+            self.sensor_clear_frames = 0
+
+        pid_reset = False
+        if (
+            self.phase == self.RIGHT_LANE
+            and bool(settings.get("obstacle_lane_change_enabled", True))
+            and allow_new_maneuver
+            and not self.obstacle_latched
+        ):
+            if front_distance is not None and front_distance <= trigger_cm:
+                self.obstacle_confirm_frames += 1
+            else:
+                self.obstacle_confirm_frames = 0
+            if self.obstacle_confirm_frames >= trigger_frames:
+                self.obstacle_latched = True
+                self.obstacle_confirm_frames = 0
+                self.phase = self.STEER_LEFT
+                self.phase_distance_m = 0.0
+                self.line_confirm_frames = 0
+                self.last_line_observation_id = None
+                pid_reset = True
+
+        steer_distance = self._positive_setting(
+            settings, "obstacle_lane_change_steer_distance_m", 3.0
+        )
+        left_steer = min(
+            1.0,
+            self._positive_setting(settings, "obstacle_lane_change_left_steer", 0.20),
+        )
+        right_steer = min(
+            1.0,
+            self._positive_setting(settings, "obstacle_lane_change_right_steer", 0.20),
+        )
+        line_frames_required = max(
+            1, int(self._positive_setting(
+                settings, "obstacle_lane_line_confirm_frames", 3
+            ))
+        )
+        line_search_max_m = self._positive_setting(
+            settings, "obstacle_lane_line_search_max_distance_m", 40.0
+        )
+        return_distance_m = self._positive_setting(
+            settings, "obstacle_return_distance_m", 750.0
+        )
+
+        # Count only new inference results, not repeated control-loop reads.
+        if self.phase == self.ACQUIRE_LEFT_LINE and observation_id is not None:
+            if observation_id != self.last_line_observation_id:
+                self.last_line_observation_id = observation_id
+                self.line_confirm_frames = (
+                    self.line_confirm_frames + 1 if left_x is not None else 0
+                )
+        elif self.phase == self.ACQUIRE_RIGHT_LINE and observation_id is not None:
+            if observation_id != self.last_line_observation_id:
+                self.last_line_observation_id = observation_id
+                self.line_confirm_frames = (
+                    self.line_confirm_frames + 1 if right_x is not None else 0
+                )
+
+        steering_override: float | None = None
+        safe_stop = False
+
+        if self.phase == self.STEER_LEFT:
+            if self.phase_distance_m >= steer_distance:
+                self.phase = self.ACQUIRE_LEFT_LINE
+                self.phase_distance_m = 0.0
+                self.line_confirm_frames = 0
+                # Ignore the old frame used to finish the steering pulse.
+                self.last_line_observation_id = observation_id
+                steering_override = 0.0
+            else:
+                steering_override = -left_steer
+
+        elif self.phase == self.ACQUIRE_LEFT_LINE:
+            steering_override = 0.0
+            if self.line_confirm_frames >= line_frames_required:
+                self.phase = self.LEFT_LANE
+                self.phase_distance_m = 0.0
+                self.left_lane_distance_m = 0.0
+                self.line_confirm_frames = 0
+                self.last_line_observation_id = None
+                pid_reset = True
+            elif self.phase_distance_m >= line_search_max_m:
+                self.phase = self.FAILED
+                safe_stop = True
+
+        elif self.phase == self.LEFT_LANE:
+            if self.left_lane_distance_m >= return_distance_m:
+                self.phase = self.STEER_RIGHT
+                self.phase_distance_m = 0.0
+                self.line_confirm_frames = 0
+                self.last_line_observation_id = None
+                steering_override = right_steer
+                pid_reset = True
+
+        elif self.phase == self.STEER_RIGHT:
+            if self.phase_distance_m >= steer_distance:
+                self.phase = self.ACQUIRE_RIGHT_LINE
+                self.phase_distance_m = 0.0
+                self.line_confirm_frames = 0
+                # Ignore the old frame used to finish the steering pulse.
+                self.last_line_observation_id = observation_id
+                steering_override = 0.0
+            else:
+                steering_override = right_steer
+
+        elif self.phase == self.ACQUIRE_RIGHT_LINE:
+            steering_override = 0.0
+            if self.line_confirm_frames >= line_frames_required:
+                self.phase = self.RIGHT_LANE
+                self.phase_distance_m = 0.0
+                self.left_lane_distance_m = 0.0
+                self.line_confirm_frames = 0
+                self.last_line_observation_id = None
+                pid_reset = True
+            elif self.phase_distance_m >= line_search_max_m:
+                self.phase = self.FAILED
+                safe_stop = True
+
+        elif self.phase == self.FAILED:
+            safe_stop = True
+            steering_override = 0.0
+
+        result = self.snapshot(sensors)
+        result.update({
+            "steering_override": steering_override,
+            "safe_stop": safe_stop or self.phase == self.FAILED,
+            "pid_reset": pid_reset,
+            "obstacle_latched": self.obstacle_latched,
+            "line_confirm_frames": self.line_confirm_frames,
+        })
+        return result
+
+
 def _candidate_api_directories(api_path: str | None) -> list[Path]:
     candidates: list[Path] = []
     if api_path:
@@ -762,6 +1015,7 @@ def run_avis(args: argparse.Namespace) -> int:
             min_speed_kmh=float(settings["min_speed_kmh"]),
             max_speed_kmh=float(settings["max_speed_kmh"]),
         )
+        obstacle_lane_change = AvisObstacleLaneChangeController()
 
         if not bool(conf.AUTO_MODE_DEFAULT):
             dashboard_state.set_mode("stopped")
@@ -942,6 +1196,11 @@ def run_avis(args: argparse.Namespace) -> int:
                 lane_error = 0.0
                 status = "WAITING FOR FIRST PREDICTION"
 
+                debug_data = vision_data.get("debug", {})
+                if not isinstance(debug_data, dict):
+                    debug_data = {}
+                lane_change_state = obstacle_lane_change.snapshot(sensors)
+
                 if drive_mode == "manual":
                     throttle = manual_throttle if manual_active else 0.0
                     steering = manual_steering if manual_active else 0.0
@@ -975,7 +1234,52 @@ def run_avis(args: argparse.Namespace) -> int:
                             )
                         )
                         lane_error = float(vision_data.get("error", 0.0) or 0.0)
-                        if not lane_valid:
+                        control_dt = min(
+                            0.1,
+                            max(0.005, time.perf_counter() - last_control_time),
+                        )
+                        lane_change_state = obstacle_lane_change.update(
+                            sensors=sensors,
+                            speed_kmh=current_speed,
+                            dt=control_dt,
+                            left_x=debug_data.get("left_x"),
+                            right_x=debug_data.get("right_x"),
+                            settings=current_settings,
+                            allow_new_maneuver=lane_valid,
+                            observation_id=last_vision_result.completed_at,
+                        )
+                        if lane_change_state.get("pid_reset"):
+                            steering_controller.reset()
+
+                        steering_override = lane_change_state.get("steering_override")
+                        if lane_change_state.get("safe_stop"):
+                            throttle = 0.0
+                            steering = 0.0
+                            status = "LANE CHANGE FAILED - TARGET ROI LINE NOT FOUND"
+                        elif steering_override is not None:
+                            steering = float(steering_override)
+                            target_speed = select_avis_target_speed(
+                                steering,
+                                float(current_settings["min_speed_kmh"]),
+                                float(current_settings["max_speed_kmh"]),
+                            )
+                            throttle, requested_brake = speed_controller.update(
+                                current_speed, target_speed, dt=control_dt
+                            )
+                            coasting = requested_brake > 0.0
+                            if coasting:
+                                throttle = 0.0
+                            if lane_change_state["phase"] == "STEER_LEFT":
+                                status = "OBSTACLE AVOIDANCE / STEERING LEFT"
+                            elif lane_change_state["phase"] == "ACQUIRE_LEFT_LINE":
+                                status = "OBSTACLE AVOIDANCE / WAITING FOR LEFT ROI"
+                            elif lane_change_state["phase"] == "STEER_RIGHT":
+                                status = "OBSTACLE AVOIDANCE / STEERING RIGHT"
+                            elif lane_change_state["phase"] == "ACQUIRE_RIGHT_LINE":
+                                status = "OBSTACLE AVOIDANCE / WAITING FOR RIGHT ROI"
+                            else:
+                                status = "OBSTACLE AVOIDANCE"
+                        elif not lane_valid:
                             status = "LANE NOT DETECTED - STOPPED"
                         else:
                             steering = steering_controller.update(lane_error)
@@ -984,26 +1288,20 @@ def run_avis(args: argparse.Namespace) -> int:
                                 float(current_settings["min_speed_kmh"]),
                                 float(current_settings["max_speed_kmh"]),
                             )
-                            dt = min(
-                                0.1,
-                                max(
-                                    0.005,
-                                    time.perf_counter() - last_control_time,
-                                ),
-                            )
                             throttle, requested_brake = speed_controller.update(
-                                current_speed,
-                                target_speed,
-                                dt=dt,
+                                current_speed, target_speed, dt=control_dt
                             )
-                            # AVIS 1.2.4 has no independent service-brake command.
                             coasting = requested_brake > 0.0
                             if coasting:
                                 throttle = 0.0
-                            status = "AUTO / COAST" if coasting else "AUTO"
+                            status = (
+                                "AVOIDANCE / LEFT LANE"
+                                if lane_change_state["phase"] == "LEFT_LANE"
+                                else "AUTO / COAST" if coasting else "AUTO"
+                            )
                     client.send_control(throttle, steering)
 
-                debug_data = vision_data.get("debug", {})
+                
                 if not isinstance(debug_data, dict):
                     debug_data = {}
                 combined = debug_data.get("combined")
@@ -1104,6 +1402,16 @@ def run_avis(args: argparse.Namespace) -> int:
                             list(sensors[:3])
                             if isinstance(sensors, (list, tuple)) and len(sensors) >= 3
                             else None
+                        ),
+                        "front_sensor_cm": lane_change_state.get("front_sensor_cm"),
+                        "lane_change_phase": lane_change_state.get("phase", "RIGHT_LANE"),
+                        "lane_change_side": lane_change_state.get("lane_side", "right"),
+                        "lane_change_target": lane_change_state.get("target_lane", "right"),
+                        "lane_change_distance_m": round(
+                            float(lane_change_state.get("left_lane_distance_m", 0.0)), 2
+                        ),
+                        "lane_change_segment_distance_m": round(
+                            float(lane_change_state.get("phase_distance_m", 0.0)), 2
                         ),
                         "vision_error": (
                             str(vision_error) if vision_error else None

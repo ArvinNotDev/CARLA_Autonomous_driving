@@ -52,6 +52,17 @@ DEFAULT_AVIS_SETTINGS: dict[str, Any] = {
     "min_side_pixels": 12,
     "lane_offset_ratio": 0.16,
     "center_smoothing": 0.30,
+    "obstacle_lane_change_enabled": True,
+    "obstacle_front_threshold_cm": 700,
+    "obstacle_trigger_confirm_frames": 3,
+    "obstacle_sensor_clear_threshold_cm": 900,
+    "obstacle_sensor_clear_confirm_frames": 5,
+    "obstacle_lane_change_steer_distance_m": 3.0,
+    "obstacle_lane_change_left_steer": 0.20,
+    "obstacle_lane_change_right_steer": 0.20,
+    "obstacle_lane_line_confirm_frames": 3,
+    "obstacle_lane_line_search_max_distance_m": 40.0,
+    "obstacle_return_distance_m": 750.0,
 }
 
 
@@ -93,6 +104,16 @@ _NUMERIC_LIMITS: dict[str, tuple[float, float, bool]] = {
     "min_side_pixels": (1.0, 500.0, True),
     "lane_offset_ratio": (0.03, 0.45, False),
     "center_smoothing": (0.01, 1.0, False),
+    "obstacle_front_threshold_cm": (50.0, 1499.0, True),
+    "obstacle_trigger_confirm_frames": (1.0, 30.0, True),
+    "obstacle_sensor_clear_threshold_cm": (51.0, 1500.0, True),
+    "obstacle_sensor_clear_confirm_frames": (1.0, 30.0, True),
+    "obstacle_lane_change_steer_distance_m": (0.25, 30.0, False),
+    "obstacle_lane_change_left_steer": (0.01, 1.0, False),
+    "obstacle_lane_change_right_steer": (0.01, 1.0, False),
+    "obstacle_lane_line_confirm_frames": (1.0, 20.0, True),
+    "obstacle_lane_line_search_max_distance_m": (1.0, 500.0, False),
+    "obstacle_return_distance_m": (1.0, 100000.0, False),
 }
 
 
@@ -115,9 +136,9 @@ def validate_avis_settings(
                 raise ValueError("vision_backend must be 'ultralytics' or 'classical'.")
             result[key] = value
             continue
-        if key == "yellow_enabled":
+        if key in {"yellow_enabled", "obstacle_lane_change_enabled"}:
             if not isinstance(value, bool):
-                raise ValueError("yellow_enabled must be a boolean.")
+                raise ValueError(f"{key} must be a boolean.")
             result[key] = value
             continue
 
@@ -145,6 +166,13 @@ def validate_avis_settings(
             raise ValueError(f"{side.upper()} ROI right edge must be after its left edge.")
     if result["max_lane_angle_deg"] <= result["min_lane_angle_deg"]:
         raise ValueError("Maximum lane angle must exceed minimum lane angle.")
+    if (
+        result["obstacle_sensor_clear_threshold_cm"]
+        <= result["obstacle_front_threshold_cm"]
+    ):
+        raise ValueError(
+            "Sensor clear threshold must be greater than the front obstacle threshold."
+        )
     return result
 
 
@@ -179,6 +207,12 @@ class AvisDashboardState:
             "lane_error_px": 0.0,
             "lane_valid": False,
             "sensors_cm": None,
+            "front_sensor_cm": None,
+            "lane_change_phase": "RIGHT_LANE",
+            "lane_change_side": "right",
+            "lane_change_target": "right",
+            "lane_change_distance_m": 0.0,
+            "lane_change_segment_distance_m": 0.0,
             "vision_error": None,
         }
         self._images: dict[str, bytes] = {}
@@ -411,6 +445,21 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
           <div class="field"><label for="max_speed_kmh">Maximum speed (km/h)</label><input id="max_speed_kmh" data-setting="max_speed_kmh" type="number" min="1.5" max="100" step=".5"></div>
           <div class="field full"><label for="acceleration_mps2">Acceleration limit (m/s²)</label><input id="acceleration_mps2" data-setting="acceleration_mps2" type="number" min=".2" max="8" step=".1"></div>
         </div>
+        <div class="section-label">Obstacle avoidance / automatic lane change</div>
+        <div class="fields">
+          <div class="field full"><label for="obstacle_lane_change_enabled">Automatic obstacle lane change</label><select id="obstacle_lane_change_enabled" data-setting="obstacle_lane_change_enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
+          <div class="field"><label for="obstacle_front_threshold_cm">Front obstacle threshold (cm)</label><input id="obstacle_front_threshold_cm" data-setting="obstacle_front_threshold_cm" type="number" min="50" max="1499" step="10"></div>
+          <div class="field"><label for="obstacle_trigger_confirm_frames">Obstacle confirmation frames</label><input id="obstacle_trigger_confirm_frames" data-setting="obstacle_trigger_confirm_frames" type="number" min="1" max="30" step="1"></div>
+          <div class="field"><label for="obstacle_sensor_clear_threshold_cm">Sensor clear threshold (cm)</label><input id="obstacle_sensor_clear_threshold_cm" data-setting="obstacle_sensor_clear_threshold_cm" type="number" min="51" max="1500" step="10"></div>
+          <div class="field"><label for="obstacle_sensor_clear_confirm_frames">Clear confirmation frames</label><input id="obstacle_sensor_clear_confirm_frames" data-setting="obstacle_sensor_clear_confirm_frames" type="number" min="1" max="30" step="1"></div>
+          <div class="field"><label for="obstacle_lane_change_steer_distance_m">Initial steering distance (m)</label><input id="obstacle_lane_change_steer_distance_m" data-setting="obstacle_lane_change_steer_distance_m" type="number" min=".25" max="30" step=".25"></div>
+          <div class="field"><label for="obstacle_lane_line_confirm_frames">Target ROI line confirm frames</label><input id="obstacle_lane_line_confirm_frames" data-setting="obstacle_lane_line_confirm_frames" type="number" min="1" max="20" step="1"></div>
+          <div class="field"><label for="obstacle_lane_change_left_steer">Left steering pulse</label><input id="obstacle_lane_change_left_steer" data-setting="obstacle_lane_change_left_steer" type="number" min=".01" max="1" step=".01"></div>
+          <div class="field"><label for="obstacle_lane_change_right_steer">Right steering pulse</label><input id="obstacle_lane_change_right_steer" data-setting="obstacle_lane_change_right_steer" type="number" min=".01" max="1" step=".01"></div>
+          <div class="field"><label for="obstacle_lane_line_search_max_distance_m">Maximum straight line-search distance (m)</label><input id="obstacle_lane_line_search_max_distance_m" data-setting="obstacle_lane_line_search_max_distance_m" type="number" min="1" max="500" step="1"></div>
+          <div class="field"><label for="obstacle_return_distance_m">Distance in left lane before return (m)</label><input id="obstacle_return_distance_m" data-setting="obstacle_return_distance_m" type="number" min="1" max="100000" step="10"></div>
+        </div>
+        <div class="hint">AVIS uses the middle distance sensor (cm). The default 700 cm trigger is 7 m. It briefly steers left, then goes straight until the LL ROI line is confirmed; after the configured left-lane distance it steers right, goes straight until the RL ROI line is confirmed, and hands steering back to lane following. If the target line is not found within the safety distance, the car stops.</div>
         <div class="section-label">Steering PID</div>
         <div class="fields">
           <div class="field"><label for="kp">Kp</label><input id="kp" data-setting="kp" type="number" min="0" max=".2" step=".001"></div>
@@ -739,7 +788,7 @@ function fillSettings(settings) {
   settingInputs.forEach(input => {
     const key = input.dataset.setting;
     if (!(key in settings)) return;
-    if (input.tagName === "SELECT" && (key === "yellow_enabled")) {
+    if (input.tagName === "SELECT" && (key === "yellow_enabled" || key === "obstacle_lane_change_enabled")) {
       input.value = settings[key] ? "true" : "false";
     } else {
       input.value = settings[key];
@@ -753,7 +802,7 @@ function collectSettings() {
   settingInputs.forEach(input => {
     const key = input.dataset.setting;
     if (input.tagName === "SELECT" && key === "vision_backend") result[key] = input.value;
-    else if (input.tagName === "SELECT" && key === "yellow_enabled") result[key] = input.value === "true";
+    else if (input.tagName === "SELECT" && (key === "yellow_enabled" || key === "obstacle_lane_change_enabled")) result[key] = input.value === "true";
     else result[key] = input.valueAsNumber;
   });
   return result;
@@ -884,6 +933,9 @@ async function refreshStatus() {
       " · Throttle: " + Math.round(Number(t.throttle || 0) * 100) + "%" +
       " · Lane: " + (t.lane_valid ? "tracking" : "not detected") +
       " · Sensors (L / C / R): " + (Array.isArray(t.sensors_cm) ? t.sensors_cm.join(" / ") + " cm" : "--") +
+      " · Lane-change: " + String(t.lane_change_phase || "RIGHT_LANE").replaceAll("_"," ") +
+      " · Side: " + String(t.lane_change_side || "right").toUpperCase() +
+      (t.lane_change_side === "left" ? " · Left-lane distance: " + Number(t.lane_change_distance_m || 0).toFixed(1) + " / " + Number(data.settings.obstacle_return_distance_m || 750).toFixed(0) + " m" : "") +
       (t.vision_error ? " · Vision: " + t.vision_error : "");
     if (data.mode !== currentMode) setModeButtons(data.mode);
     if (!$("settingsForm").dataset.dirty) fillSettings(data.settings);
