@@ -713,10 +713,13 @@ class AvisObstacleLaneChangeController:
             pulse_distance = (
                 steer_distance
                 if self.steering_pulse_index == 0
-                else self._positive_setting(
-                    settings,
-                    "obstacle_lane_change_retry_pulse_distance_m",
-                    self.FOLLOWUP_PULSE_DISTANCE_M,
+                else min(
+                    self._positive_setting(
+                        settings,
+                        "obstacle_lane_change_retry_pulse_distance_m",
+                        self.FOLLOWUP_PULSE_DISTANCE_M,
+                    ),
+                    steer_distance * 0.80,
                 )
             )
             # Losing the old line is not proof that the destination line has
@@ -764,10 +767,13 @@ class AvisObstacleLaneChangeController:
             pulse_distance = (
                 steer_distance
                 if self.steering_pulse_index == 0
-                else self._positive_setting(
-                    settings,
-                    "obstacle_lane_change_retry_pulse_distance_m",
-                    self.FOLLOWUP_PULSE_DISTANCE_M,
+                else min(
+                    self._positive_setting(
+                        settings,
+                        "obstacle_lane_change_retry_pulse_distance_m",
+                        self.FOLLOWUP_PULSE_DISTANCE_M,
+                    ),
+                    steer_distance * 0.80,
                 )
             )
             if target_line_confirmed or self.phase_distance_m >= pulse_distance:
@@ -1377,9 +1383,24 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
                 settings, "obstacle_lane_line_confirm_frames", 3
             ))
         )
+        left_initial_steer = min(
+            1.0, self._nonnegative_setting(settings, "obstacle_lane_change_left_steer", 0.30)
+        )
+        right_initial_steer = min(
+            1.0, self._nonnegative_setting(settings, "obstacle_lane_change_right_steer", 0.30)
+        )
         retry_steer = min(
             1.0,
             self._nonnegative_setting(settings, "obstacle_lane_change_retry_steer", 0.20),
+            left_initial_steer * 0.80,
+            right_initial_steer * 0.80,
+        )
+        retry_pulse_distance = min(
+            self._nonnegative_setting(
+                settings, "obstacle_lane_change_retry_pulse_distance_m",
+                self.FOLLOWUP_PULSE_DISTANCE_M,
+            ),
+            self._positive_setting(settings, "obstacle_lane_change_steer_distance_m", 3.0) * 0.80,
         )
 
         # Confirm the left lane from the classifier's lane output.
@@ -1597,10 +1618,7 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
             "model_lane_confirm_frames": self.model_lane_confirm_frames,
             "lane_change_attempt_number": attempt_number,
             "lane_change_retry_steer": retry_steer,
-            "lane_change_retry_pulse_distance_m": self._nonnegative_setting(
-                settings, "obstacle_lane_change_retry_pulse_distance_m",
-                self.FOLLOWUP_PULSE_DISTANCE_M,
-            ),
+            "lane_change_retry_pulse_distance_m": retry_pulse_distance,
             "pass_sensor_stage": self.pass_sensor_stage,
             "pass_sensor_right_cm": right_sensor_cm,
             "pass_sensor_initial_clear_frames": self.pass_sensor_initial_clear_frames,
@@ -2730,25 +2748,25 @@ def run_avis(args: argparse.Namespace) -> int:
                             throttle = 0.0
                         if lane_change_state["phase"] == "STEER_LEFT":
                             status = (
-                                "OBSTACLE AVOIDANCE / LEFT STEER PULSE "
-                                f"{lane_change_state.get('steering_pulse_number', 1)}"
+                                "OBSTACLE AVOIDANCE / LEFT STEER ATTEMPT "
+                                f"{lane_change_state.get('lane_change_attempt_number', 1)}"
                             )
                         elif lane_change_state["phase"] == "ACQUIRE_LEFT_LINE":
                             status = (
-                                "OBSTACLE AVOIDANCE / LOW-SPEED LEFT ROI SEARCH"
+                                "OBSTACLE AVOIDANCE / LEFT MODEL CHECK LIMIT REACHED"
                                 if lane_change_state.get("search_limit_reached")
-                                else "OBSTACLE AVOIDANCE / CHECKING LEFT ROI"
+                                else "OBSTACLE AVOIDANCE / WAITING FOR MODEL LEFT CONFIRMATION"
                             )
                         elif lane_change_state["phase"] == "STEER_RIGHT":
                             status = (
-                                "OBSTACLE AVOIDANCE / RIGHT STEER PULSE "
-                                f"{lane_change_state.get('steering_pulse_number', 1)}"
+                                "OBSTACLE AVOIDANCE / RIGHT STEER ATTEMPT "
+                                f"{lane_change_state.get('lane_change_attempt_number', 1)}"
                             )
                         elif lane_change_state["phase"] == "ACQUIRE_RIGHT_LINE":
                             status = (
-                                "OBSTACLE AVOIDANCE / LOW-SPEED RIGHT ROI SEARCH"
+                                "OBSTACLE AVOIDANCE / RIGHT MODEL CHECK LIMIT REACHED"
                                 if lane_change_state.get("search_limit_reached")
-                                else "OBSTACLE AVOIDANCE / CHECKING RIGHT ROI"
+                                else "OBSTACLE AVOIDANCE / WAITING FOR MODEL RIGHT CONFIRMATION"
                             )
                         else:
                             status = "OBSTACLE AVOIDANCE"
@@ -2796,7 +2814,10 @@ def run_avis(args: argparse.Namespace) -> int:
                         if coasting:
                             throttle = 0.0
                         if lane_change_state["phase"] == "WAIT_OBSTACLE_PASS":
-                            status = "OBSTACLE AVOIDANCE / WAITING FOR RIGHT SENSOR PASS CONFIRMATION"
+                            status = (
+                                "OBSTACLE AVOIDANCE / RIGHT SENSOR SEQUENCE "
+                                + str(lane_change_state.get("pass_sensor_stage", "WAITING_FOR_INITIAL_CLEAR"))
+                            )
                         elif lane_change_state["phase"] == "WAIT_PASS_CLEARANCE":
                             status = (
                                 "OBSTACLE AVOIDANCE / PASS CONFIRMED · "
