@@ -395,18 +395,22 @@ class TemporalLaneLineSelector:
             if edge is None:
                 self._clear_pending()
             else:
-                if self._ever_locked:
-                    self._update_pending(edge, width)
-                    required = self.REACQUIRE_CONFIRM_FRAMES
-                else:
-                    required = 1
-                if self._pending_frames >= required:
-                    self._track = self._pending
+                if not self._ever_locked:
+                    # Lock the initial edge-most candidate immediately.
+                    self._track = edge
                     self._ever_locked = True
                     self._stable_frames = 1
                     self._missed_frames = 0
                     self._clear_pending()
                     switched = True
+                else:
+                    self._update_pending(edge, width)
+                    if self._pending_frames >= self.REACQUIRE_CONFIRM_FRAMES:
+                        self._track = self._pending
+                        self._stable_frames = 1
+                        self._missed_frames = 0
+                        self._clear_pending()
+                        switched = True
         else:
             matches = [
                 (self._candidate_match_cost(candidate, self._track, width), candidate)

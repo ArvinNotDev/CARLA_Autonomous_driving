@@ -237,7 +237,8 @@ class AvisClassicalVisionProcessor:
             settings,
             x_offset=float(left),
         )
-        line_mask[top:bottom, left:right] = selection.mask
+        if selection.mask.size:
+            line_mask[top:bottom, left:right] = selection.mask
         return top, bottom, selection
 
     def _boundary_from_roi(
