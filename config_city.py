@@ -120,7 +120,7 @@ MAX_STEER_STEP = 0.10
 # Vision model
 # -------------------------------------------------
 # Drop the trained Ultralytics YOLO26-sem checkpoint here.
-MODEL_PATH = "models_and_datasets/Avis_models/lane_and_drivable-area_model_Avis.pt"
+MODEL_PATH = "models_and_datasets/lane_and_drivable-area_model.pt"
 MODEL_IMAGE_SIZE = 512
 DRIVABLE_PROB_THRESHOLD = 0.50
 
