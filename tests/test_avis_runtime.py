@@ -1484,7 +1484,7 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     assert 'id="obstacle_front_threshold_cm"' not in html
     assert 'id="obstacle_pass_sensor_presence_threshold_cm" data-setting="obstacle_pass_sensor_presence_threshold_cm" type="number" min="20" max="1499" step="1"' in html
     assert 'id="obstacle_pass_clearance_distance_m" data-setting="obstacle_pass_clearance_distance_m" type="number" min=".1" max="100" step=".1"' in html
-    assert "RIGHT SENSOR SEQUENCE" in html
+    assert "CLEAR → OBSTACLE PRESENT → CLEAR" in html
     assert 'id="obstacle_pass_sensor_angle" data-setting="obstacle_pass_sensor_angle" type="number" min="10" max="90" step="1"' in html
     assert 'id="obstacle_lane_line_search_max_distance_m"' in html
     assert 'id="settingsForm" novalidate' in html
