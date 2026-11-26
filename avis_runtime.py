@@ -343,10 +343,6 @@ class AvisObstacleLaneChangeController:
             "target_line_old_cleared": self.line_old_cleared,
             "target_line_candidate_x": self.line_candidate_x,
             "line_confirm_frames": self.line_confirm_frames,
-            "target_line_confirmed": (
-                self.line_old_cleared
-                and self.line_confirm_frames > 0
-            ),
             "active": self.phase in {
                 self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
                 self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,

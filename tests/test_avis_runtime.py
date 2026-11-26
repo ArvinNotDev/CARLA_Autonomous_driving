@@ -679,7 +679,7 @@ def test_lane_change_repeats_short_steering_pulses_and_checks_target_roi_between
     state = update_frame(7, old_x, speed=3.6)
     assert state["phase"] == expected_steer_phase
     assert state["steering_pulse_number"] == 2
-    assert state["steering_override"] == pytest.approx(0.0)
+    assert state["steering_override"] == pytest.approx(steering_sign * 0.20)
 
     for observation_id in (8, 9):
         state = update_frame(observation_id, old_x, speed=3.6)
@@ -1190,7 +1190,7 @@ def test_avis_obstacle_lane_change_keeps_moving_when_target_roi_line_is_missing(
         observation_id=5,
     )
     assert state["phase"] == "STEER_LEFT"
-    assert state["steering_override"] == pytest.approx(0.0)
+    assert state["steering_override"] == pytest.approx(-0.20)
     assert state["steering_pulse_number"] == 2
     assert state["search_limit_reached"] is True
     assert state["safe_stop"] is False
