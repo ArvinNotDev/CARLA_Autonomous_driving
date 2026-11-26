@@ -1366,6 +1366,32 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
         base_settings["obstacle_sensor_clear_threshold_cm"] = 0.0
         base_settings["obstacle_clearance_after_pass_m"] = 0.0
         base_settings["_model_confirmed_lane_change"] = True
+        left_initial_steer = min(
+            1.0, self._nonnegative_setting(settings, "obstacle_lane_change_left_steer", 0.30)
+        )
+        right_initial_steer = min(
+            1.0, self._nonnegative_setting(settings, "obstacle_lane_change_right_steer", 0.30)
+        )
+        retry_steer = min(
+            1.0,
+            self._nonnegative_setting(settings, "obstacle_lane_change_retry_steer", 0.20),
+            left_initial_steer * 0.80,
+            right_initial_steer * 0.80,
+        )
+        initial_steer_distance = self._positive_setting(
+            settings, "obstacle_lane_change_steer_distance_m", 3.0
+        )
+        retry_pulse_distance = min(
+            self._nonnegative_setting(
+                settings, "obstacle_lane_change_retry_pulse_distance_m",
+                self.FOLLOWUP_PULSE_DISTANCE_M,
+            ),
+            initial_steer_distance * 0.80,
+        )
+        # Pass the bounded values to the inherited pulse timer as well as the
+        # final steering override: every retry must truly be gentler and shorter.
+        base_settings["obstacle_lane_change_retry_steer"] = retry_steer
+        base_settings["obstacle_lane_change_retry_pulse_distance_m"] = retry_pulse_distance
         original_phase = self.phase
         pass_wait_active = original_phase in {
             self.WAIT_OBSTACLE_PASS, self.RETURN_DELAY, self.WAIT_PASS_CLEARANCE
@@ -1392,26 +1418,6 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
                 settings, "obstacle_lane_line_confirm_frames", 3
             ))
         )
-        left_initial_steer = min(
-            1.0, self._nonnegative_setting(settings, "obstacle_lane_change_left_steer", 0.30)
-        )
-        right_initial_steer = min(
-            1.0, self._nonnegative_setting(settings, "obstacle_lane_change_right_steer", 0.30)
-        )
-        retry_steer = min(
-            1.0,
-            self._nonnegative_setting(settings, "obstacle_lane_change_retry_steer", 0.20),
-            left_initial_steer * 0.80,
-            right_initial_steer * 0.80,
-        )
-        retry_pulse_distance = min(
-            self._nonnegative_setting(
-                settings, "obstacle_lane_change_retry_pulse_distance_m",
-                self.FOLLOWUP_PULSE_DISTANCE_M,
-            ),
-            self._positive_setting(settings, "obstacle_lane_change_steer_distance_m", 3.0) * 0.80,
-        )
-
         # Confirm the left lane from the classifier's lane output.
         if (
             self.phase in {self.STEER_LEFT, self.ACQUIRE_LEFT_LINE}
