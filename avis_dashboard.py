@@ -727,11 +727,12 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
       <div class="panel">
         <div class="panel-head"><h3>Perception monitor</h3><span class="tag">Live camera / masks</span></div>
         <div class="views">
-          <div class="view"><div class="view-title"><span>AVIS camera / ROI editor</span><small>Drag to move · handles to resize</small></div><div class="roi-editor-wrap"><img id="roiSource" class="roi-source" src="/stream/camera" alt="AVIS camera"><canvas id="roiCanvas"></canvas></div><div class="roi-toolbar"><button class="btn active" id="roiLeftButton" type="button">Left ROI</button><button class="btn" id="roiRightButton" type="button">Right ROI</button><button class="btn" id="resetRoiButton" type="button">Reset selected ROI</button><label class="hint"><input type="checkbox" id="showRois" checked> Show both ROIs</label><span class="message" id="roiCanvasMessage"></span></div><div class="roi-help">These are the same LL / RL rectangles used by the model-based lane processor. Classical CV runs thresholding, blur, Canny and HoughLinesP strictly inside the selected rectangles.</div></div>
+          <div class="view"><div class="view-title"><span>AVIS camera / ROI editor</span><small>Drag to move · handles to resize</small></div><div class="roi-editor-wrap"><img id="roiSource" class="roi-source" src="/stream/camera" alt="AVIS camera"><canvas id="roiCanvas"></canvas></div><div class="roi-toolbar"><button class="btn active" id="roiLeftButton" type="button">Left ROI</button><button class="btn" id="roiRightButton" type="button">Right ROI</button><button class="btn" id="resetRoiButton" type="button">Reset selected ROI</button><label class="hint"><input type="checkbox" id="showRois" checked> Show both ROIs</label><span class="message" id="roiCanvasMessage"></span></div><div class="roi-help">These LL / RL rectangles are applied directly to the model's lane_lines mask. Model mode no longer runs Hough candidate ranking or temporal line selection; Classical CV keeps its own image-processing pipeline.</div></div>
           <div class="view"><div class="view-title"><span>Lane overlay</span><small>Detected boundaries</small></div><img src="/stream/combined" alt="Lane overlay"></div>
-          <div class="view"><div class="view-title"><span>Selected lane mask</span><small>Red pixels = lane-line pixels used for tracking</small></div><img src="/stream/line-mask" alt="Selected lane mask"></div>
+          <div class="view"><div class="view-title"><span>Selected lane mask</span><small>Red pixels = raw model lane-line mask</small></div><img src="/stream/line-mask" alt="Selected lane mask"></div>
+          <div class="view" id="drivableAreaView"><div class="view-title"><span>Drivable Area mask</span><small>Green pixels = model output · debug only</small></div><img src="/stream/drivable-area" alt="Model drivable area mask"></div>
         </div>
-        <div class="hint" id="backendDescription">The semantic model extracts only lane_lines for lane tracking. Drivable-area and vehicle masks are not calculated or displayed. The selected lane mask is shown in red.</div>
+        <div class="hint" id="backendDescription">The semantic model's lane_lines pixels are read directly inside each ROI. Its drivable-area mask is displayed in green for inspection only and is not used for steering or vehicle control.</div>
       </div>
     </section>
     <aside class="right-panel">
@@ -1182,8 +1183,8 @@ function updateBackendVisibility(backend) {
   const classical = backend === "classical";
   $("classicalSettings").classList.toggle("hidden", !classical);
   $("backendDescription").textContent = classical
-    ? "HoughLinesP mode detects lane boundaries only. It does not construct or calculate a drivable-area mask. The selected lane mask is shown in red."
-    : "The semantic model extracts only lane_lines for lane tracking. Drivable-area and vehicle masks are not calculated or displayed; selected lane pixels are shown in red.";
+    ? "Classical CV continues to process its own LL/RL crops. No model drivable-area output is available in this backend."
+    : "The model's lane_lines mask is read directly inside each ROI, without Hough candidate ranking or temporal line selection. Its drivable-area mask is displayed in green for inspection only and is not used for steering or vehicle control.";
 }
 function fillSettings(settings) {
   settingInputs.forEach(input => {
@@ -1807,7 +1808,7 @@ def create_avis_dashboard_app(state: AvisDashboardState) -> Flask:
 
     @app.get("/stream/<view_name>")
     def stream(view_name: str):
-        if view_name not in {"camera", "combined", "line-mask"}:
+        if view_name not in {"camera", "combined", "line-mask", "drivable-area"}:
             return jsonify({"error": "Unknown image view."}), 404
 
         def generate():
