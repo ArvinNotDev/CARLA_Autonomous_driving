@@ -604,7 +604,89 @@ def test_avis_obstacle_lane_change_switches_to_straight_then_waits_for_left_roi(
     assert state["left_lane_distance_m"] == pytest.approx(0.0)
 
 
-def test_avis_obstacle_lane_change_returns_right_after_configured_distance():
+@pytest.mark.parametrize(
+    ("target_side", "old_x", "new_x", "expected_phase"),
+    [
+        ("left", 100.0, 130.0, AvisObstacleLaneChangeController.LEFT_LANE),
+        ("right", 220.0, 190.0, AvisObstacleLaneChangeController.RIGHT_LANE),
+    ],
+)
+def test_lane_change_ignores_previous_target_roi_line_until_new_line_is_confirmed(
+    target_side, old_x, new_x, expected_phase
+):
+    controller = AvisObstacleLaneChangeController()
+    settings = _obstacle_lane_change_test_settings(
+        obstacle_trigger_confirm_frames=2,
+        obstacle_lane_line_confirm_frames=2,
+        obstacle_lane_change_steer_distance_m=2.0,
+    )
+    controller.phase = (
+        AvisObstacleLaneChangeController.RIGHT_LANE
+        if target_side == "left"
+        else AvisObstacleLaneChangeController.LEFT_LANE
+    )
+    controller.left_lane_target_distance_m = 1000.0 if target_side == "right" else None
+
+    def update_frame(observation_id, line_x, speed=0.0, sensors=None):
+        distances = sensors or [1500, 1500, 1500]
+        left_x = line_x if target_side == "left" else 100
+        right_x = line_x if target_side == "right" else 220
+        return controller.update(
+            sensors=distances,
+            speed_kmh=speed,
+            dt=0.1,
+            left_x=left_x,
+            right_x=right_x,
+            settings=settings,
+            observation_id=observation_id,
+            frame_width=320,
+        )
+
+    if target_side == "left":
+        # Two pre-manoeuvre frames establish the old line in the LL history.
+        update_frame(1, old_x, sensors=[1500, 600, 1500])
+        state = update_frame(2, old_x, sensors=[1500, 600, 1500])
+    else:
+        # While driving in the left lane, build history for the return-side RL.
+        update_frame(1, old_x)
+        update_frame(2, old_x)
+        controller.left_lane_target_distance_m = 0.0
+        state = update_frame(3, old_x)
+
+    if target_side == "left":
+        assert state["phase"] == "STEER_LEFT"
+    else:
+        assert state["phase"] == "STEER_RIGHT"
+    assert state["target_line_baseline_x"] == pytest.approx(old_x)
+
+    # The old marking remains visible through the steering pulse and must be
+    # tracked, not accepted as proof that the destination lane was reached.
+    start_id = 2 if target_side == "left" else 3
+    for observation_id in (start_id + 1, start_id + 2):
+        state = update_frame(observation_id, old_x, speed=36.0)
+    if target_side == "left":
+        assert state["phase"] == "ACQUIRE_LEFT_LINE"
+    else:
+        assert state["phase"] == "ACQUIRE_RIGHT_LINE"
+
+    for observation_id in range(start_id + 3, start_id + 6):
+        state = update_frame(observation_id, old_x)
+        assert state["phase"] != expected_phase
+        assert state["line_confirm_frames"] == 0
+        assert state["target_line_old_cleared"] is False
+
+    # Once the old line has left the target ROI, a distinct new marking must
+    # remain stable across the configured confirmation frames.
+    for observation_id in (start_id + 6, start_id + 7):
+        state = update_frame(observation_id, None)
+    assert state["target_line_old_cleared"] is True
+    state = update_frame(start_id + 8, new_x)
+    assert state["phase"] != expected_phase
+    assert state["line_confirm_frames"] == 1
+    state = update_frame(start_id + 9, new_x)
+    assert state["phase"] == expected_phase
+
+
     controller = AvisObstacleLaneChangeController()
     settings = _obstacle_lane_change_test_settings()
 

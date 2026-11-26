@@ -259,6 +259,17 @@ class AvisObstacleLaneChangeController:
         self.last_obstacle_sensor: str | None = None
         self.line_confirm_frames = 0
         self.last_line_observation_id = None
+        self.line_history: dict[str, deque[float | None]] = {
+            "left": deque(maxlen=7),
+            "right": deque(maxlen=7),
+        }
+        self.last_history_observation_id = None
+        self.line_target_side: str | None = None
+        self.line_baseline_x: float | None = None
+        self.line_old_track_x: float | None = None
+        self.line_old_missing_frames = 0
+        self.line_old_cleared = False
+        self.line_candidate_x: float | None = None
 
     @staticmethod
     def front_sensor_distance_cm(sensors: Any) -> float | None:
@@ -311,6 +322,12 @@ class AvisObstacleLaneChangeController:
             "front_sensor_cm": self.front_sensor_distance_cm(sensors),
             "sensor_distances_cm": list(self.sensor_distances_cm(sensors)),
             "obstacle_trigger_sensor": self.last_obstacle_sensor,
+            "target_line_side": self.line_target_side,
+            "target_line_baseline_x": self.line_baseline_x,
+            "target_line_old_track_x": self.line_old_track_x,
+            "target_line_old_cleared": self.line_old_cleared,
+            "target_line_candidate_x": self.line_candidate_x,
+            "line_confirm_frames": self.line_confirm_frames,
             "active": self.phase in {
                 self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
                 self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
@@ -321,11 +338,180 @@ class AvisObstacleLaneChangeController:
             "pid_reset": False,
         }
 
-    def _begin_right_return(self, reason: str) -> None:
-        self.phase = self.STEER_RIGHT
-        self.phase_distance_m = 0.0
+    @staticmethod
+    def _line_x(value: Any) -> float | None:
+        try:
+            coordinate = float(value)
+        except (TypeError, ValueError):
+            return None
+        return coordinate if math.isfinite(coordinate) else None
+
+    @staticmethod
+    def _median(values: list[float]) -> float | None:
+        if not values:
+            return None
+        ordered = sorted(values)
+        middle = len(ordered) // 2
+        if len(ordered) % 2:
+            return float(ordered[middle])
+        return float((ordered[middle - 1] + ordered[middle]) / 2.0)
+
+    def _record_lane_history(
+        self,
+        left_x: int | float | None,
+        right_x: int | float | None,
+        observation_id: Any,
+    ) -> None:
+        if observation_id is None or observation_id == self.last_history_observation_id:
+            return
+        if self.phase not in {self.RIGHT_LANE, self.LEFT_LANE}:
+            return
+        self.last_history_observation_id = observation_id
+        self.line_history["left"].append(self._line_x(left_x))
+        self.line_history["right"].append(self._line_x(right_x))
+
+    @staticmethod
+    def _target_roi_width_px(
+        side: str,
+        settings: dict[str, Any],
+        frame_width: int | float | None,
+    ) -> float:
+        try:
+            image_width = float(frame_width) if frame_width is not None else 320.0
+        except (TypeError, ValueError):
+            image_width = 320.0
+        if not math.isfinite(image_width) or image_width <= 0.0:
+            image_width = 320.0
+        prefix = "ll" if side == "left" else "rl"
+        try:
+            roi_left = float(settings.get(f"{prefix}_left_roi", 0.24 if side == "left" else 0.56))
+            roi_right = float(settings.get(f"{prefix}_right_roi", 0.45 if side == "left" else 0.78))
+        except (TypeError, ValueError):
+            roi_left, roi_right = (0.24, 0.45) if side == "left" else (0.56, 0.78)
+        if not all(math.isfinite(value) for value in (roi_left, roi_right)) or roi_right <= roi_left:
+            roi_left, roi_right = (0.24, 0.45) if side == "left" else (0.56, 0.78)
+        return max(1.0, (roi_right - roi_left) * image_width)
+
+    def _start_target_line_tracking(
+        self,
+        side: str,
+        observation_id: Any = None,
+    ) -> None:
+        self.line_target_side = side
+        previous = [
+            value for value in self.line_history[side]
+            if value is not None and math.isfinite(value)
+        ]
+        # The median of recent, distinct inference frames is more resistant to
+        # a single noisy/misclassified ROI sample than using the latest x alone.
+        self.line_baseline_x = self._median(previous[-5:]) if len(previous) >= 2 else None
+        self.line_old_track_x = self.line_baseline_x
+        self.line_old_missing_frames = 0
+        self.line_old_cleared = False
+        self.line_candidate_x = None
+        self.line_confirm_frames = 0
+        # The frame which triggered the manoeuvre belongs to the old-lane
+        # history; do not count it again as a post-trigger observation.
+        self.last_line_observation_id = observation_id
+
+    def _reset_target_line_tracking(self) -> None:
+        self.line_target_side = None
+        self.line_baseline_x = None
+        self.line_old_track_x = None
+        self.line_old_missing_frames = 0
+        self.line_old_cleared = False
+        self.line_candidate_x = None
         self.line_confirm_frames = 0
         self.last_line_observation_id = None
+        self.line_history["left"].clear()
+        self.line_history["right"].clear()
+
+    def _confirm_new_line_candidate(
+        self,
+        coordinate: float,
+        tolerance_px: float,
+        frames_required: int,
+    ) -> None:
+        if (
+            self.line_candidate_x is not None
+            and abs(coordinate - self.line_candidate_x) <= tolerance_px
+        ):
+            self.line_candidate_x += (
+                coordinate - self.line_candidate_x
+            ) / (self.line_confirm_frames + 1)
+            self.line_confirm_frames += 1
+        else:
+            self.line_candidate_x = coordinate
+            self.line_confirm_frames = 1
+        if self.line_confirm_frames >= frames_required:
+            self.line_old_cleared = True
+
+    def _advance_target_line_tracking(
+        self,
+        value: int | float | None,
+        *,
+        roi_width_px: float,
+        frames_required: int,
+    ) -> None:
+        coordinate = self._line_x(value)
+        old_line_tolerance = max(5.0, roi_width_px * 0.10)
+        candidate_tolerance = max(3.0, roi_width_px * 0.06)
+
+        if coordinate is None:
+            self.line_old_missing_frames += 1
+            self.line_candidate_x = None
+            self.line_confirm_frames = 0
+            if self.line_old_missing_frames >= 2:
+                self.line_old_cleared = True
+            return
+
+        self.line_old_missing_frames = 0
+        if self.line_old_track_x is None and not self.line_old_cleared:
+            # No reliable pre-manoeuvre sample was available. Treat the first
+            # visible target-ROI line as the old marking, never as the new lane.
+            self.line_old_track_x = coordinate
+            self.line_candidate_x = None
+            self.line_confirm_frames = 0
+            return
+
+        if (
+            not self.line_old_cleared
+            and self.line_old_track_x is not None
+            and abs(coordinate - self.line_old_track_x) <= old_line_tolerance
+        ):
+            # Follow the same physical marking while it moves across the ROI.
+            self.line_old_track_x = coordinate
+            self.line_candidate_x = None
+            self.line_confirm_frames = 0
+            return
+
+        if (
+            self.line_old_cleared
+            and self.line_old_track_x is not None
+            and abs(coordinate - self.line_old_track_x) <= old_line_tolerance
+        ):
+            # The old marking re-entered the ROI; it must not be mistaken for
+            # the destination-lane marking after a brief detection dropout.
+            self.line_old_cleared = False
+            self.line_old_track_x = coordinate
+            self.line_candidate_x = None
+            self.line_confirm_frames = 0
+            return
+
+        self._confirm_new_line_candidate(
+            coordinate,
+            candidate_tolerance,
+            frames_required,
+        )
+
+    def _begin_right_return(
+        self,
+        reason: str,
+        observation_id: Any = None,
+    ) -> None:
+        self._start_target_line_tracking("right", observation_id)
+        self.phase = self.STEER_RIGHT
+        self.phase_distance_m = 0.0
         self.return_reason = reason
 
     def update(
@@ -339,6 +525,7 @@ class AvisObstacleLaneChangeController:
         settings: dict[str, Any],
         allow_new_maneuver: bool = True,
         observation_id: Any = None,
+        frame_width: int | float | None = None,
     ) -> dict[str, Any]:
         sensor_distances = self.sensor_distances_cm(sensors)
         try:
@@ -351,6 +538,7 @@ class AvisObstacleLaneChangeController:
         if not math.isfinite(elapsed):
             elapsed = 0.0
         travelled_m = max(0.0, speed) / 3.6 * min(0.25, max(0.0, elapsed))
+        self._record_lane_history(left_x, right_x, observation_id)
 
         if self.phase in {
             self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
@@ -425,17 +613,16 @@ class AvisObstacleLaneChangeController:
                 )
 
                 if self.phase == self.RIGHT_LANE:
+                    self._start_target_line_tracking("left", observation_id)
                     self.phase = self.STEER_LEFT
                     self.phase_distance_m = 0.0
-                    self.line_confirm_frames = 0
-                    self.last_line_observation_id = None
                     self.return_reason = "OBSTACLE"
                     pid_reset = True
                 elif self.phase == self.LEFT_LANE:
                     # Any new obstacle sensor trigger while in the left lane
                     # overrides the previous pass-distance target and returns
                     # the vehicle to the right lane.
-                    self._begin_right_return("OBSTACLE_IN_LEFT_LANE")
+                    self._begin_right_return("OBSTACLE_IN_LEFT_LANE", observation_id)
                     pid_reset = True
 
         steer_distance = self._positive_setting(
@@ -460,22 +647,36 @@ class AvisObstacleLaneChangeController:
         if self.phase == self.LEFT_LANE:
             target_distance = self.left_lane_target_distance_m
             if target_distance is not None and self.left_lane_distance_m >= target_distance:
-                self._begin_right_return("DISTANCE")
+                self._begin_right_return("DISTANCE", observation_id)
                 pid_reset = True
 
-        # Count only new inference results, not repeated control-loop reads.
-        if self.phase == self.ACQUIRE_LEFT_LINE and observation_id is not None:
-            if observation_id != self.last_line_observation_id:
-                self.last_line_observation_id = observation_id
-                self.line_confirm_frames = (
-                    self.line_confirm_frames + 1 if left_x is not None else 0
-                )
-        elif self.phase == self.ACQUIRE_RIGHT_LINE and observation_id is not None:
-            if observation_id != self.last_line_observation_id:
-                self.last_line_observation_id = observation_id
-                self.line_confirm_frames = (
-                    self.line_confirm_frames + 1 if right_x is not None else 0
-                )
+        # Track the pre-manoeuvre marking through both steering and acquisition
+        # phases. Only distinct inference results advance this state machine.
+        if self.phase in {self.STEER_LEFT, self.ACQUIRE_LEFT_LINE}:
+            target_side = "left"
+            target_x = left_x
+        elif self.phase in {self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE}:
+            target_side = "right"
+            target_x = right_x
+        else:
+            target_side = None
+            target_x = None
+
+        if (
+            target_side is not None
+            and observation_id is not None
+            and observation_id != self.last_line_observation_id
+        ):
+            self.last_line_observation_id = observation_id
+            self._advance_target_line_tracking(
+                target_x,
+                roi_width_px=self._target_roi_width_px(
+                    target_side,
+                    settings,
+                    frame_width,
+                ),
+                frames_required=line_frames_required,
+            )
 
         steering_override: float | None = None
         safe_stop = False
@@ -484,42 +685,42 @@ class AvisObstacleLaneChangeController:
             if self.phase_distance_m >= steer_distance:
                 self.phase = self.ACQUIRE_LEFT_LINE
                 self.phase_distance_m = 0.0
-                self.line_confirm_frames = 0
-                self.last_line_observation_id = observation_id
                 steering_override = 0.0
             else:
                 steering_override = -left_steer
 
         elif self.phase == self.ACQUIRE_LEFT_LINE:
             steering_override = 0.0
-            if self.line_confirm_frames >= line_frames_required:
+            if (
+                self.line_old_cleared
+                and self.line_confirm_frames >= line_frames_required
+            ):
                 self.phase = self.LEFT_LANE
                 self.phase_distance_m = 0.0
                 self.left_lane_distance_m = 0.0
-                self.line_confirm_frames = 0
-                self.last_line_observation_id = None
+                self._reset_target_line_tracking()
                 pid_reset = True
         
         elif self.phase == self.STEER_RIGHT:
             if self.phase_distance_m >= steer_distance:
                 self.phase = self.ACQUIRE_RIGHT_LINE
                 self.phase_distance_m = 0.0
-                self.line_confirm_frames = 0
-                self.last_line_observation_id = observation_id
                 steering_override = 0.0
             else:
                 steering_override = right_steer
 
         elif self.phase == self.ACQUIRE_RIGHT_LINE:
             steering_override = 0.0
-            if self.line_confirm_frames >= line_frames_required:
+            if (
+                self.line_old_cleared
+                and self.line_confirm_frames >= line_frames_required
+            ):
                 self.phase = self.RIGHT_LANE
                 self.phase_distance_m = 0.0
                 self.left_lane_distance_m = 0.0
                 self.left_lane_target_distance_m = None
                 self.last_obstacle_distance_m = None
-                self.line_confirm_frames = 0
-                self.last_line_observation_id = None
+                self._reset_target_line_tracking()
                 self.return_reason = "DISTANCE"
                 pid_reset = True
         
@@ -1414,6 +1615,7 @@ def run_avis(args: argparse.Namespace) -> int:
                         observation_id=(
                             last_vision_result.completed_at if result_fresh else None
                         ),
+                        frame_width=int(frame_bgr.shape[1]),
                     )
                     if lane_change_state.get("pid_reset"):
                         steering_controller.reset()
@@ -1632,6 +1834,12 @@ def run_avis(args: argparse.Namespace) -> int:
                         "lane_change_return_reason": lane_change_state.get(
                             "return_reason", "DISTANCE"
                         ),
+                        "lane_change_target_line_side": lane_change_state.get("target_line_side"),
+                        "lane_change_target_line_baseline_x": lane_change_state.get("target_line_baseline_x"),
+                        "lane_change_target_line_old_track_x": lane_change_state.get("target_line_old_track_x"),
+                        "lane_change_target_line_old_cleared": lane_change_state.get("target_line_old_cleared", False),
+                        "lane_change_target_line_candidate_x": lane_change_state.get("target_line_candidate_x"),
+                        "lane_change_line_confirm_frames": lane_change_state.get("line_confirm_frames", 0),
                         "lane_change_segment_distance_m": round(
                             float(lane_change_state.get("phase_distance_m", 0.0)), 2
                         ),

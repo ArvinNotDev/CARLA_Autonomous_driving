@@ -258,8 +258,13 @@ in centimetres ([left, middle/front, right]). The default obstacle trigger is
 950 cm, and any one of the three sensors reaching that threshold can initiate
 the existing lane-change manoeuvre. No separate speed reduction is applied
 from 1500 cm. It applies a short steering pulse,
-then continues straight until the target-side lane marking is reacquired in the
-corresponding LL or RL ROI. Once the left-lane line is reacquired, the
+then continues straight while tracking the pre-manoeuvre marking in the target
+ROI. The last seven distinct inference frames are used to establish the old
+line's position; that marking is followed and ignored until it leaves the ROI
+(or a spatially distinct replacement is consistently detected). A new target
+line must then remain consistent across the configured confirmation frames
+before the lane change is considered complete. Leftward changes use LL and
+rightward returns use RL. Once the left-lane line is reacquired, the
 return distance is calculated from the last measured triggering-sensor distance
 plus a configurable clearance (5 m by default), rather than a fixed travel
 distance. A newly detected obstacle in the left lane overrides that target and
