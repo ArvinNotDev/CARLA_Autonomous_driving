@@ -246,6 +246,10 @@ class AvisObstacleLaneChangeController:
     ACQUIRE_RIGHT_LINE = "ACQUIRE_RIGHT_LINE"
     FAILED = "FAILED"
 
+    FOLLOWUP_STEER_MAGNITUDE = 0.20
+    FOLLOWUP_PULSE_DISTANCE_M = 0.30
+    LINE_CHECK_INTERVAL_M = 0.15
+
     def __init__(self) -> None:
         self.phase = self.RIGHT_LANE
         self.phase_distance_m = 0.0
@@ -270,6 +274,8 @@ class AvisObstacleLaneChangeController:
         self.line_old_missing_frames = 0
         self.line_old_cleared = False
         self.line_candidate_x: float | None = None
+        self.steering_pulse_index = 0
+        self.line_search_distance_m = 0.0
 
     @staticmethod
     def front_sensor_distance_cm(sensors: Any) -> float | None:
@@ -319,6 +325,15 @@ class AvisObstacleLaneChangeController:
             "last_obstacle_distance_m": self.last_obstacle_distance_m,
             "return_reason": self.return_reason,
             "phase_distance_m": float(self.phase_distance_m),
+            "line_search_distance_m": float(self.line_search_distance_m),
+            "steering_pulse_number": (
+                self.steering_pulse_index + 1
+                if self.phase in {
+                    self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
+                    self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
+                }
+                else 0
+            ),
             "front_sensor_cm": self.front_sensor_distance_cm(sensors),
             "sensor_distances_cm": list(self.sensor_distances_cm(sensors)),
             "obstacle_trigger_sensor": self.last_obstacle_sensor,
@@ -413,6 +428,8 @@ class AvisObstacleLaneChangeController:
         # The frame which triggered the manoeuvre belongs to the old-lane
         # history; do not count it again as a post-trigger observation.
         self.last_line_observation_id = observation_id
+        self.steering_pulse_index = 0
+        self.line_search_distance_m = 0.0
 
     def _reset_target_line_tracking(self) -> None:
         self.line_target_side = None
@@ -425,6 +442,8 @@ class AvisObstacleLaneChangeController:
         self.last_line_observation_id = None
         self.line_history["left"].clear()
         self.line_history["right"].clear()
+        self.steering_pulse_index = 0
+        self.line_search_distance_m = 0.0
 
     def _confirm_new_line_candidate(
         self,
@@ -545,6 +564,7 @@ class AvisObstacleLaneChangeController:
             self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
         }:
             self.phase_distance_m += travelled_m
+            self.line_search_distance_m += travelled_m
         elif self.phase == self.LEFT_LANE:
             self.left_lane_distance_m += travelled_m
 
@@ -662,11 +682,13 @@ class AvisObstacleLaneChangeController:
             target_side = None
             target_x = None
 
+        new_line_observation = False
         if (
             target_side is not None
             and observation_id is not None
             and observation_id != self.last_line_observation_id
         ):
+            new_line_observation = True
             self.last_line_observation_id = observation_id
             self._advance_target_line_tracking(
                 target_x,
@@ -682,12 +704,24 @@ class AvisObstacleLaneChangeController:
         safe_stop = False
 
         if self.phase == self.STEER_LEFT:
-            if self.phase_distance_m >= steer_distance:
+            pulse_distance = (
+                steer_distance
+                if self.steering_pulse_index == 0
+                else self.FOLLOWUP_PULSE_DISTANCE_M
+            )
+            if self.line_old_cleared or self.phase_distance_m >= pulse_distance:
+                # Release steering after each pulse so the target ROI is
+                # checked before another corrective input can be sent.
                 self.phase = self.ACQUIRE_LEFT_LINE
                 self.phase_distance_m = 0.0
                 steering_override = 0.0
             else:
-                steering_override = -left_steer
+                pulse_steer = (
+                    left_steer
+                    if self.steering_pulse_index == 0
+                    else min(self.FOLLOWUP_STEER_MAGNITUDE, left_steer)
+                )
+                steering_override = -pulse_steer
 
         elif self.phase == self.ACQUIRE_LEFT_LINE:
             steering_override = 0.0
@@ -700,14 +734,34 @@ class AvisObstacleLaneChangeController:
                 self.left_lane_distance_m = 0.0
                 self._reset_target_line_tracking()
                 pid_reset = True
-        
+            elif (
+                self.phase_distance_m >= self.LINE_CHECK_INTERVAL_M
+                and new_line_observation
+            ):
+                # A fresh inference result has been checked and the old line is
+                # still not the destination marking: schedule another small pulse.
+                self.phase = self.STEER_LEFT
+                self.phase_distance_m = 0.0
+                self.steering_pulse_index += 1
+                steering_override = 0.0
+
         elif self.phase == self.STEER_RIGHT:
-            if self.phase_distance_m >= steer_distance:
+            pulse_distance = (
+                steer_distance
+                if self.steering_pulse_index == 0
+                else self.FOLLOWUP_PULSE_DISTANCE_M
+            )
+            if self.line_old_cleared or self.phase_distance_m >= pulse_distance:
                 self.phase = self.ACQUIRE_RIGHT_LINE
                 self.phase_distance_m = 0.0
                 steering_override = 0.0
             else:
-                steering_override = right_steer
+                pulse_steer = (
+                    right_steer
+                    if self.steering_pulse_index == 0
+                    else min(self.FOLLOWUP_STEER_MAGNITUDE, right_steer)
+                )
+                steering_override = pulse_steer
 
         elif self.phase == self.ACQUIRE_RIGHT_LINE:
             steering_override = 0.0
@@ -723,6 +777,14 @@ class AvisObstacleLaneChangeController:
                 self._reset_target_line_tracking()
                 self.return_reason = "DISTANCE"
                 pid_reset = True
+            elif (
+                self.phase_distance_m >= self.LINE_CHECK_INTERVAL_M
+                and new_line_observation
+            ):
+                self.phase = self.STEER_RIGHT
+                self.phase_distance_m = 0.0
+                self.steering_pulse_index += 1
+                steering_override = 0.0
         
         elif self.phase == self.FAILED:
             safe_stop = True
@@ -731,8 +793,11 @@ class AvisObstacleLaneChangeController:
         # Evaluate after phase transitions so telemetry reflects the actual
         # active line-acquisition phase for this control update.
         search_limit_reached = (
-            self.phase in {self.ACQUIRE_LEFT_LINE, self.ACQUIRE_RIGHT_LINE}
-            and self.phase_distance_m >= line_search_max_m
+            self.phase in {
+                self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
+                self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
+            }
+            and self.line_search_distance_m >= line_search_max_m
         )
         result = self.snapshot(sensors)
         result.update({
@@ -1641,20 +1706,26 @@ def run_avis(args: argparse.Namespace) -> int:
                         if coasting:
                             throttle = 0.0
                         if lane_change_state["phase"] == "STEER_LEFT":
-                            status = "OBSTACLE AVOIDANCE / STEERING LEFT"
+                            status = (
+                                "OBSTACLE AVOIDANCE / LEFT STEER PULSE "
+                                f"{lane_change_state.get('steering_pulse_number', 1)}"
+                            )
                         elif lane_change_state["phase"] == "ACQUIRE_LEFT_LINE":
                             status = (
                                 "OBSTACLE AVOIDANCE / LOW-SPEED LEFT ROI SEARCH"
                                 if lane_change_state.get("search_limit_reached")
-                                else "OBSTACLE AVOIDANCE / WAITING FOR LEFT ROI"
+                                else "OBSTACLE AVOIDANCE / CHECKING LEFT ROI"
                             )
                         elif lane_change_state["phase"] == "STEER_RIGHT":
-                            status = "OBSTACLE AVOIDANCE / STEERING RIGHT"
+                            status = (
+                                "OBSTACLE AVOIDANCE / RIGHT STEER PULSE "
+                                f"{lane_change_state.get('steering_pulse_number', 1)}"
+                            )
                         elif lane_change_state["phase"] == "ACQUIRE_RIGHT_LINE":
                             status = (
                                 "OBSTACLE AVOIDANCE / LOW-SPEED RIGHT ROI SEARCH"
                                 if lane_change_state.get("search_limit_reached")
-                                else "OBSTACLE AVOIDANCE / WAITING FOR RIGHT ROI"
+                                else "OBSTACLE AVOIDANCE / CHECKING RIGHT ROI"
                             )
                         else:
                             status = "OBSTACLE AVOIDANCE"
@@ -1842,6 +1913,12 @@ def run_avis(args: argparse.Namespace) -> int:
                         "lane_change_line_confirm_frames": lane_change_state.get("line_confirm_frames", 0),
                         "lane_change_segment_distance_m": round(
                             float(lane_change_state.get("phase_distance_m", 0.0)), 2
+                        ),
+                        "lane_change_line_search_distance_m": round(
+                            float(lane_change_state.get("line_search_distance_m", 0.0)), 2
+                        ),
+                        "lane_change_steering_pulse_number": lane_change_state.get(
+                            "steering_pulse_number", 0
                         ),
                         "adaptive_roi": vision_data.get("debug", {}).get(
                             "adaptive_roi", adaptive_roi_controller.snapshot()

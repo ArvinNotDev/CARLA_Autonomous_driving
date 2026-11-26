@@ -264,7 +264,12 @@ line's position; that marking is followed and ignored until it leaves the ROI
 (or a spatially distinct replacement is consistently detected). A new target
 line must then remain consistent across the configured confirmation frames
 before the lane change is considered complete. Leftward changes use LL and
-rightward returns use RL. Once the left-lane line is reacquired, the
+rightward returns use RL. Steering uses an initial configured pulse (0.30 by
+default), followed by repeated 0.20 pulses of 0.30 m with short 0.15 m
+straight-check intervals. A fresh inference result is required between pulses;
+steering stops as soon as the old line clears or the destination marking is
+confirmed. The inner edges stay locked (LL-right and RL-left), so adaptive ROI
+recovery can only expand outward. Once the left-lane line is reacquired, the
 return distance is calculated from the last measured triggering-sensor distance
 plus a configurable clearance (5 m by default), rather than a fixed travel
 distance. A newly detected obstacle in the left lane overrides that target and

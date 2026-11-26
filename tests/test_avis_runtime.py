@@ -127,7 +127,7 @@ def test_avis_steering_controller_preserves_stable_v2_rate_limit():
     second = controller.update(100.0)
 
     assert first == pytest.approx(0.10)
-    assert second == pytest.approx(0.20)
+    assert second == pytest.approx(0.30)
     assert abs(controller.update(10000.0)) <= 0.75
 
 
@@ -420,14 +420,112 @@ def _obstacle_lane_change_test_settings(**overrides):
         "obstacle_sensor_clear_threshold_cm": 900,
         "obstacle_sensor_clear_confirm_frames": 2,
         "obstacle_lane_change_steer_distance_m": 2.0,
-        "obstacle_lane_change_left_steer": 0.20,
-        "obstacle_lane_change_right_steer": 0.20,
+        "obstacle_lane_change_left_steer": 0.30,
+        "obstacle_lane_change_right_steer": 0.30,
         "obstacle_lane_line_confirm_frames": 2,
         "obstacle_lane_line_search_max_distance_m": 20.0,
         "obstacle_clearance_after_pass_m": 5.0,
     })
     settings.update(overrides)
     return settings
+
+
+@pytest.mark.parametrize(
+    ("target_side", "old_x", "new_x", "expected_phase", "steering_sign"),
+    [
+        ("left", 100.0, 130.0, AvisObstacleLaneChangeController.LEFT_LANE, -1.0),
+        ("right", 220.0, 190.0, AvisObstacleLaneChangeController.RIGHT_LANE, 1.0),
+    ],
+)
+def test_lane_change_repeats_short_steering_pulses_and_checks_target_roi_between_them(
+    target_side, old_x, new_x, expected_phase, steering_sign
+):
+    controller = AvisObstacleLaneChangeController()
+    settings = _obstacle_lane_change_test_settings(
+        obstacle_trigger_confirm_frames=1,
+        obstacle_lane_change_steer_distance_m=0.20,
+        obstacle_lane_change_left_steer=0.30,
+        obstacle_lane_change_right_steer=0.30,
+        obstacle_lane_line_confirm_frames=2,
+    )
+    if target_side == "right":
+        controller.phase = AvisObstacleLaneChangeController.LEFT_LANE
+        controller.left_lane_target_distance_m = 1000.0
+
+    def update_frame(observation_id, line_x, *, speed=0.0, trigger=False):
+        left_x = line_x if target_side == "left" else 100
+        right_x = line_x if target_side == "right" else 220
+        return controller.update(
+            sensors=(
+                [1500, 600, 1500]
+                if trigger else [1500, 1500, 1500]
+            ),
+            speed_kmh=speed,
+            dt=0.1,
+            left_x=left_x,
+            right_x=right_x,
+            settings=settings,
+            observation_id=observation_id,
+            frame_width=320,
+        )
+
+    # Build a target-ROI baseline from two independent inference frames.
+    update_frame(1, old_x)
+    update_frame(2, old_x)
+    state = update_frame(3, old_x, trigger=True)
+    expected_steer_phase = (
+        AvisObstacleLaneChangeController.STEER_LEFT
+        if target_side == "left"
+        else AvisObstacleLaneChangeController.STEER_RIGHT
+    )
+    expected_check_phase = (
+        AvisObstacleLaneChangeController.ACQUIRE_LEFT_LINE
+        if target_side == "left"
+        else AvisObstacleLaneChangeController.ACQUIRE_RIGHT_LINE
+    )
+    assert state["phase"] == expected_steer_phase
+    assert state["steering_pulse_number"] == 1
+    assert state["steering_override"] == pytest.approx(steering_sign * 0.30)
+
+    # The first pulse uses the configured 0.30 steering amount.
+    for observation_id in (4, 5):
+        state = update_frame(observation_id, old_x, speed=3.6)
+    assert state["phase"] == expected_check_phase
+    assert state["steering_override"] == pytest.approx(0.0)
+
+    # Short straight-check interval, then a second, weaker pulse.
+    state = update_frame(6, old_x, speed=3.6)
+    assert state["phase"] == expected_check_phase
+    assert state["steering_override"] == pytest.approx(0.0)
+    state = update_frame(7, old_x, speed=3.6)
+    assert state["phase"] == expected_steer_phase
+    assert state["steering_pulse_number"] == 2
+    assert state["steering_override"] == pytest.approx(0.0)
+
+    for observation_id in (8, 9):
+        state = update_frame(observation_id, old_x, speed=3.6)
+        assert state["steering_override"] == pytest.approx(steering_sign * 0.20)
+    state = update_frame(10, old_x, speed=3.6)
+    assert state["phase"] == expected_check_phase
+    assert state["steering_override"] == pytest.approx(0.0)
+
+    # A further checked interval schedules another 0.20 pulse.
+    update_frame(11, old_x, speed=3.6)
+    state = update_frame(12, old_x, speed=3.6)
+    assert state["steering_pulse_number"] == 3
+    assert state["steering_override"] == pytest.approx(0.0)
+    state = update_frame(13, None, speed=3.6)
+    assert state["steering_override"] == pytest.approx(steering_sign * 0.20)
+    state = update_frame(14, None, speed=3.6)
+    assert state["phase"] == expected_check_phase
+    assert state["steering_override"] == pytest.approx(0.0)
+
+    # After the old line leaves the ROI, a spatially new line is confirmed.
+    state = update_frame(15, new_x, speed=3.6)
+    assert state["phase"] == expected_check_phase
+    state = update_frame(16, new_x, speed=3.6)
+    assert state["phase"] == expected_phase
+    assert state["steering_pulse_number"] == 0
 
 
 def test_avis_obstacle_lane_change_default_trigger_is_950_cm():
@@ -480,7 +578,7 @@ def test_avis_any_of_three_distance_sensors_can_trigger_lane_change(
     assert second["phase"] == "STEER_LEFT"
     assert second["obstacle_trigger_sensor"] == sensor_name
     assert second["last_obstacle_distance_m"] == pytest.approx(6.5)
-    assert second["steering_override"] == pytest.approx(-0.20)
+    assert second["steering_override"] == pytest.approx(-0.30)
 
 
 @pytest.mark.parametrize(
@@ -509,7 +607,7 @@ def test_any_distance_sensor_triggered_in_left_lane_forces_return_right(
     assert state["phase"] == "STEER_RIGHT"
     assert state["return_reason"] == "OBSTACLE_IN_LEFT_LANE"
     assert state["obstacle_trigger_sensor"] == sensor_name
-    assert state["steering_override"] == pytest.approx(0.20)
+    assert state["steering_override"] == pytest.approx(0.30)
 
 
 def test_obstacle_latch_clears_only_after_all_three_sensors_are_clear():
@@ -559,7 +657,7 @@ def test_avis_obstacle_lane_change_uses_middle_sensor_and_confirms_obstacle():
         allow_new_maneuver=True, observation_id=2,
     )
     assert second["phase"] == "STEER_LEFT"
-    assert second["steering_override"] == pytest.approx(-0.20)
+    assert second["steering_override"] == pytest.approx(-0.30)
     assert second["obstacle_latched"] is True
     assert second["last_obstacle_distance_m"] == pytest.approx(6.5)
     assert second["left_lane_target_distance_m"] == pytest.approx(11.5)
@@ -736,7 +834,7 @@ def test_avis_obstacle_lane_change_returns_right_after_configured_distance():
     assert state["left_lane_target_distance_m"] == pytest.approx(11.0)
     assert state["left_lane_distance_m"] == pytest.approx(11.0)
     assert state["phase"] == "STEER_RIGHT"
-    assert state["steering_override"] == pytest.approx(0.20)
+    assert state["steering_override"] == pytest.approx(0.30)
 
     for observation_id in (10, 11):
         state = controller.update(
@@ -806,7 +904,7 @@ def test_avis_obstacle_in_left_lane_forces_immediate_return_before_old_target():
         )
     assert state["phase"] == "STEER_RIGHT"
     assert state["return_reason"] == "OBSTACLE_IN_LEFT_LANE"
-    assert state["steering_override"] == pytest.approx(0.20)
+    assert state["steering_override"] == pytest.approx(0.30)
     assert state["left_lane_distance_m"] < state["left_lane_target_distance_m"]
 
 
@@ -833,7 +931,9 @@ def test_avis_obstacle_lane_change_keeps_moving_when_target_roi_line_is_missing(
         left_x=None, right_x=220, settings=settings,
         observation_id=5,
     )
-    assert state["phase"] == "ACQUIRE_LEFT_LINE"
+    assert state["phase"] == "STEER_LEFT"
+    assert state["steering_override"] == pytest.approx(0.0)
+    assert state["steering_pulse_number"] == 2
     assert state["search_limit_reached"] is True
     assert state["safe_stop"] is False
 
@@ -1249,6 +1349,37 @@ def test_avis_adaptive_roi_expands_the_correct_edge_of_each_independent_roi():
     assert snapshot["rl"]["expanded_left"] == 0
     assert snapshot["ll"]["expanded_left"] == 0
     assert snapshot["ll"]["expanded_right"] == 0
+
+
+def test_avis_adaptive_roi_never_expands_the_inner_edges_toward_the_other_lane():
+    settings = dict(DEFAULT_AVIS_SETTINGS)
+    adaptive = AvisAdaptiveROIController(settings)
+    frame_width = 1000
+
+    # RL marking escapes toward the left, but its left edge is the inner edge.
+    rl_left, rl_right = settings["rl_left_roi"], settings["rl_right_roi"]
+    for ratio in (0.70, 0.54, 0.38, 0.22, 0.12, 0.08):
+        adaptive.observe(
+            None,
+            (rl_left + (rl_right - rl_left) * ratio) * frame_width,
+            frame_width,
+        )
+
+    # LL marking escapes toward the right, but its right edge is the inner edge.
+    ll_left, ll_right = settings["ll_left_roi"], settings["ll_right_roi"]
+    for ratio in (0.30, 0.48, 0.64, 0.80, 0.92, 0.96):
+        adaptive.observe(
+            (ll_left + (ll_right - ll_left) * ratio) * frame_width,
+            None,
+            frame_width,
+        )
+
+    snapshot = adaptive.snapshot()
+    active = adaptive.active_settings()
+    assert snapshot["rl"]["expanded_left"] == 0.0
+    assert snapshot["ll"]["expanded_right"] == 0.0
+    assert active["rl_left_roi"] == pytest.approx(rl_left)
+    assert active["ll_right_roi"] == pytest.approx(ll_right)
 
 
 def test_avis_adaptive_roi_can_be_disabled_without_changing_base_rectangles():

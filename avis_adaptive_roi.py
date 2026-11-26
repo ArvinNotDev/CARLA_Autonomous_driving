@@ -73,6 +73,12 @@ class AvisAdaptiveROIController:
                     self._expansion[side]["right"] = min(
                         self._expansion[side]["right"], maximum
                     )
+                    # Lock the inner boundary so an ROI cannot expand into
+                    # the neighbouring lane.
+                    if side == "ll":
+                        self._expansion[side]["right"] = 0.0
+                    else:
+                        self._expansion[side]["left"] = 0.0
 
     def _active_settings_locked(self) -> dict[str, Any]:
         active = dict(self._settings)
@@ -81,13 +87,15 @@ class AvisAdaptiveROIController:
 
         for side, (left_key, right_key) in self.SIDES.items():
             expansion = self._expansion[side]
+            expand_left = expansion["left"] if side == "ll" else 0.0
+            expand_right = expansion["right"] if side == "rl" else 0.0
             active[left_key] = max(
                 0.0,
-                self._number(active, left_key, 0.0) - expansion["left"],
+                self._number(active, left_key, 0.0) - expand_left,
             )
             active[right_key] = min(
                 1.0,
-                self._number(active, right_key, 1.0) + expansion["right"],
+                self._number(active, right_key, 1.0) + expand_right,
             )
         return active
 
@@ -155,11 +163,13 @@ class AvisAdaptiveROIController:
 
         expansion = self._expansion[side]
         if bool(self._settings.get("adaptive_roi_enabled", True)) and maximum > 0.0:
-            if escaping_left:
+            # LL may expand outward to the left; RL may expand outward to
+            # the right. The opposite (inward) edges are always locked.
+            if escaping_left and side == "ll":
                 expansion["left"] = min(maximum, expansion["left"] + expand_step)
                 self._center_frames[side] = 0
                 return
-            if escaping_right:
+            if escaping_right and side == "rl":
                 expansion["right"] = min(maximum, expansion["right"] + expand_step)
                 self._center_frames[side] = 0
                 return
