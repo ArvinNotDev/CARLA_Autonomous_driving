@@ -1494,6 +1494,79 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     assert 'id="controlLoopFpsValue"' in html
 
 
+def test_avis_dashboard_keeps_each_completed_model_prediction_in_status(tmp_path):
+    state = AvisDashboardState(settings_path=tmp_path / "avis_settings.json")
+    client = create_avis_dashboard_app(state).test_client()
+
+    state.publish_model_prediction({
+        "request_id": 1,
+        "frame_id": 12,
+        "recorded_at": 1000.0,
+        "backbone": "resnet18",
+        "obstacle": {"label": "yes", "confidence": 0.94},
+        "lane": {"label": "left", "confidence": 0.89},
+    })
+    state.publish_model_prediction({
+        "request_id": 2,
+        "frame_id": 15,
+        "recorded_at": 1000.1,
+        "backbone": "resnet18",
+        "obstacle": {"label": "no", "confidence": 0.91},
+        "lane": {"label": "right", "confidence": 0.87},
+    })
+    # A repeated control-loop tick must not duplicate an inference result.
+    state.publish_model_prediction({
+        "request_id": 2,
+        "frame_id": 15,
+        "recorded_at": 1000.2,
+        "backbone": "resnet18",
+        "obstacle": {"label": "no", "confidence": 0.91},
+        "lane": {"label": "right", "confidence": 0.87},
+    })
+
+    response = client.get("/api/status")
+    assert response.status_code == 200
+    history = response.get_json()["model_prediction_history"]
+    assert len(history) == 2
+    assert [item["request_id"] for item in history] == [1, 2]
+    assert [item["frame_id"] for item in history] == [12, 15]
+    assert history[-1]["obstacle"]["label"] == "no"
+    assert history[-1]["lane"]["label"] == "right"
+
+
+def test_avis_dashboard_model_output_panel_shows_current_and_recent_predictions(tmp_path):
+    state = AvisDashboardState(settings_path=tmp_path / "avis_settings.json")
+    html = create_avis_dashboard_app(state).test_client().get("/").get_data(as_text=True)
+
+    assert "Model inference outputs" in html
+    assert 'id="modelObstacleLabel"' in html
+    assert 'id="modelObstacleConfidence"' in html
+    assert 'id="modelLaneLabel"' in html
+    assert 'id="modelLaneConfidence"' in html
+    assert 'id="modelCurrentLane"' in html
+    assert 'id="modelPredictionMeta"' in html
+    assert 'id="modelPredictionHistory"' in html
+    assert "each completed inference" in html
+    assert "renderModelPredictions(data.model_prediction_history || [], t)" in html
+
+
+def test_avis_dashboard_prediction_history_is_bounded(tmp_path):
+    state = AvisDashboardState(settings_path=tmp_path / "avis_settings.json")
+    for request_id in range(1, 36):
+        state.publish_model_prediction({
+            "request_id": request_id,
+            "frame_id": request_id * 3,
+            "recorded_at": 1000.0 + request_id,
+            "obstacle": {"label": "no", "confidence": 0.9},
+            "lane": {"label": "right", "confidence": 0.8},
+        })
+
+    history = state.snapshot()["model_prediction_history"]
+    assert len(history) == 30
+    assert history[0]["request_id"] == 6
+    assert history[-1]["request_id"] == 35
+
+
 def test_avis_dashboard_roi_settings_validate_each_rectangle():
     updated = validate_avis_settings(
         DEFAULT_AVIS_SETTINGS,
