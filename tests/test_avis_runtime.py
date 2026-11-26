@@ -104,7 +104,7 @@ def test_apply_avis_profile_only_applies_supported_keys():
     )
 
     assert config.KP == 0.02
-    assert config.MODEL_PATH == "models_and_datasets/lane_and_drivable-area_model_Avis.pt"
+    assert config.MODEL_PATH == "models_and_datasets/Avis_models/lane_and_drivable-area_model_Avis.pt"
     assert config.LIDAR_ENABLED is True
 
 
