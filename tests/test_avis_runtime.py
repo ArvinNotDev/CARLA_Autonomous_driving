@@ -1484,7 +1484,7 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     assert 'id="obstacle_front_threshold_cm"' not in html
     assert 'id="obstacle_pass_sensor_presence_threshold_cm" data-setting="obstacle_pass_sensor_presence_threshold_cm" type="number" min="20" max="1499" step="1"' in html
     assert 'id="obstacle_pass_clearance_distance_m" data-setting="obstacle_pass_clearance_distance_m" type="number" min=".1" max="100" step=".1"' in html
-    assert "CLEAR → OBSTACLE PRESENT → CLEAR" in html
+    assert "CLEAR" in html and "OBSTACLE PRESENT" in html and "3 m" in html
     assert 'id="obstacle_pass_sensor_angle" data-setting="obstacle_pass_sensor_angle" type="number" min="10" max="90" step="1"' in html
     assert 'id="obstacle_lane_line_search_max_distance_m"' in html
     assert 'id="settingsForm" novalidate' in html
@@ -2127,6 +2127,7 @@ def test_model_lane_output_drives_gentle_retries_in_both_directions():
         "obstacle_lane_change_steer_distance_m": 0.2,
         "obstacle_lane_change_retry_pulse_distance_m": 0.1,
         "obstacle_lane_change_retry_steer": 0.2,
+        "obstacle_pass_sensor_clear_frames": 2,
         "obstacle_lane_line_search_max_distance_m": 10.0,
     })
 
