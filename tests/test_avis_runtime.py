@@ -1144,7 +1144,7 @@ def test_avis_classical_vision_runs_hough_inside_temporarily_expanded_roi(monkey
             frame_width,
         )
     expected_width = int(round(
-        (right - adaptive.snapshot()["ll"]["expanded_left"] - left) * frame_width
+        (right - left + adaptive.snapshot()["ll"]["expanded_left"]) * frame_width
     ))
     assert adaptive.snapshot()["ll"]["expanded_left"] > 0
 
