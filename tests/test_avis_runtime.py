@@ -523,10 +523,9 @@ def test_avis_classical_vision_selects_rightmost_ll_and_leftmost_rl_lines(monkey
     assert np.median(np.where(right_roi_mask > 0)[1]) == pytest.approx(6)
 
 
-def test_avis_model_backend_uses_the_same_inner_line_selection(monkeypatch):
+def test_avis_model_backend_uses_raw_lane_pixels_inside_each_roi(monkeypatch):
     import config_city
     import vision.city_vision_processing as shared_vision
-    import avis_lane_line_selection as selector
 
     monkeypatch.setattr(config_city, "LL_TOP_ROI", 0.20, raising=False)
     monkeypatch.setattr(config_city, "LL_BOTTOM_ROI", 0.80, raising=False)
@@ -541,6 +540,9 @@ def test_avis_model_backend_uses_the_same_inner_line_selection(monkeypatch):
         def __init__(self, mode):
             self.mode = mode
             self.min_side_pixels = 1
+            self.active_side = None
+            self.last_lane_center = None
+            self.last_lane_half_width = None
             self.vehicles_class_id = None
 
         def _boundary_from_roi(self, full_mask, top, bottom, left, right):
@@ -564,9 +566,13 @@ def test_avis_model_backend_uses_the_same_inner_line_selection(monkeypatch):
                 int(config_city.RL_LEFT_ROI * width),
                 int(config_city.RL_RIGHT_ROI * width),
             )
-            for top, bottom, left, right in (ll, rl):
-                mask[top:bottom, left + 6] = 255
-                mask[top:bottom, left + 30] = 255
+            # Simulate the model's already-clean lane_lines mask: one direct
+            # marking in each ROI, with no Hough fragments or candidate list.
+            for top, bottom, left, right, offset in (
+                (*ll, 11),
+                (*rl, 17),
+            ):
+                mask[top:bottom, left + offset] = 255
             left_x = self._boundary_from_roi(mask, *ll)
             right_x = self._boundary_from_roi(mask, *rl)
             return {
@@ -579,34 +585,16 @@ def test_avis_model_backend_uses_the_same_inner_line_selection(monkeypatch):
                 },
             }
 
-    settings = {
-        **DEFAULT_AVIS_SETTINGS,
-        "hough_threshold": 2,
-        "hough_min_line_length_ratio": 0.05,
-        "hough_max_line_gap": 2,
-    }
-
     monkeypatch.setattr(shared_vision, "VisionProcessor", FakeVisionProcessor)
-    monkeypatch.setattr(
-        selector.cv2,
-        "HoughLinesP",
-        lambda binary, **_kwargs: np.array(
-            [
-                [[6, 0, 6, binary.shape[0] - 1]],
-                [[30, 0, 30, binary.shape[0] - 1]],
-            ],
-            dtype=np.int32,
-        ),
-    )
-    processor = _create_avis_vision_processor("ultralytics", settings)
+    processor = _create_avis_vision_processor("ultralytics", {})
     result = processor.detect(None, np.zeros((100, 200, 3), dtype=np.uint8))
     debug = result["debug"]
 
-    assert debug["left_x"] == 20 + 30
-    assert debug["right_x"] == 140 + 6
-    assert debug["left_hough_candidates"] == 2
-    assert debug["right_hough_candidates"] == 2
-
+    assert debug["left_x"] == 20 + 11
+    assert debug["right_x"] == 140 + 17
+    assert np.count_nonzero(debug["lane_mask"]) == 120
+    assert "left_hough_candidates" not in debug
+    assert "right_hough_candidates" not in debug
 
 
 @pytest.mark.parametrize(
@@ -1611,10 +1599,14 @@ def test_avis_dashboard_roi_editor_is_available_for_both_vision_backends(tmp_pat
     assert 'data-panel="live"' in html
     assert 'data-panel="settings"' in html
     assert 'data-panel="roi"' in html
-    assert 'id="drivableView"' not in html
-    assert 'src="/stream/drivable-mask"' not in html
-    assert "Drivable-area and vehicle masks are not calculated or displayed" in html
+    assert 'id="drivableAreaView"' in html
+    assert 'src="/stream/drivable-area"' in html
+    assert "displayed in green for inspection only" in html
+    assert "not used for steering or vehicle control" in html
     assert client.get("/stream/drivable-mask").status_code == 404
+    drivable_stream = client.get("/stream/drivable-area", buffered=False)
+    assert drivable_stream.status_code == 200
+    drivable_stream.close()
 
 
 def test_avis_classical_vision_stops_when_no_lane_is_detected():
@@ -1663,9 +1655,10 @@ def test_avis_model_extracts_only_lane_lines_and_does_not_require_other_classes(
         1: "ego_drivable_area",
         2: "lane_lines",
         3: "vehicles",
-    }) == (2, None, None)
+    }) == (2, 1, None)
 
     processor.lane_class_id = 2
+    processor.drivable_class_id = 1
     semantic_map = np.array([[0, 1, 2]], dtype=np.uint8)
     processor._predict_ultralytics = lambda _frame: [
         SimpleNamespace(semantic_mask=SimpleNamespace(data=semantic_map))
@@ -1675,7 +1668,7 @@ def test_avis_model_extracts_only_lane_lines_and_does_not_require_other_classes(
         np.zeros((1, 3, 3), dtype=np.uint8)
     )
 
-    assert drivable_mask is None
+    assert drivable_mask.tolist() == [[0, 255, 0]]
     assert lane_mask.tolist() == [[0, 0, 255]]
     assert vehicles_mask is None
 
@@ -1778,7 +1771,10 @@ def test_avis_model_debug_uses_pure_red_lane_pixels_and_suppresses_other_masks(m
 
     assert received["mode"] == "ultralytics"
     assert received["line_mask"] is None
-    assert received["drivable_mask"] is None
+    assert np.array_equal(
+        received["drivable_mask"],
+        np.full((2, 3), 255, dtype=np.uint8),
+    )
     assert received["vehicles_mask"] is None
     assert tuple(result[0, 0]) == (0, 0, 255)
     assert tuple(result[0, 1]) == (0, 0, 0)
@@ -1796,6 +1792,20 @@ def test_avis_lane_mask_preview_is_black_with_pure_red_selected_pixels():
     assert tuple(preview[0, 0]) == (0, 0, 0)
     assert tuple(preview[0, 1]) == (0, 0, 255)
     assert tuple(preview[1, 0]) == (0, 0, 255)
+
+
+def test_avis_drivable_area_preview_uses_green_pixels_only():
+    import cv2
+    import numpy as np
+    from avis_runtime import _colorize_avis_drivable_mask
+
+    mask = np.array([[0, 255], [255, 0]], dtype=np.uint8)
+    preview = _colorize_avis_drivable_mask(cv2, np, mask, mask.shape)
+
+    assert preview.shape == (2, 2, 3)
+    assert tuple(preview[0, 0]) == (0, 0, 0)
+    assert tuple(preview[0, 1]) == (0, 255, 0)
+    assert tuple(preview[1, 0]) == (0, 255, 0)
 
 
 def test_avis_adaptive_roi_uses_last_seven_frames_to_expand_toward_escape():
