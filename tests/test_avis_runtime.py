@@ -1481,7 +1481,8 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     assert 'id="settingsForm" novalidate' in html
     assert 'id="obstacle_lane_change_steer_distance_m" data-setting="obstacle_lane_change_steer_distance_m" type="number" min=".1" max="100" step="any"' in html
     assert 'id="obstacle_lane_change_left_steer" data-setting="obstacle_lane_change_left_steer" type="number" min=".001" max="1" step="any"' in html
-    assert 'id="obstacle_clearance_after_pass_m" data-setting="obstacle_clearance_after_pass_m" type="number" min="0" max="1000" step="any"' in html
+    assert 'id="obstacle_pass_sensor_clear_threshold_cm" data-setting="obstacle_pass_sensor_clear_threshold_cm" type="number" min="21" max="1500" step="1"' in html
+    assert 'id="obstacle_pass_sensor_clear_frames" data-setting="obstacle_pass_sensor_clear_frames" type="number" min="1" max="30" step="1"' in html
     assert 'id="frameReadFpsValue"' in html
     assert 'id="inferenceFpsValue"' in html
     assert 'id="controlLoopFpsValue"' in html
