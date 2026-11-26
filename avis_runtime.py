@@ -843,10 +843,53 @@ class AvisObstacleLaneClassifier:
             if "CUDAExecutionProvider" in available
             else ["CPUExecutionProvider"]
         )
-        self.session = ort.InferenceSession(
-            str(self.model_path),
-            providers=providers,
-        )
+
+        # AVIS initializes the PyTorch lane model before this classifier. Ask
+        # ONNX Runtime to preload CUDA/cuDNN/MSVC from that same PyTorch
+        # installation before it creates its CUDA session. Without this,
+        # Windows can bind two different cuDNN DLL sets in one process and
+        # later fail while importing/initializing torch with WinError 127.
+        if "CUDAExecutionProvider" in providers:
+            preload_dlls = getattr(ort, "preload_dlls", None)
+            if callable(preload_dlls):
+                try:
+                    preload_dlls()
+                    print(
+                        "[AVIS] Preloaded ONNX Runtime CUDA/cuDNN DLLs "
+                        "from the shared Python/PyTorch environment."
+                    )
+                except Exception as exc:
+                    print(
+                        "[AVIS] ONNX Runtime CUDA DLL preload failed; "
+                        "using CPU for the obstacle classifier: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    providers = ["CPUExecutionProvider"]
+            else:
+                print(
+                    "[AVIS] This ONNX Runtime build has no preload_dlls(); "
+                    "CUDA DLL sharing with PyTorch cannot be prepared. "
+                    "Use a compatible onnxruntime-gpu build or CPU inference."
+                )
+                providers = ["CPUExecutionProvider"]
+
+        try:
+            self.session = ort.InferenceSession(
+                str(self.model_path),
+                providers=providers,
+            )
+        except (OSError, RuntimeError) as exc:
+            if providers == ["CPUExecutionProvider"]:
+                raise
+            print(
+                "[AVIS] ONNX Runtime CUDA session initialization failed; "
+                "retrying the obstacle classifier on CPU: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            self.session = ort.InferenceSession(
+                str(self.model_path),
+                providers=["CPUExecutionProvider"],
+            )
         metadata = self.session.get_modelmeta().custom_metadata_map
         if metadata.get("task") != "classification":
             raise RuntimeError(
@@ -2088,22 +2131,26 @@ def run_avis(args: argparse.Namespace) -> int:
         if settings["vision_backend"] == "ultralytics":
             print(f"[AVIS] Lane-line checkpoint: {conf.MODEL_PATH}")
 
-        obstacle_classifier = AvisObstacleLaneClassifier()
         from avis_adaptive_roi import AvisAdaptiveROIController
 
         adaptive_roi_controller = AvisAdaptiveROIController(settings)
         try:
+            # Load PyTorch/Ultralytics first. On Windows this lets PyTorch
+            # register its CUDA/cuDNN DLLs before ONNX Runtime is initialized.
             lane_vision_processor = _create_avis_vision_processor(
                 settings["vision_backend"],
                 settings,
                 adaptive_roi_controller=adaptive_roi_controller,
             )
-        except (FileNotFoundError, ImportError) as exc:
+        except (FileNotFoundError, ImportError, OSError) as exc:
             if settings["vision_backend"] != "ultralytics":
                 raise
             print(
-                "[AVIS] Ultralytics model is unavailable; switching this AVIS "
-                f"session to classical lane detection: {exc}"
+                "[AVIS] Ultralytics lane model is unavailable "
+                "(including a possible Windows CUDA/cuDNN DLL error); "
+                "switching this session to Classical CV lane tracking. "
+                f"Obstacle detection remains on the RoadForge ONNX model. "
+                f"Cause: {type(exc).__name__}: {exc}"
             )
             settings = dashboard_state.update_settings(
                 {"vision_backend": "classical"}
@@ -2116,6 +2163,9 @@ def run_avis(args: argparse.Namespace) -> int:
                 adaptive_roi_controller=adaptive_roi_controller,
             )
 
+        # ONNX Runtime is intentionally initialized after the lane model so
+        # its preload_dlls() routine can reuse PyTorch's CUDA/cuDNN DLLs.
+        obstacle_classifier = AvisObstacleLaneClassifier()
         vision_processor = AvisCombinedVisionProcessor(
             lane_vision_processor, obstacle_classifier
         )
