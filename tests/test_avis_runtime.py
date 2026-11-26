@@ -590,6 +590,7 @@ def test_avis_obstacle_in_left_lane_forces_immediate_return_before_old_target():
         state = controller.update(
             sensors=[1500, 450, 1500], speed_kmh=0.0, dt=0.0,
             left_x=110, right_x=None, settings=settings,
+            allow_new_maneuver=False,
             observation_id=observation_id,
         )
     assert state["phase"] == "STEER_RIGHT"
@@ -650,6 +651,24 @@ def test_avis_dashboard_lane_change_settings_are_persistent_and_validated(tmp_pa
     assert updated["obstacle_front_threshold_cm"] == 1200
 
 
+def test_avis_dashboard_accepts_decimal_obstacle_tuning_without_step_restrictions():
+    updated = validate_avis_settings(
+        DEFAULT_AVIS_SETTINGS,
+        {
+            "obstacle_lane_change_steer_distance_m": 1.37,
+            "obstacle_lane_change_left_steer": 0.237,
+            "obstacle_lane_change_right_steer": 0.193,
+            "obstacle_clearance_after_pass_m": 0.0,
+            "obstacle_front_threshold_cm": 1499,
+            "obstacle_sensor_clear_threshold_cm": 500,
+        },
+    )
+    assert updated["obstacle_lane_change_steer_distance_m"] == pytest.approx(1.37)
+    assert updated["obstacle_lane_change_left_steer"] == pytest.approx(0.237)
+    assert updated["obstacle_lane_change_right_steer"] == pytest.approx(0.193)
+    assert updated["obstacle_clearance_after_pass_m"] == pytest.approx(0.0)
+
+
 def test_avis_dashboard_migrates_legacy_fixed_lane_return_distance(tmp_path):
     settings_path = tmp_path / "avis_settings.json"
     settings_path.write_text(
@@ -677,6 +696,10 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     assert 'id="obstacle_front_threshold_cm" data-setting="obstacle_front_threshold_cm" type="number" min="50" max="1499" step="1"' in html
     assert 'id="obstacle_sensor_clear_threshold_cm" data-setting="obstacle_sensor_clear_threshold_cm" type="number" min="51" max="1500" step="1"' in html
     assert 'id="obstacle_lane_line_search_max_distance_m"' in html
+    assert 'id="settingsForm" novalidate' in html
+    assert 'id="obstacle_lane_change_steer_distance_m" data-setting="obstacle_lane_change_steer_distance_m" type="number" min=".1" max="100" step="any"' in html
+    assert 'id="obstacle_lane_change_left_steer" data-setting="obstacle_lane_change_left_steer" type="number" min=".001" max="1" step="any"' in html
+    assert 'id="obstacle_clearance_after_pass_m" data-setting="obstacle_clearance_after_pass_m" type="number" min="0" max="1000" step="any"' in html
     assert 'id="frameReadFpsValue"' in html
     assert 'id="inferenceFpsValue"' in html
     assert 'id="controlLoopFpsValue"' in html

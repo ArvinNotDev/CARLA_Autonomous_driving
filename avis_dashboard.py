@@ -108,12 +108,12 @@ _NUMERIC_LIMITS: dict[str, tuple[float, float, bool]] = {
     "obstacle_trigger_confirm_frames": (1.0, 30.0, True),
     "obstacle_sensor_clear_threshold_cm": (51.0, 1500.0, True),
     "obstacle_sensor_clear_confirm_frames": (1.0, 30.0, True),
-    "obstacle_lane_change_steer_distance_m": (0.25, 30.0, False),
-    "obstacle_lane_change_left_steer": (0.01, 1.0, False),
-    "obstacle_lane_change_right_steer": (0.01, 1.0, False),
-    "obstacle_lane_line_confirm_frames": (1.0, 20.0, True),
-    "obstacle_lane_line_search_max_distance_m": (1.0, 500.0, False),
-    "obstacle_clearance_after_pass_m": (0.1, 100.0, False),
+    "obstacle_lane_change_steer_distance_m": (0.1, 100.0, False),
+    "obstacle_lane_change_left_steer": (0.001, 1.0, False),
+    "obstacle_lane_change_right_steer": (0.001, 1.0, False),
+    "obstacle_lane_line_confirm_frames": (1.0, 60.0, True),
+    "obstacle_lane_line_search_max_distance_m": (0.1, 1000.0, False),
+    "obstacle_clearance_after_pass_m": (0.0, 1000.0, False),
 }
 
 
@@ -440,7 +440,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
 
       </section>
       <section class="panel-content" id="panel-settings">
-      <form class="panel" id="settingsForm">
+      <form class="panel" id="settingsForm" novalidate>
         <div class="panel-head"><h3>AVIS runtime settings</h3><span class="tag">Live apply</span></div>
         <div class="section-label">Vision engine</div>
         <div class="fields">
@@ -462,12 +462,12 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
           <div class="field"><label for="obstacle_trigger_confirm_frames">Obstacle confirmation frames</label><input id="obstacle_trigger_confirm_frames" data-setting="obstacle_trigger_confirm_frames" type="number" min="1" max="30" step="1"></div>
           <div class="field"><label for="obstacle_sensor_clear_threshold_cm">Sensor clear threshold (cm)</label><input id="obstacle_sensor_clear_threshold_cm" data-setting="obstacle_sensor_clear_threshold_cm" type="number" min="51" max="1500" step="1"></div>
           <div class="field"><label for="obstacle_sensor_clear_confirm_frames">Clear confirmation frames</label><input id="obstacle_sensor_clear_confirm_frames" data-setting="obstacle_sensor_clear_confirm_frames" type="number" min="1" max="30" step="1"></div>
-          <div class="field"><label for="obstacle_lane_change_steer_distance_m">Initial steering distance (m)</label><input id="obstacle_lane_change_steer_distance_m" data-setting="obstacle_lane_change_steer_distance_m" type="number" min=".25" max="30" step=".25"></div>
+          <div class="field"><label for="obstacle_lane_change_steer_distance_m">Initial steering distance (m)</label><input id="obstacle_lane_change_steer_distance_m" data-setting="obstacle_lane_change_steer_distance_m" type="number" min=".1" max="100" step="any"></div>
           <div class="field"><label for="obstacle_lane_line_confirm_frames">Target ROI line confirm frames</label><input id="obstacle_lane_line_confirm_frames" data-setting="obstacle_lane_line_confirm_frames" type="number" min="1" max="20" step="1"></div>
-          <div class="field"><label for="obstacle_lane_change_left_steer">Left steering pulse</label><input id="obstacle_lane_change_left_steer" data-setting="obstacle_lane_change_left_steer" type="number" min=".01" max="1" step=".01"></div>
-          <div class="field"><label for="obstacle_lane_change_right_steer">Right steering pulse</label><input id="obstacle_lane_change_right_steer" data-setting="obstacle_lane_change_right_steer" type="number" min=".01" max="1" step=".01"></div>
-          <div class="field"><label for="obstacle_lane_line_search_max_distance_m">Maximum straight line-search distance (m)</label><input id="obstacle_lane_line_search_max_distance_m" data-setting="obstacle_lane_line_search_max_distance_m" type="number" min="1" max="500" step="1"></div>
-          <div class="field"><label for="obstacle_clearance_after_pass_m">Extra distance after obstacle (m)</label><input id="obstacle_clearance_after_pass_m" data-setting="obstacle_clearance_after_pass_m" type="number" min=".1" max="100" step="any"></div>
+          <div class="field"><label for="obstacle_lane_change_left_steer">Left steering pulse</label><input id="obstacle_lane_change_left_steer" data-setting="obstacle_lane_change_left_steer" type="number" min=".001" max="1" step="any"></div>
+          <div class="field"><label for="obstacle_lane_change_right_steer">Right steering pulse</label><input id="obstacle_lane_change_right_steer" data-setting="obstacle_lane_change_right_steer" type="number" min=".001" max="1" step="any"></div>
+          <div class="field"><label for="obstacle_lane_line_search_max_distance_m">Maximum straight line-search distance (m)</label><input id="obstacle_lane_line_search_max_distance_m" data-setting="obstacle_lane_line_search_max_distance_m" type="number" min=".1" max="1000" step="any"></div>
+          <div class="field"><label for="obstacle_clearance_after_pass_m">Extra distance after obstacle (m)</label><input id="obstacle_clearance_after_pass_m" data-setting="obstacle_clearance_after_pass_m" type="number" min="0" max="1000" step="any"></div>
         </div>
         <div class="hint">AVIS uses the middle distance sensor (cm). The default 700 cm trigger is 7 m. It briefly steers left, then goes straight until the LL ROI line is confirmed; after the configured left-lane distance it steers right, goes straight until the RL ROI line is confirmed, and hands steering back to lane following. If the target line is not found within the safety distance, the car stops.</div>
         <div class="section-label">Steering PID</div>
@@ -831,14 +831,29 @@ async function postJson(url, payload) {
 $("vision_backend").addEventListener("change", () => {
   updateBackendVisibility($("vision_backend").value);
 });
+let settingsEditRevision = 0;
 $("settingsForm").addEventListener("submit", async event => {
   event.preventDefault();
+  const form = $("settingsForm");
+  const submitButton = form.querySelector('button[type="submit"]');
+  const submittedRevision = settingsEditRevision;
+  submitButton.disabled = true;
+  showMessage("Applying settings...", false);
   try {
     const data = await postJson("/api/settings", collectSettings());
-    fillSettings(data.settings);
-    showMessage("Settings applied and saved.", false);
+    if (settingsEditRevision === submittedRevision) {
+      fillSettings(data.settings);
+      delete form.dataset.dirty;
+      showMessage("Settings applied and saved.", false);
+    } else {
+      form.dataset.dirty = "true";
+      showMessage("Settings saved. New edits are still pending; apply again.", false);
+    }
   } catch (error) {
+    form.dataset.dirty = "true";
     showMessage(error.message, true);
+  } finally {
+    submitButton.disabled = false;
   }
 });
 async function changeMode(mode) {
@@ -963,12 +978,15 @@ async function refreshStatus() {
   }
 }
 settingInputs.forEach(input => input.addEventListener("input", () => {
+  settingsEditRevision += 1;
   $("settingsForm").dataset.dirty = "true";
   updateBackendVisibility($("vision_backend").value);
   if (input.dataset.setting.endsWith("_roi")) drawROIOverlays();
 }));
-$("settingsForm").addEventListener("change", () => {$("settingsForm").dataset.dirty = "true";});
-$("settingsForm").addEventListener("submit", () => {delete $("settingsForm").dataset.dirty;});
+$("settingsForm").addEventListener("change", () => {
+  settingsEditRevision += 1;
+  $("settingsForm").dataset.dirty = "true";
+});
 updateManualLabels();
 refreshStatus();
 setInterval(refreshStatus, 500);
