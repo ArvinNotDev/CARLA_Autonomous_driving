@@ -65,7 +65,9 @@ def test_avis_profile_is_a_stable_v2_subset_without_carla_only_settings():
     assert avis["STEER_LIMIT"] == stable["STEER_LIMIT"]
     assert avis["MAX_STEER_STEP"] == stable["MAX_STEER_STEP"]
     assert avis["CONTROL_LOOP_HZ"] == stable["CONTROL_LOOP_HZ"]
-    assert avis["MODEL_PATH"] == stable["MODEL_PATH"]
+    assert stable["MODEL_PATH"] == "models_and_datasets/lane_and_drivable-area_model.pt"
+    assert avis["MODEL_PATH"] == "models_and_datasets/lane_and_drivable-area_model_Avis.pt"
+    assert (ROOT / avis["MODEL_PATH"]).is_file()
     assert avis["MIN_SPEED_KMH"] == stable["MIN_SPEED_KMH"]
     assert avis["MAX_SPEED_KMH"] == stable["MAX_SPEED_KMH"]
     assert "LIDAR_ENABLED" not in avis
@@ -86,13 +88,22 @@ def test_load_avis_profile_rejects_incomplete_profile(tmp_path):
 
 
 def test_apply_avis_profile_only_applies_supported_keys():
-    config = SimpleNamespace(KP=0.0, LIDAR_ENABLED=True)
+    config = SimpleNamespace(
+        KP=0.0,
+        MODEL_PATH="models_and_datasets/lane_and_drivable-area_model.pt",
+        LIDAR_ENABLED=True,
+    )
     apply_avis_profile(
-        {"KP": 0.02, "LIDAR_ENABLED": False},
+        {
+            "KP": 0.02,
+            "MODEL_PATH": "models_and_datasets/lane_and_drivable-area_model_Avis.pt",
+            "LIDAR_ENABLED": False,
+        },
         config,
     )
 
     assert config.KP == 0.02
+    assert config.MODEL_PATH == "models_and_datasets/lane_and_drivable-area_model_Avis.pt"
     assert config.LIDAR_ENABLED is True
 
 

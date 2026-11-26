@@ -165,8 +165,10 @@ On every application launch, choose **Use saved installation** or **Choose anoth
 The AVIS runtime is an independent backend. It does not initialize or import the
 CARLA Python API, and it does not alter the normal `python main.py` startup path.
 It has its own Flask dashboard, AVIS-only settings file, manual controls, and
-vision pipeline. The Ultralytics backend reuses the StableV2 camera perception
-model and AVIS PID/speed defaults. The Classical CV backend does not run a
+vision pipeline. The Ultralytics backend uses the dedicated
+`models_and_datasets/lane_and_drivable-area_model_Avis.pt` checkpoint for AVIS
+lane perception, while retaining AVIS PID/speed defaults. The normal CARLA
+runtime continues to use the StableV2 checkpoint. The Classical CV backend does not run a
 segmentation model to obtain lane pixels: it independently crops the configured
 left-lane (LL) and right-lane (RL) rectangles, then runs HLS white/yellow
 thresholding, Gaussian blur, Canny, morphology, and HoughLinesP strictly inside

@@ -1536,6 +1536,8 @@ def run_avis(args: argparse.Namespace) -> int:
         )
         settings, settings_revision = dashboard_state.settings_snapshot()
         _apply_avis_roi_settings(conf, settings)
+        if settings["vision_backend"] == "ultralytics":
+            print(f"[AVIS] Ultralytics lane checkpoint: {conf.MODEL_PATH}")
 
         from avis_adaptive_roi import AvisAdaptiveROIController
 
