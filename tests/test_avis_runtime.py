@@ -1459,29 +1459,25 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     assert 'id="obstacle_lane_change_enabled"' in html
     assert 'id="obstacle_model_confidence_threshold"' in html
     assert 'id="obstacle_lane_confidence_threshold"' in html
-    assert 'id="obstacle_pass_sensor_angle"' in html
-    assert 'id="obstacle_pass_sensor_presence_threshold_cm"' in html
-    assert 'id="obstacle_pass_sensor_clear_threshold_cm"' in html
+    assert 'id="obstacle_pass_sensor_angle"' not in html
+    assert 'id="obstacle_pass_sensor_presence_threshold_cm"' not in html
+    assert 'id="obstacle_pass_sensor_clear_threshold_cm"' not in html
     assert 'id="obstacle_return_delay_seconds"' not in html
-    assert 'id="obstacle_pass_clearance_distance_m"' in html
+    assert 'id="obstacle_pass_clearance_distance_m"' not in html
     assert 'id="obstacle_lane_change_retry_steer"' in html
     assert 'id="obstacle_lane_change_retry_pulse_distance_m"' in html
     assert 'id="obstacle_slowdown_start_cm"' not in html
     assert 'id="obstacle_clearance_after_pass_m"' not in html
     assert 'id="obstacle_return_distance_m"' not in html
     assert 'id="obstacle_front_threshold_cm"' not in html
-    assert 'id="obstacle_pass_sensor_presence_threshold_cm" data-setting="obstacle_pass_sensor_presence_threshold_cm" type="number" min="20" max="1499" step="1"' in html
-    assert 'id="obstacle_pass_clearance_distance_m" data-setting="obstacle_pass_clearance_distance_m" type="number" min=".1" max="100" step=".1"' in html
-    assert "CLEAR" in html and "OBSTACLE PRESENT" in html and "3 m" in html
-    assert 'id="obstacle_pass_sensor_angle" data-setting="obstacle_pass_sensor_angle" type="number" min="10" max="90" step="1"' in html
+    assert "exactly 10 metres" in html
+    assert "Right-side sensor readings and sensor timeouts do not control this return." in html
     assert 'id="obstacle_lane_line_search_max_distance_m"' in html
     assert 'id="settingsForm" novalidate' in html
     assert 'id="obstacle_lane_change_steer_distance_m" data-setting="obstacle_lane_change_steer_distance_m" type="number" min=".1" max="100" step="any"' in html
     assert 'id="obstacle_lane_change_left_steer" data-setting="obstacle_lane_change_left_steer" type="number" min=".001" max="1" step="any"' in html
     assert 'id="obstacle_lane_change_retry_steer" data-setting="obstacle_lane_change_retry_steer" type="number" min=".001" max="1" step="any"' in html
     assert 'id="obstacle_lane_change_retry_pulse_distance_m" data-setting="obstacle_lane_change_retry_pulse_distance_m" type="number" min=".05" max="10" step=".05"' in html
-    assert 'id="obstacle_pass_sensor_clear_threshold_cm" data-setting="obstacle_pass_sensor_clear_threshold_cm" type="number" min="21" max="1500" step="1"' in html
-    assert 'id="obstacle_pass_sensor_clear_frames" data-setting="obstacle_pass_sensor_clear_frames" type="number" min="1" max="30" step="1"' in html
     assert 'id="frameReadFpsValue"' in html
     assert 'id="inferenceFpsValue"' in html
     assert 'id="controlLoopFpsValue"' in html
@@ -2139,7 +2135,6 @@ def test_model_lane_output_drives_gentle_retries_in_both_directions():
         "obstacle_lane_change_steer_distance_m": 0.2,
         "obstacle_lane_change_retry_pulse_distance_m": 0.1,
         "obstacle_lane_change_retry_steer": 0.2,
-        "obstacle_pass_sensor_clear_frames": 2,
         "obstacle_lane_line_search_max_distance_m": 10.0,
     })
 
@@ -2188,131 +2183,109 @@ def test_model_lane_output_drives_gentle_retries_in_both_directions():
         classifier_output=_model_obstacle_prediction(obstacle_yes=0.05, lane_left=0.90),
         observation_id=5, frame_width=320, now=10.4,
     )
-    assert left_confirmed["phase"] == controller.WAIT_OBSTACLE_PASS
-    assert left_confirmed["pass_sensor_stage"] == "WAITING_FOR_INITIAL_CLEAR"
+    assert left_confirmed["phase"] == controller.WAIT_RETURN_DISTANCE
+    assert left_confirmed["return_distance_stage"] == "WAITING_FOR_10M"
+    assert left_confirmed["return_distance_remaining_m"] == pytest.approx(10.0)
 
-    # The right sensor sequence must be clear -> obstacle -> clear.
-    def pass_tick(sensor_cm, observation_id, now, speed=0.0, dt=0.0, lane_left=0.10):
+    def wait_tick(sensors, observation_id, speed, dt, lane_left=0.90):
         return controller.update(
-            sensors=[1500, 1500, sensor_cm], speed_kmh=speed, dt=dt,
+            sensors=sensors, speed_kmh=speed, dt=dt,
             left_x=None, right_x=None, settings=settings,
-            classifier_output=_model_obstacle_prediction(obstacle_yes=0.05, lane_left=lane_left),
-            observation_id=observation_id, frame_width=320, now=now,
+            classifier_output=_model_obstacle_prediction(
+                obstacle_yes=0.05, lane_left=lane_left
+            ),
+            observation_id=observation_id, frame_width=320,
+            now=1000.0 + observation_id,
         )
 
-    assert pass_tick(200, 6, 10.5)["pass_sensor_stage"] == "WAITING_FOR_INITIAL_CLEAR"
-    assert pass_tick(700, 7, 10.6)["pass_sensor_stage"] == "WAITING_FOR_INITIAL_CLEAR"
-    assert pass_tick(700, 8, 10.7)["pass_sensor_stage"] == "WAITING_FOR_OBSTACLE"
-    assert pass_tick(200, 9, 10.8)["pass_sensor_stage"] == "WAITING_FOR_OBSTACLE"
-    assert pass_tick(200, 10, 10.9)["pass_sensor_stage"] == "OBSTACLE_SEEN_ON_RIGHT"
-    assert pass_tick(700, 11, 11.0)["pass_sensor_stage"] == "OBSTACLE_SEEN_ON_RIGHT"
-    passed = pass_tick(700, 12, 11.1)
-    assert passed["phase"] == controller.WAIT_PASS_CLEARANCE
-    assert passed["pass_sensor_stage"] == "OBSTACLE_CLEARED"
-    assert passed["pass_clearance_travelled_m"] == pytest.approx(0.0)
+    # Sensor readings are deliberately contradictory; only travelled distance
+    # controls when the return manoeuvre starts.
+    wait_25 = wait_tick([0, 0, 0], 6, 36.0, 0.25)
+    assert wait_25["phase"] == controller.WAIT_RETURN_DISTANCE
+    assert wait_25["return_distance_travelled_m"] == pytest.approx(2.5)
+    assert wait_25["return_distance_remaining_m"] == pytest.approx(7.5)
 
-    halfway = pass_tick(700, 13, 11.2, speed=36.0, dt=0.25)
-    assert halfway["phase"] == controller.WAIT_PASS_CLEARANCE
-    assert halfway["pass_clearance_travelled_m"] == pytest.approx(2.5)
-    assert halfway["pass_clearance_remaining_m"] == pytest.approx(0.5)
+    wait_50 = wait_tick([None, None, None], 7, 36.0, 0.25)
+    assert wait_50["phase"] == controller.WAIT_RETURN_DISTANCE
+    assert wait_50["return_distance_travelled_m"] == pytest.approx(5.0)
 
-    return_started = pass_tick(700, 14, 11.3, speed=18.0, dt=0.1)
+    wait_75 = wait_tick([1500, 1500, 1500], 8, 36.0, 0.25)
+    assert wait_75["phase"] == controller.WAIT_RETURN_DISTANCE
+    assert wait_75["return_distance_remaining_m"] == pytest.approx(2.5)
+
+    wait_999 = wait_tick([0, 0, 0], 9, 35.856, 0.25)
+    assert wait_999["phase"] == controller.WAIT_RETURN_DISTANCE
+    assert wait_999["return_distance_travelled_m"] == pytest.approx(9.99)
+
+    return_started = wait_tick([0, 0, 0], 10, 0.144, 0.25, lane_left=0.10)
     assert return_started["phase"] == controller.STEER_RIGHT
-    assert return_started["return_reason"] == "RIGHT_SENSOR_SEQUENCE_CONFIRMED_AFTER_3M"
+    assert return_started["return_reason"] == "FIXED_10M_AFTER_LEFT_LANE"
     assert return_started["steering_override"] == pytest.approx(0.30)
+    assert return_started["lane_change_attempt_number"] == 1
 
-    right_retry = pass_tick(700, 15, 11.4, speed=8.0, dt=0.1, lane_left=0.90)
+    right_retry = wait_tick([0, 0, 0], 11, 8.0, 0.1, lane_left=0.90)
     assert right_retry["phase"] == controller.STEER_RIGHT
     assert right_retry["lane_change_attempt_number"] == 2
     assert right_retry["steering_override"] == pytest.approx(0.20)
 
-    another_right_retry = pass_tick(700, 16, 11.5, speed=8.0, dt=0.1, lane_left=0.90)
+    another_right_retry = wait_tick([0, 0, 0], 12, 8.0, 0.1, lane_left=0.90)
     assert another_right_retry["phase"] == controller.STEER_RIGHT
     assert another_right_retry["lane_change_attempt_number"] == 3
     assert another_right_retry["steering_override"] == pytest.approx(0.20)
 
-    first_right_vote = pass_tick(700, 17, 11.6, lane_left=0.10)
+    first_right_vote = wait_tick([0, 0, 0], 13, 0.0, 0.0, lane_left=0.10)
     assert first_right_vote["phase"] == controller.STEER_RIGHT
     assert first_right_vote["model_lane_confirm_frames"] == 1
-    right_confirmed = pass_tick(700, 18, 11.7, lane_left=0.10)
+
+    right_confirmed = wait_tick([0, 0, 0], 14, 0.0, 0.0, lane_left=0.10)
     assert right_confirmed["phase"] == controller.RIGHT_LANE
     assert right_confirmed["steering_override"] is None
+    assert right_confirmed["return_reason"] == "RIGHT_LANE_CONFIRMED_BY_MODEL"
 
 
-def test_right_sensor_requires_clear_obstacle_clear_then_three_meters():
+def test_fixed_ten_meter_return_ignores_right_sensor_and_has_no_sensor_timeout():
     controller = AvisModelObstacleLaneChangeController()
     settings = dict(DEFAULT_AVIS_SETTINGS)
-    settings.update({
-        "obstacle_pass_sensor_presence_frames": 2,
-        "obstacle_pass_sensor_clear_frames": 2,
-        "obstacle_pass_clearance_distance_m": 3.0,
-        "obstacle_pass_sensor_timeout_seconds": 30.0,
-    })
-    controller.phase = controller.WAIT_OBSTACLE_PASS
-    controller.pass_sensor_stage = "WAITING_FOR_INITIAL_CLEAR"
-    controller.pass_sensor_started_at = 100.0
+    settings["obstacle_pass_sensor_timeout_seconds"] = 0.1
+    settings["obstacle_lane_line_search_max_distance_m"] = 40.0
+    controller.phase = controller.WAIT_RETURN_DISTANCE
+    controller.left_lane_distance_m = 0.0
+    controller.return_distance_stage = "WAITING_FOR_10M"
 
-    def tick(sensor_cm, observation_id, now, speed=0.0, dt=0.0):
-        return controller.update(
-            sensors=[1500, 1500, sensor_cm],
-            speed_kmh=speed, dt=dt,
-            left_x=None, right_x=None, settings=settings,
-            classifier_output=None, observation_id=observation_id,
-            frame_width=320, now=now,
+    for observation_id in range(1, 4):
+        state = controller.update(
+            sensors=[0, 0, 0],
+            speed_kmh=36.0,
+            dt=0.25,
+            left_x=None,
+            right_x=None,
+            settings=settings,
+            classifier_output=None,
+            observation_id=observation_id,
+            frame_width=320,
+            now=1000.0 * observation_id,
         )
-
-    # A sensor that initially sees the obstacle cannot skip the first CLEAR.
-    blocked_at_start = tick(200, 1, 100.0)
-    assert blocked_at_start["pass_sensor_stage"] == "WAITING_FOR_INITIAL_CLEAR"
-    assert blocked_at_start["phase"] == controller.WAIT_OBSTACLE_PASS
-
-    tick(700, 2, 100.1)
-    clear_seen = tick(700, 3, 100.2)
-    assert clear_seen["pass_sensor_stage"] == "WAITING_FOR_OBSTACLE"
-
-    tick(200, 4, 100.3)
-    obstacle_seen = tick(200, 5, 100.4)
-    assert obstacle_seen["pass_sensor_stage"] == "OBSTACLE_SEEN_ON_RIGHT"
-
-    tick(700, 6, 100.5)
-    sensor_clear = tick(700, 7, 100.6)
-    assert sensor_clear["phase"] == controller.WAIT_PASS_CLEARANCE
-    assert sensor_clear["pass_sensor_stage"] == "OBSTACLE_CLEARED"
-    assert sensor_clear["pass_clearance_remaining_m"] == pytest.approx(3.0)
-
-    halfway = tick(700, 8, 100.7, speed=36.0, dt=0.25)
-    assert halfway["phase"] == controller.WAIT_PASS_CLEARANCE
-    assert halfway["pass_clearance_travelled_m"] == pytest.approx(2.5)
-    assert halfway["pass_clearance_remaining_m"] == pytest.approx(0.5)
-
-    returned = tick(700, 9, 100.8, speed=18.0, dt=0.1)
-    assert returned["phase"] == controller.STEER_RIGHT
-    assert returned["return_reason"] == "RIGHT_SENSOR_SEQUENCE_CONFIRMED_AFTER_3M"
-    assert returned["steering_override"] == pytest.approx(
-        settings["obstacle_lane_change_right_steer"]
-    )
-    assert returned["sensor_angle_override"] == settings["sensor_angle"]
-
-
-
-def test_pass_sensor_timeout_fails_safe_without_blind_return():
-    controller = AvisModelObstacleLaneChangeController()
-    settings = dict(DEFAULT_AVIS_SETTINGS)
-    settings["obstacle_pass_sensor_timeout_seconds"] = 5.0
-    controller.phase = controller.WAIT_OBSTACLE_PASS
-    controller.pass_sensor_started_at = 100.0
+        assert state["phase"] == controller.WAIT_RETURN_DISTANCE
+        assert state["safe_stop"] is False
 
     state = controller.update(
-        sensors=[1500, 1500, 1500],
-        speed_kmh=8.0, dt=0.1,
-        left_x=100, right_x=220, settings=settings,
+        sensors=[0, 0, 0],
+        speed_kmh=36.0,
+        dt=0.25,
+        left_x=None,
+        right_x=None,
+        settings=settings,
         classifier_output=None,
-        observation_id=1, frame_width=320, now=106.0,
+        observation_id=4,
+        frame_width=320,
+        now=4000.0,
     )
-    assert state["phase"] == controller.FAILED
-    assert state["safe_stop"] is True
-    assert state["pass_sensor_timeout"] is True
-
+    assert state["phase"] == controller.STEER_RIGHT
+    assert state["return_distance_travelled_m"] == 0.0
+    assert state["safe_stop"] is False
+    assert state["steering_override"] == pytest.approx(
+        settings["obstacle_lane_change_right_steer"]
+    )
 
 
 def test_avis_onnx_classifier_uses_roadforge_task_metadata_and_training_preprocess(
