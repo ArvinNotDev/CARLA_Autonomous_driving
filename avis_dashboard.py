@@ -67,7 +67,7 @@ DEFAULT_AVIS_SETTINGS: dict[str, Any] = {
     "obstacle_pass_sensor_clear_threshold_cm": 550,
     "obstacle_pass_sensor_presence_frames": 2,
     "obstacle_pass_sensor_clear_frames": 3,
-    "obstacle_pass_clearance_distance_m": 3.0,
+    "obstacle_pass_clearance_distance_m": 10.0,
     "obstacle_return_delay_seconds": 2.0,
     "obstacle_pass_sensor_timeout_seconds": 30.0,
     "obstacle_front_threshold_cm": 950,
@@ -210,8 +210,6 @@ def validate_avis_settings(
             raise ValueError(f"{side.upper()} ROI right edge must be after its left edge.")
     if result["max_lane_angle_deg"] <= result["min_lane_angle_deg"]:
         raise ValueError("Maximum lane angle must exceed minimum lane angle.")
-    if result["obstacle_pass_sensor_clear_threshold_cm"] <= result["obstacle_pass_sensor_presence_threshold_cm"]:
-        raise ValueError("Right-side sensor clear threshold must be greater than its obstacle-presence threshold.")
     return result
 
 
@@ -276,15 +274,10 @@ class AvisDashboardState:
             "lane_change_attempt_number": 0,
             "lane_change_retry_steer": None,
             "lane_change_retry_pulse_distance_m": None,
-            "obstacle_pass_sensor_stage": "WAITING_FOR_INITIAL_CLEAR",
-            "obstacle_pass_right_sensor_cm": None,
-            "obstacle_pass_initial_clear_frames": 0,
-            "obstacle_pass_clear_frames": 0,
-            "pass_clearance_distance_m": 3.0,
-            "pass_clearance_travelled_m": 0.0,
-            "pass_clearance_remaining_m": 0.0,
-            "obstacle_return_delay_remaining_s": 0.0,
-            "obstacle_pass_sensor_timeout": False,
+            "return_distance_stage": "IDLE",
+            "return_after_distance_m": 10.0,
+            "return_distance_travelled_m": 0.0,
+            "return_distance_remaining_m": 0.0,
             "active_sensor_angle": None,
             "lane_change_phase": "RIGHT_LANE",
             "lane_change_side": "right",
@@ -842,17 +835,8 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
           <div class="field"><label for="obstacle_lane_change_retry_pulse_distance_m">Gentle retry distance (m)</label><input id="obstacle_lane_change_retry_pulse_distance_m" data-setting="obstacle_lane_change_retry_pulse_distance_m" type="number" min=".05" max="10" step=".05"></div>
           <div class="field full"><label for="obstacle_lane_line_search_max_distance_m">Maximum distance before lane-change safe stop (m)</label><input id="obstacle_lane_line_search_max_distance_m" data-setting="obstacle_lane_line_search_max_distance_m" type="number" min=".1" max="1000" step="any"></div>
         </div>
-        <div class="section-label">Right-side pass confirmation sensor</div>
-        <div class="fields">
-          <div class="field"><label for="obstacle_pass_sensor_angle">Sensor angle while alongside obstacle (°)</label><input id="obstacle_pass_sensor_angle" data-setting="obstacle_pass_sensor_angle" type="number" min="10" max="90" step="1"></div>
-          <div class="field"><label for="obstacle_pass_sensor_presence_threshold_cm">Right sensor sees obstacle at (cm)</label><input id="obstacle_pass_sensor_presence_threshold_cm" data-setting="obstacle_pass_sensor_presence_threshold_cm" type="number" min="20" max="1499" step="1"></div>
-          <div class="field"><label for="obstacle_pass_sensor_clear_threshold_cm">Right sensor clear at (cm)</label><input id="obstacle_pass_sensor_clear_threshold_cm" data-setting="obstacle_pass_sensor_clear_threshold_cm" type="number" min="21" max="1500" step="1"></div>
-          <div class="field"><label for="obstacle_pass_sensor_presence_frames">Obstacle-seen confirmation frames</label><input id="obstacle_pass_sensor_presence_frames" data-setting="obstacle_pass_sensor_presence_frames" type="number" min="1" max="30" step="1"></div>
-          <div class="field"><label for="obstacle_pass_sensor_clear_frames">Obstacle-clear confirmation frames</label><input id="obstacle_pass_sensor_clear_frames" data-setting="obstacle_pass_sensor_clear_frames" type="number" min="1" max="30" step="1"></div>
-          <div class="field"><label for="obstacle_pass_clearance_distance_m">Distance after sensor pattern before returning (m)</label><input id="obstacle_pass_clearance_distance_m" data-setting="obstacle_pass_clearance_distance_m" type="number" min=".1" max="100" step=".1"></div>
-          <div class="field"><label for="obstacle_pass_sensor_timeout_seconds">Maximum wait for pass pattern (seconds)</label><input id="obstacle_pass_sensor_timeout_seconds" data-setting="obstacle_pass_sensor_timeout_seconds" type="number" min="1" max="120" step=".5"></div>
-        </div>
-        <div class="hint">The RoadForge model triggers avoidance from obstacle_ahead=yes. For both directions, AVIS sends one initial steering pulse, pauses, and checks the model's lane output. If the model still reports the old lane, it repeats a gentler, shorter pulse until the destination lane is confirmed for the configured number of fresh inferences. Once left is confirmed, the right sensor must report the sequence CLEAR → OBSTACLE PRESENT → CLEAR. AVIS then travels the configured clearance distance (default 3 m) before repeating the same model-confirmed retry process back to the right lane. Failure to confirm the sensor sequence or target lane before the search limits causes a safe stop rather than an assumed lane change.</div>
+        <div class="section-label">Return to the right lane</div>
+        <div class="hint">After the model confirms the vehicle has entered the left lane, AVIS travels exactly 10 metres, then starts the right-lane change. The return uses the same model-confirmed steering pulse, pause, and gentler retry sequence as the initial move to the left. Right-side sensor readings and sensor timeouts do not control this return.</div>
         <div class="section-label">Adaptive lane ROI recovery</div>
         <div class="fields">
           <div class="field full"><label for="adaptive_roi_enabled">Adaptive ROI expansion</label><select id="adaptive_roi_enabled" data-setting="adaptive_roi_enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
@@ -1443,14 +1427,11 @@ async function refreshStatus() {
       " · Side: " + String(t.lane_change_side || "right").toUpperCase() +
       " · Attempt: " + (Number(t.lane_change_attempt_number || 0) > 0 ? "#" + String(t.lane_change_attempt_number) : "--") +
       " · Model lane confirm: " + String(t.model_lane_confirm_frames || 0) + "/" + String(data.settings.obstacle_lane_line_confirm_frames || 3) +
-      " · Pass pattern: " + String(t.obstacle_pass_sensor_stage || "--").replaceAll("_"," ") +
-      " · Right sensor: " + (t.obstacle_pass_right_sensor_cm == null ? "--" : Number(t.obstacle_pass_right_sensor_cm).toFixed(0) + " cm") +
-      " · Pass clearance: " + Number(t.pass_clearance_travelled_m || 0).toFixed(1) + "/" + Number(t.pass_clearance_distance_m || 3).toFixed(1) + " m" +
+      " · Return distance: " + Number(t.return_distance_travelled_m || 0).toFixed(1) + "/" + Number(t.return_after_distance_m || 10).toFixed(1) + " m" +
       " · Obstacle model: " + String(t.obstacle_classifier?.obstacle_ahead?.label || "--") +
       " (" + (t.obstacle_model_probability == null ? "--" : (Number(t.obstacle_model_probability) * 100).toFixed(0) + "%") + ")" +
       " · Lane choice: " + String(t.obstacle_lane_prediction || "--") +
       " · Sensor angle: " + (t.active_sensor_angle == null ? "--" : String(t.active_sensor_angle) + "°") +
-      (t.obstacle_pass_sensor_timeout ? " · PASS CONFIRMATION TIMEOUT / SAFE STOP" : "") +
       (t.vision_error ? " · Vision: " + t.vision_error : "");
     if (data.mode !== currentMode) setModeButtons(data.mode);
     if (!$("settingsForm").dataset.dirty) fillSettings(data.settings);
