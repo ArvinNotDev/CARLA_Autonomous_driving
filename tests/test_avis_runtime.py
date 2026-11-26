@@ -21,6 +21,7 @@ from avis_runtime import (
     normalize_avis_manual_controls,
     select_avis_target_speed,
     select_avis_lane_change_speed,
+    _avis_roi_lock_direction,
     _create_avis_vision_processor,
 )
 
@@ -2021,6 +2022,88 @@ def test_avis_adaptive_roi_reconfiguration_resets_stale_expansion():
     assert adaptive.snapshot()["ll"]["expanded_left"] == 0
     adaptive.configure({"adaptive_roi_enabled": True})
     assert adaptive.snapshot()["ll"]["expanded_left"] == 0
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected_direction"),
+    [
+        ("STEER_LEFT", "left"),
+        ("ACQUIRE_LEFT_LINE", "left"),
+        ("STEER_RIGHT", "right"),
+        ("ACQUIRE_RIGHT_LINE", "right"),
+        ("WAIT_RETURN_DISTANCE", None),
+        ("LEFT_LANE", None),
+        ("RIGHT_LANE", None),
+        ("FAILED", None),
+    ],
+)
+def test_lane_change_phase_selects_only_its_destination_roi_for_adaptation(
+    phase, expected_direction
+):
+    assert _avis_roi_lock_direction(phase) == expected_direction
+
+
+def test_adaptive_roi_freezes_right_roi_during_left_change_and_restores_afterward():
+    settings = dict(DEFAULT_AVIS_SETTINGS)
+    adaptive = AvisAdaptiveROIController(settings)
+    width = 1000
+    ll_left, ll_right = settings["ll_left_roi"], settings["ll_right_roi"]
+    rl_left, rl_right = settings["rl_left_roi"], settings["rl_right_roi"]
+
+    adaptive.set_lane_change_direction("left")
+    for _ in range(7):
+        adaptive.observe(
+            (ll_left + (ll_right - ll_left) * 0.05) * width,
+            (rl_left + (rl_right - rl_left) * 0.98) * width,
+            width,
+        )
+
+    state = adaptive.snapshot()
+    active = adaptive.active_settings()
+    assert state["rl"]["locked_by_lane_change"] is True
+    assert state["rl"]["expanded"] is False
+    assert state["rl"]["expanded_left"] == 0.0
+    assert state["rl"]["expanded_right"] == 0.0
+    assert active["rl_left_roi"] == pytest.approx(rl_left)
+    assert active["rl_right_roi"] == pytest.approx(rl_right)
+    assert state["ll"]["expanded_left"] > 0.0
+
+    adaptive.set_lane_change_direction(None)
+    for _ in range(3):
+        adaptive.observe(
+            None,
+            (rl_left + (rl_right - rl_left) * 0.98) * width,
+            width,
+        )
+    assert adaptive.snapshot()["rl"]["locked_by_lane_change"] is False
+    assert adaptive.snapshot()["rl"]["expanded_right"] > 0.0
+
+
+def test_adaptive_roi_freezes_left_roi_during_right_change():
+    settings = dict(DEFAULT_AVIS_SETTINGS)
+    adaptive = AvisAdaptiveROIController(settings)
+    width = 1000
+    ll_left, ll_right = settings["ll_left_roi"], settings["ll_right_roi"]
+    rl_left, rl_right = settings["rl_left_roi"], settings["rl_right_roi"]
+
+    adaptive.set_lane_change_direction("right")
+    for _ in range(7):
+        adaptive.observe(
+            (ll_left + (ll_right - ll_left) * 0.02) * width,
+            (rl_left + (rl_right - rl_left) * 0.98) * width,
+            width,
+        )
+
+    state = adaptive.snapshot()
+    active = adaptive.active_settings()
+    assert state["ll"]["locked_by_lane_change"] is True
+    assert state["ll"]["expanded"] is False
+    assert state["ll"]["expanded_left"] == 0.0
+    assert state["ll"]["expanded_right"] == 0.0
+    assert active["ll_left_roi"] == pytest.approx(ll_left)
+    assert active["ll_right_roi"] == pytest.approx(ll_right)
+    assert state["rl"]["expanded_right"] > 0.0
+
 
 
 def test_avis_classical_vision_runs_hough_inside_temporarily_expanded_roi(monkeypatch):

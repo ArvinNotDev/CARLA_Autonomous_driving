@@ -29,6 +29,7 @@ class AvisAdaptiveROIController:
             side: {"left": 0.0, "right": 0.0} for side in self.SIDES
         }
         self._center_frames = {side: 0 for side in self.SIDES}
+        self._lane_change_direction: str | None = None
         self.configure(settings)
 
     @staticmethod
@@ -80,15 +81,46 @@ class AvisAdaptiveROIController:
                     else:
                         self._expansion[side]["left"] = 0.0
 
+    def _locked_side_locked(self) -> str | None:
+        if self._lane_change_direction == "left":
+            return "rl"
+        if self._lane_change_direction == "right":
+            return "ll"
+        return None
+
+    def set_lane_change_direction(self, direction: str | None) -> None:
+        """Freeze the ROI opposite the active lane-change direction.
+
+        During a left change the right-lane ROI must stay at its configured
+        coordinates; during a right change the left-lane ROI is kept fixed.
+        The frozen side is reset to the permanent profile rectangle when the
+        manoeuvre starts, and its history is discarded until it is unlocked.
+        """
+        normalized = None if direction is None else str(direction).strip().lower()
+        if normalized not in {None, "left", "right"}:
+            raise ValueError("Lane-change ROI direction must be 'left', 'right', or None.")
+
+        with self._lock:
+            if normalized == self._lane_change_direction:
+                return
+            self._lane_change_direction = normalized
+            locked_side = self._locked_side_locked()
+            if locked_side is not None:
+                self._history[locked_side].clear()
+                self._expansion[locked_side] = {"left": 0.0, "right": 0.0}
+                self._center_frames[locked_side] = 0
+
     def _active_settings_locked(self) -> dict[str, Any]:
         active = dict(self._settings)
         if not bool(active.get("adaptive_roi_enabled", True)):
             return active
 
+        locked_side = self._locked_side_locked()
         for side, (left_key, right_key) in self.SIDES.items():
             expansion = self._expansion[side]
-            expand_left = expansion["left"] if side == "ll" else 0.0
-            expand_right = expansion["right"] if side == "rl" else 0.0
+            is_locked = side == locked_side
+            expand_left = expansion["left"] if side == "ll" and not is_locked else 0.0
+            expand_right = expansion["right"] if side == "rl" and not is_locked else 0.0
             active[left_key] = max(
                 0.0,
                 self._number(active, left_key, 0.0) - expand_left,
@@ -109,6 +141,9 @@ class AvisAdaptiveROIController:
         x: int | float | None,
         frame_width: int,
     ) -> None:
+        if side == self._locked_side_locked():
+            return
+
         left_key, right_key = self.SIDES[side]
         left = self._number(self._settings, left_key, 0.0)
         right = self._number(self._settings, right_key, 1.0)
@@ -217,5 +252,6 @@ class AvisAdaptiveROIController:
                     "history_frames": len(self._history[side]),
                     "center_frames": self._center_frames[side],
                     "expanded": any(self._expansion[side].values()),
+                    "locked_by_lane_change": side == self._locked_side_locked(),
                 }
             return result

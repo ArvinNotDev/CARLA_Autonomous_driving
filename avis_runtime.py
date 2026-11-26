@@ -1835,6 +1835,16 @@ AVIS_SHARED_VISION_CONFIG_KEYS = {
 }
 
 
+def _avis_roi_lock_direction(lane_change_phase: Any) -> str | None:
+    """Return which destination ROI may adapt during the active lane change."""
+    phase = str(lane_change_phase or "").strip().upper()
+    if phase in {"STEER_LEFT", "ACQUIRE_LEFT_LINE"}:
+        return "left"
+    if phase in {"STEER_RIGHT", "ACQUIRE_RIGHT_LINE"}:
+        return "right"
+    return None
+
+
 def _apply_avis_roi_settings(conf: ModuleType, settings: dict[str, Any]) -> None:
     """Apply AVIS-only ROI and lane geometry values to this process's config."""
     for mapping in (AVIS_ROI_CONFIG_KEYS, AVIS_SHARED_VISION_CONFIG_KEYS):
@@ -2567,6 +2577,11 @@ def run_avis(args: argparse.Namespace) -> int:
                             last_vision_result.completed_at if result_fresh else None
                         ),
                         frame_width=int(frame_bgr.shape[1]),
+                    )
+                    # Freeze the ROI opposite the lane-change direction:
+                    # LL changes only while moving left, RL only while moving right.
+                    adaptive_roi_controller.set_lane_change_direction(
+                        _avis_roi_lock_direction(lane_change_state.get("phase"))
                     )
                     requested_sensor_angle = int(
                         lane_change_state.get(
