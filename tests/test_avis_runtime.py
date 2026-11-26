@@ -1172,3 +1172,16 @@ def test_avis_classical_vision_runs_hough_inside_temporarily_expanded_roi(monkey
     base_width = int(round((right - left) * frame_width))
     assert expected_width > base_width
     assert observed_shapes[0][1] == expected_width
+
+
+def test_avis_github_profile_paths_encode_spaces_once():
+    from avis_profiles import AvisGitHubProfileSync
+
+    sync = AvisGitHubProfileSync()
+    assert sync._filename("Night Track") == "Night Track.json"
+    assert sync._url("avis_profiles/Night Track.json").endswith(
+        "/avis_profiles/Night%20Track.json?ref=main"
+    )
+    assert sync._url("avis_profiles/پروفایل.json").endswith(
+        "/avis_profiles/%D9%BE%D8%B1%D9%88%D9%81%D8%A7%DB%8C%D9%84.json?ref=main"
+    )
