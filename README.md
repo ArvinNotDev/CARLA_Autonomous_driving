@@ -239,9 +239,13 @@ in centimetres ([left, middle/front, right]). AVIS obstacle avoidance uses the
 middle sensor to initiate a right-to-left lane change below the configured
 distance threshold (700 cm / 7 m by default). It applies a short steering pulse,
 then continues straight until the target-side lane marking is reacquired in the
-corresponding LL or RL ROI. Speed feedback is integrated to measure the distance
-travelled on the left lane before returning to the right. These settings and the
-line-reacquisition safety distance are configurable in the AVIS web dashboard.
+corresponding LL or RL ROI. Once the left-lane line is reacquired, the
+return distance is calculated from the last measured front-obstacle distance
+plus a configurable clearance (5 m by default), rather than a fixed travel
+distance. A newly detected obstacle in the left lane overrides that target and
+starts an immediate return to the right. The AVIS web dashboard exposes the
+sensor threshold, confirmation, steering-pulse, line-search, and clearance
+settings.
 
 AVIS accepts engine power and steering commands but does not expose a separate
 brake control in this API revision. When the speed controller requests braking,

@@ -796,7 +796,7 @@ def test_avis_model_still_uses_vehicle_class_when_checkpoint_has_it(monkeypatch)
             vehicles_class_id,
             frame_shape,
         ):
-            class_map = np.asarray(semantic_map).squeeze()
+            class_map = np.asarray(semantic_map).reshape(frame_shape)
             return (
                 (class_map == drivable_class_id).astype(np.uint8) * 255,
                 (class_map == lane_class_id).astype(np.uint8) * 255,
