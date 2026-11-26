@@ -411,6 +411,185 @@ def test_avis_classical_hough_receives_only_cropped_left_and_right_rois(monkeypa
     assert np.count_nonzero(debug["lane_mask"][~allowed]) == 0
 
 
+
+@pytest.mark.parametrize(
+    ("roi_side", "expected_x"),
+    [("ll", 30), ("rl", 6)],
+)
+def test_avis_lane_line_selector_groups_fragments_and_picks_inner_candidate(
+    monkeypatch, roi_side, expected_x
+):
+    import avis_lane_line_selection as selector
+
+    def fake_hough(binary, **_kwargs):
+        height = binary.shape[0]
+        return np.array(
+            [
+                [[6, 0, 6, 9]],
+                [[6, 10, 6, height - 1]],
+                [[30, 0, 30, height - 1]],
+            ],
+            dtype=np.int32,
+        )
+
+    monkeypatch.setattr(selector.cv2, "HoughLinesP", fake_hough)
+    mask = np.full((40, 40), 255, dtype=np.uint8)
+    selected, segments, candidates, selected_x = selector.select_lane_line_mask(
+        mask,
+        roi_side,
+        {
+            "hough_threshold": 2,
+            "hough_min_line_length_ratio": 0.05,
+            "hough_max_line_gap": 2,
+            "min_lane_angle_deg": 0.0,
+            "max_lane_angle_deg": 80.0,
+        },
+    )
+
+    assert segments == 3
+    assert candidates == 2
+    assert selected_x == pytest.approx(expected_x)
+    _, xs = np.where(selected > 0)
+    assert len(xs) > 0
+    assert abs(float(np.median(xs)) - expected_x) <= 1.0
+
+
+def test_avis_classical_vision_selects_rightmost_ll_and_leftmost_rl_lines(monkeypatch):
+    import cv2
+
+    settings = {
+        **DEFAULT_AVIS_SETTINGS,
+        "ll_top_roi": 0.20,
+        "ll_bottom_roi": 0.80,
+        "ll_left_roi": 0.10,
+        "ll_right_roi": 0.30,
+        "rl_top_roi": 0.20,
+        "rl_bottom_roi": 0.80,
+        "rl_left_roi": 0.70,
+        "rl_right_roi": 0.90,
+        "hough_threshold": 2,
+        "hough_min_line_length_ratio": 0.05,
+        "hough_max_line_gap": 2,
+    }
+    processor = AvisClassicalVisionProcessor(settings)
+
+    def fake_threshold(roi, _settings):
+        return np.zeros(roi.shape[:2], dtype=np.uint8)
+
+    def fake_hough(binary, **_kwargs):
+        height = binary.shape[0]
+        return np.array(
+            [
+                [[6, 0, 6, height - 1]],
+                [[30, 0, 30, height - 1]],
+            ],
+            dtype=np.int32,
+        )
+
+    monkeypatch.setattr(
+        AvisClassicalVisionProcessor,
+        "_threshold_roi",
+        staticmethod(fake_threshold),
+    )
+    monkeypatch.setattr(cv2, "HoughLinesP", fake_hough)
+    result = processor.detect(None, np.zeros((100, 200, 3), dtype=np.uint8))
+    debug = result["debug"]
+
+    assert debug["left_x"] == 20 + 30
+    assert debug["right_x"] == 140 + 6
+    assert debug["left_hough_candidates"] == 2
+    assert debug["right_hough_candidates"] == 2
+    left_roi_mask = debug["lane_mask"][20:80, 20:60]
+    right_roi_mask = debug["lane_mask"][20:80, 140:180]
+    assert np.median(np.where(left_roi_mask > 0)[1]) == pytest.approx(30)
+    assert np.median(np.where(right_roi_mask > 0)[1]) == pytest.approx(6)
+
+
+def test_avis_model_backend_uses_the_same_inner_line_selection(monkeypatch):
+    import config_city
+    import vision.city_vision_processing as shared_vision
+    import avis_lane_line_selection as selector
+
+    monkeypatch.setattr(config_city, "LL_TOP_ROI", 0.20, raising=False)
+    monkeypatch.setattr(config_city, "LL_BOTTOM_ROI", 0.80, raising=False)
+    monkeypatch.setattr(config_city, "LL_LEFT_ROI", 0.10, raising=False)
+    monkeypatch.setattr(config_city, "LL_RIGHT_ROI", 0.30, raising=False)
+    monkeypatch.setattr(config_city, "RL_TOP_ROI", 0.20, raising=False)
+    monkeypatch.setattr(config_city, "RL_BOTTOM_ROI", 0.80, raising=False)
+    monkeypatch.setattr(config_city, "RL_LEFT_ROI", 0.70, raising=False)
+    monkeypatch.setattr(config_city, "RL_RIGHT_ROI", 0.90, raising=False)
+
+    class FakeVisionProcessor:
+        def __init__(self, mode):
+            self.mode = mode
+            self.min_side_pixels = 1
+            self.vehicles_class_id = None
+
+        def _boundary_from_roi(self, full_mask, top, bottom, left, right):
+            roi = full_mask[top:bottom, left:right]
+            _, xs = np.where(roi > 0)
+            return left + int(np.median(xs)) if len(xs) else None
+
+        def detect(self, semantic_frame, rgb_frame=None):
+            frame = rgb_frame if rgb_frame is not None else semantic_frame
+            height, width = frame.shape[:2]
+            mask = np.zeros((height, width), dtype=np.uint8)
+            ll = (
+                int(config_city.LL_TOP_ROI * height),
+                int(config_city.LL_BOTTOM_ROI * height),
+                int(config_city.LL_LEFT_ROI * width),
+                int(config_city.LL_RIGHT_ROI * width),
+            )
+            rl = (
+                int(config_city.RL_TOP_ROI * height),
+                int(config_city.RL_BOTTOM_ROI * height),
+                int(config_city.RL_LEFT_ROI * width),
+                int(config_city.RL_RIGHT_ROI * width),
+            )
+            for top, bottom, left, right in (ll, rl):
+                mask[top:bottom, left + 6] = 255
+                mask[top:bottom, left + 30] = 255
+            left_x = self._boundary_from_roi(mask, *ll)
+            right_x = self._boundary_from_roi(mask, *rl)
+            return {
+                "error": 0.0,
+                "lane_type": "both",
+                "debug": {
+                    "lane_mask": mask,
+                    "left_x": left_x,
+                    "right_x": right_x,
+                },
+            }
+
+    settings = {
+        **DEFAULT_AVIS_SETTINGS,
+        "hough_threshold": 2,
+        "hough_min_line_length_ratio": 0.05,
+        "hough_max_line_gap": 2,
+    }
+
+    monkeypatch.setattr(shared_vision, "VisionProcessor", FakeVisionProcessor)
+    monkeypatch.setattr(
+        selector.cv2,
+        "HoughLinesP",
+        lambda binary, **_kwargs: np.array(
+            [
+                [[6, 0, 6, binary.shape[0] - 1]],
+                [[30, 0, 30, binary.shape[0] - 1]],
+            ],
+            dtype=np.int32,
+        ),
+    )
+    processor = _create_avis_vision_processor("ultralytics", settings)
+    result = processor.detect(None, np.zeros((100, 200, 3), dtype=np.uint8))
+    debug = result["debug"]
+
+    assert debug["left_x"] == 20 + 30
+    assert debug["right_x"] == 140 + 6
+    assert debug["left_hough_candidates"] == 2
+    assert debug["right_hough_candidates"] == 2
+
+
 def _obstacle_lane_change_test_settings(**overrides):
     settings = dict(DEFAULT_AVIS_SETTINGS)
     settings.update({

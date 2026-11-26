@@ -1134,9 +1134,8 @@ def _create_avis_vision_processor(
         """AVIS model adapter; vehicle segmentation is optional and never drawn."""
 
         def detect(self, semantic_frame, rgb_frame=None):
-            # The shared processor reads ROI coordinates from config_city.
-            # Override them only inside this AVIS-specific adapter and only
-            # for the current inference; no shared CARLA code is modified.
+            # Apply adaptive AVIS ROI coordinates before resolving the exact
+            # pixel rectangles used by the shared VisionProcessor.
             if self.adaptive_roi_controller is not None:
                 import config_city as avis_conf
 
@@ -1144,8 +1143,43 @@ def _create_avis_vision_processor(
                     avis_conf,
                     self.adaptive_roi_controller.active_settings(),
                 )
-            result = super().detect(semantic_frame, rgb_frame=rgb_frame)
+
             frame = rgb_frame if rgb_frame is not None else semantic_frame
+            self._avis_roi_bounds = {}
+            self._avis_line_selection_stats = {}
+            if frame is not None and getattr(frame, "ndim", 0) >= 2:
+                import config_city as avis_conf
+
+                height, width = frame.shape[:2]
+                self._avis_roi_bounds = {
+                    "ll": (
+                        int(float(avis_conf.LL_TOP_ROI) * height),
+                        int(float(avis_conf.LL_BOTTOM_ROI) * height),
+                        int(float(avis_conf.LL_LEFT_ROI) * width),
+                        int(float(avis_conf.LL_RIGHT_ROI) * width),
+                    ),
+                    "rl": (
+                        int(float(avis_conf.RL_TOP_ROI) * height),
+                        int(float(avis_conf.RL_BOTTOM_ROI) * height),
+                        int(float(avis_conf.RL_LEFT_ROI) * width),
+                        int(float(avis_conf.RL_RIGHT_ROI) * width),
+                    ),
+                }
+
+            result = super().detect(semantic_frame, rgb_frame=rgb_frame)
+            if isinstance(result, dict):
+                debug = result.get("debug")
+                if isinstance(debug, dict):
+                    for side, prefix in (("ll", "left"), ("rl", "right")):
+                        stats = self._avis_line_selection_stats.get(side, {})
+                        debug[f"{prefix}_hough_segments"] = int(
+                            stats.get("segments", 0)
+                        )
+                        debug[f"{prefix}_hough_candidates"] = int(
+                            stats.get("candidates", 0)
+                        )
+                        debug[f"{prefix}_selected_line_x"] = stats.get("selected_x")
+
             if (
                 self.adaptive_roi_controller is not None
                 and frame is not None
@@ -1160,6 +1194,46 @@ def _create_avis_vision_processor(
                     )
                     debug["adaptive_roi"] = self.adaptive_roi_controller.snapshot()
             return result
+
+        def _boundary_from_roi(
+            self,
+            full_mask,
+            top,
+            bottom,
+            left,
+            right,
+        ):
+            from avis_lane_line_selection import select_lane_line_mask
+
+            bounds = (int(top), int(bottom), int(left), int(right))
+            side = next(
+                (
+                    name
+                    for name, expected in self._avis_roi_bounds.items()
+                    if expected == bounds
+                ),
+                None,
+            )
+            if side is not None and bottom > top and right > left:
+                selected_mask, segments, candidates, selected_x = (
+                    select_lane_line_mask(
+                        full_mask[top:bottom, left:right],
+                        side,
+                        settings,
+                    )
+                )
+                self._avis_line_selection_stats[side] = {
+                    "segments": segments,
+                    "candidates": candidates,
+                    "selected_x": selected_x,
+                }
+                # Replace the ROI before shared median-x and angle extraction.
+                if candidates > 0:
+                    full_mask[top:bottom, left:right] = selected_mask
+
+            return super()._boundary_from_roi(
+                full_mask, top, bottom, left, right
+            )
 
         @staticmethod
         def _class_ids_from_names(
