@@ -830,7 +830,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
         <div class="fields">
           <div class="field full"><label for="obstacle_lane_change_enabled">Automatic obstacle lane change</label><select id="obstacle_lane_change_enabled" data-setting="obstacle_lane_change_enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
           <div class="field"><label for="obstacle_model_confidence_threshold">Obstacle "yes" confidence</label><input id="obstacle_model_confidence_threshold" data-setting="obstacle_model_confidence_threshold" type="number" min=".5" max=".99" step=".01"></div>
-          <div class="field"><label for="obstacle_lane_confidence_threshold">Left-lane confidence</label><input id="obstacle_lane_confidence_threshold" data-setting="obstacle_lane_confidence_threshold" type="number" min=".5" max=".99" step=".01"></div>
+          <div class="field"><label for="obstacle_lane_confidence_threshold">Lane prediction confidence</label><input id="obstacle_lane_confidence_threshold" data-setting="obstacle_lane_confidence_threshold" type="number" min=".5" max=".99" step=".01"></div>
           <div class="field"><label for="obstacle_model_confirm_frames">Model trigger confirmation frames</label><input id="obstacle_model_confirm_frames" data-setting="obstacle_model_confirm_frames" type="number" min="1" max="30" step="1"></div>
           <div class="field"><label for="obstacle_model_rearm_frames">Clear frames before next trigger</label><input id="obstacle_model_rearm_frames" data-setting="obstacle_model_rearm_frames" type="number" min="1" max="30" step="1"></div>
           <div class="field"><label for="obstacle_lane_change_steer_distance_m">Initial steering distance (m)</label><input id="obstacle_lane_change_steer_distance_m" data-setting="obstacle_lane_change_steer_distance_m" type="number" min=".1" max="100" step="any"></div>
@@ -839,7 +839,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
           <div class="field"><label for="obstacle_lane_change_right_steer">First right steering attempt</label><input id="obstacle_lane_change_right_steer" data-setting="obstacle_lane_change_right_steer" type="number" min=".001" max="1" step="any"></div>
           <div class="field"><label for="obstacle_lane_change_retry_steer">Gentle retry steering</label><input id="obstacle_lane_change_retry_steer" data-setting="obstacle_lane_change_retry_steer" type="number" min=".001" max="1" step="any"></div>
           <div class="field"><label for="obstacle_lane_change_retry_pulse_distance_m">Gentle retry distance (m)</label><input id="obstacle_lane_change_retry_pulse_distance_m" data-setting="obstacle_lane_change_retry_pulse_distance_m" type="number" min=".05" max="10" step=".05"></div>
-          <div class="field full"><label for="obstacle_lane_line_search_max_distance_m">Maximum lane-line reacquisition distance (m)</label><input id="obstacle_lane_line_search_max_distance_m" data-setting="obstacle_lane_line_search_max_distance_m" type="number" min=".1" max="1000" step="any"></div>
+          <div class="field full"><label for="obstacle_lane_line_search_max_distance_m">Maximum distance before lane-change safe stop (m)</label><input id="obstacle_lane_line_search_max_distance_m" data-setting="obstacle_lane_line_search_max_distance_m" type="number" min=".1" max="1000" step="any"></div>
         </div>
         <div class="section-label">Right-side pass confirmation sensor</div>
         <div class="fields">
