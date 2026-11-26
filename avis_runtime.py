@@ -50,9 +50,10 @@ class AvisFpsMonitor:
 PROJECT_ROOT = Path(__file__).resolve().parent
 AVIS_PROFILE_NAME = "AVIS_StableV2"
 
-# Only settings consumed by the AVIS lane-following runtime are copied from
-# StableV2. CARLA sensors, map navigation, junction, and LiDAR settings are
-# intentionally excluded.
+# AVIS copies its StableV2-compatible camera and lane-following settings.
+# Legacy drivable-area threshold/debug keys remain in the profile contract for
+# compatibility, but the AVIS model adapter does not extract or use that mask.
+# CARLA sensors, map navigation, junction, and LiDAR settings are excluded.
 AVIS_PROFILE_FIELDS = (
     "AUTO_MODE_DEFAULT",
     "KP",
@@ -64,6 +65,7 @@ AVIS_PROFILE_FIELDS = (
     "VISION_INFERENCE_INTERVAL_SECONDS",
     "LANE_PROB_THRESHOLD",
     "LANE_CENTER_SMOOTH_ALPHA",
+    "DRIVABLE_PROB_THRESHOLD",
     "RL_TOP_ROI",
     "RL_BOTTOM_ROI",
     "RL_LEFT_ROI",
@@ -75,6 +77,7 @@ AVIS_PROFILE_FIELDS = (
     "VISION_DEBUG",
     "DEBUG_SHOW_ROIS",
     "DEBUG_SHOW_LANE_MASK",
+    "DEBUG_SHOW_DRIVABLE_AREA",
     "DEBUG_SHOW_TEXT",
     "DEBUG_PANEL_HZ",
     "MODEL_PATH",
@@ -1309,7 +1312,11 @@ def _create_avis_vision_processor(
             if hasattr(semantic_data, "numpy"):
                 semantic_data = semantic_data.numpy()
 
-            class_map = np.squeeze(np.asarray(semantic_data))
+            class_map = np.asarray(semantic_data)
+            # Remove only leading batch dimensions. A full squeeze would turn
+            # valid one-row or one-column masks into one-dimensional arrays.
+            while class_map.ndim > 2 and class_map.shape[0] == 1:
+                class_map = class_map[0]
             if class_map.ndim != 2:
                 raise RuntimeError(
                     "AVIS semantic output must be a two-dimensional class-ID map; "
@@ -2011,7 +2018,6 @@ def run_avis(args: argparse.Namespace) -> int:
 
                 now = time.perf_counter()
                 if now - last_dashboard_publish >= 0.10:
-                    black_mask = np.zeros(frame_bgr.shape[:2], dtype=np.uint8)
                     dashboard_state.publish_images(
                         {
                             "camera": _encode_avis_preview(cv2, frame_bgr),

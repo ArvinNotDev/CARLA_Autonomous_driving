@@ -1509,7 +1509,7 @@ def test_avis_dashboard_roi_editor_is_available_for_both_vision_backends(tmp_pat
     assert 'data-panel="roi"' in html
     assert 'id="drivableView"' not in html
     assert 'src="/stream/drivable-mask"' not in html
-    assert "drivable-area and vehicle masks are not calculated or displayed" in html
+    assert "Drivable-area and vehicle masks are not calculated or displayed" in html
     assert client.get("/stream/drivable-mask").status_code == 404
 
 
