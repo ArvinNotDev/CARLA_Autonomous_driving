@@ -58,6 +58,17 @@ DEFAULT_AVIS_SETTINGS: dict[str, Any] = {
     "lane_offset_ratio": 0.16,
     "center_smoothing": 0.30,
     "obstacle_lane_change_enabled": True,
+    "obstacle_model_confidence_threshold": 0.65,
+    "obstacle_lane_confidence_threshold": 0.65,
+    "obstacle_model_confirm_frames": 3,
+    "obstacle_model_rearm_frames": 3,
+    "obstacle_pass_sensor_angle": 70,
+    "obstacle_pass_sensor_presence_threshold_cm": 250,
+    "obstacle_pass_sensor_clear_threshold_cm": 550,
+    "obstacle_pass_sensor_presence_frames": 2,
+    "obstacle_pass_sensor_clear_frames": 3,
+    "obstacle_return_delay_seconds": 2.0,
+    "obstacle_pass_sensor_timeout_seconds": 30.0,
     "obstacle_front_threshold_cm": 950,
     "obstacle_trigger_confirm_frames": 3,
     "obstacle_sensor_clear_threshold_cm": 900,
@@ -125,6 +136,17 @@ _NUMERIC_LIMITS: dict[str, tuple[float, float, bool]] = {
     "obstacle_lane_line_confirm_frames": (1.0, 60.0, True),
     "obstacle_lane_line_search_max_distance_m": (0.1, 1000.0, False),
     "obstacle_clearance_after_pass_m": (0.0, 1000.0, False),
+    "obstacle_model_confidence_threshold": (0.50, 0.99, False),
+    "obstacle_lane_confidence_threshold": (0.50, 0.99, False),
+    "obstacle_model_confirm_frames": (1.0, 30.0, True),
+    "obstacle_model_rearm_frames": (1.0, 30.0, True),
+    "obstacle_pass_sensor_angle": (10.0, 90.0, True),
+    "obstacle_pass_sensor_presence_threshold_cm": (20.0, 1499.0, True),
+    "obstacle_pass_sensor_clear_threshold_cm": (21.0, 1500.0, True),
+    "obstacle_pass_sensor_presence_frames": (1.0, 30.0, True),
+    "obstacle_pass_sensor_clear_frames": (1.0, 30.0, True),
+    "obstacle_return_delay_seconds": (0.0, 60.0, False),
+    "obstacle_pass_sensor_timeout_seconds": (1.0, 120.0, False),
     "adaptive_roi_max_expansion_ratio": (0.0, 0.30, False),
     "adaptive_roi_edge_trigger_ratio": (0.05, 0.45, False),
     "adaptive_roi_expand_step_ratio": (0.001, 0.05, False),
@@ -182,6 +204,8 @@ def validate_avis_settings(
             raise ValueError(f"{side.upper()} ROI right edge must be after its left edge.")
     if result["max_lane_angle_deg"] <= result["min_lane_angle_deg"]:
         raise ValueError("Maximum lane angle must exceed minimum lane angle.")
+    if result["obstacle_pass_sensor_clear_threshold_cm"] <= result["obstacle_pass_sensor_presence_threshold_cm"]:
+        raise ValueError("Right-side sensor clear threshold must be greater than its obstacle-presence threshold.")
     return result
 
 
@@ -720,18 +744,27 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
         <div class="section-label">Obstacle avoidance / automatic lane change</div>
         <div class="fields">
           <div class="field full"><label for="obstacle_lane_change_enabled">Automatic obstacle lane change</label><select id="obstacle_lane_change_enabled" data-setting="obstacle_lane_change_enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
-          <div class="field"><label for="obstacle_front_threshold_cm">Obstacle trigger distance (cm)</label><input id="obstacle_front_threshold_cm" data-setting="obstacle_front_threshold_cm" type="number" min="50" max="1499" step="1"></div>
-          <div class="field"><label for="obstacle_trigger_confirm_frames">Obstacle confirmation frames</label><input id="obstacle_trigger_confirm_frames" data-setting="obstacle_trigger_confirm_frames" type="number" min="1" max="30" step="1"></div>
-          <div class="field"><label for="obstacle_sensor_clear_threshold_cm">Sensor clear threshold (cm)</label><input id="obstacle_sensor_clear_threshold_cm" data-setting="obstacle_sensor_clear_threshold_cm" type="number" min="51" max="1500" step="1"></div>
-          <div class="field"><label for="obstacle_sensor_clear_confirm_frames">Clear confirmation frames</label><input id="obstacle_sensor_clear_confirm_frames" data-setting="obstacle_sensor_clear_confirm_frames" type="number" min="1" max="30" step="1"></div>
+          <div class="field"><label for="obstacle_model_confidence_threshold">Obstacle "yes" confidence</label><input id="obstacle_model_confidence_threshold" data-setting="obstacle_model_confidence_threshold" type="number" min=".5" max=".99" step=".01"></div>
+          <div class="field"><label for="obstacle_lane_confidence_threshold">Left-lane confidence</label><input id="obstacle_lane_confidence_threshold" data-setting="obstacle_lane_confidence_threshold" type="number" min=".5" max=".99" step=".01"></div>
+          <div class="field"><label for="obstacle_model_confirm_frames">Model trigger confirmation frames</label><input id="obstacle_model_confirm_frames" data-setting="obstacle_model_confirm_frames" type="number" min="1" max="30" step="1"></div>
+          <div class="field"><label for="obstacle_model_rearm_frames">Clear frames before next trigger</label><input id="obstacle_model_rearm_frames" data-setting="obstacle_model_rearm_frames" type="number" min="1" max="30" step="1"></div>
           <div class="field"><label for="obstacle_lane_change_steer_distance_m">Initial steering distance (m)</label><input id="obstacle_lane_change_steer_distance_m" data-setting="obstacle_lane_change_steer_distance_m" type="number" min=".1" max="100" step="any"></div>
           <div class="field"><label for="obstacle_lane_line_confirm_frames">Target ROI line confirm frames</label><input id="obstacle_lane_line_confirm_frames" data-setting="obstacle_lane_line_confirm_frames" type="number" min="1" max="20" step="1"></div>
           <div class="field"><label for="obstacle_lane_change_left_steer">Left steering pulse</label><input id="obstacle_lane_change_left_steer" data-setting="obstacle_lane_change_left_steer" type="number" min=".001" max="1" step="any"></div>
           <div class="field"><label for="obstacle_lane_change_right_steer">Right steering pulse</label><input id="obstacle_lane_change_right_steer" data-setting="obstacle_lane_change_right_steer" type="number" min=".001" max="1" step="any"></div>
-          <div class="field"><label for="obstacle_lane_line_search_max_distance_m">Maximum straight line-search distance (m)</label><input id="obstacle_lane_line_search_max_distance_m" data-setting="obstacle_lane_line_search_max_distance_m" type="number" min=".1" max="1000" step="any"></div>
-          <div class="field"><label for="obstacle_clearance_after_pass_m">Extra distance after obstacle (m)</label><input id="obstacle_clearance_after_pass_m" data-setting="obstacle_clearance_after_pass_m" type="number" min="0" max="1000" step="any"></div>
+          <div class="field full"><label for="obstacle_lane_line_search_max_distance_m">Maximum lane-line reacquisition distance (m)</label><input id="obstacle_lane_line_search_max_distance_m" data-setting="obstacle_lane_line_search_max_distance_m" type="number" min=".1" max="1000" step="any"></div>
         </div>
-        <div class="hint">AVIS monitors all three distance sensors (left, front and right). If any one of them reaches the configured obstacle trigger distance for the confirmation frames, the lane-change manoeuvre begins. The normal speed controller is not reduced based on a 1500 cm approach threshold. If a target ROI line is not reacquired within the configured search distance, the car keeps moving forward slowly while continuing to search instead of stopping because of lane loss.</div>
+        <div class="section-label">Right-side pass confirmation sensor</div>
+        <div class="fields">
+          <div class="field"><label for="obstacle_pass_sensor_angle">Sensor angle while alongside obstacle (°)</label><input id="obstacle_pass_sensor_angle" data-setting="obstacle_pass_sensor_angle" type="number" min="10" max="90" step="1"></div>
+          <div class="field"><label for="obstacle_pass_sensor_presence_threshold_cm">Right sensor sees obstacle at (cm)</label><input id="obstacle_pass_sensor_presence_threshold_cm" data-setting="obstacle_pass_sensor_presence_threshold_cm" type="number" min="20" max="1499" step="1"></div>
+          <div class="field"><label for="obstacle_pass_sensor_clear_threshold_cm">Right sensor clear at (cm)</label><input id="obstacle_pass_sensor_clear_threshold_cm" data-setting="obstacle_pass_sensor_clear_threshold_cm" type="number" min="21" max="1500" step="1"></div>
+          <div class="field"><label for="obstacle_pass_sensor_presence_frames">Obstacle-seen confirmation frames</label><input id="obstacle_pass_sensor_presence_frames" data-setting="obstacle_pass_sensor_presence_frames" type="number" min="1" max="30" step="1"></div>
+          <div class="field"><label for="obstacle_pass_sensor_clear_frames">Obstacle-clear confirmation frames</label><input id="obstacle_pass_sensor_clear_frames" data-setting="obstacle_pass_sensor_clear_frames" type="number" min="1" max="30" step="1"></div>
+          <div class="field"><label for="obstacle_return_delay_seconds">Delay after obstacle clears (seconds)</label><input id="obstacle_return_delay_seconds" data-setting="obstacle_return_delay_seconds" type="number" min="0" max="60" step=".1"></div>
+          <div class="field full"><label for="obstacle_pass_sensor_timeout_seconds">Maximum wait for pass confirmation (seconds)</label><input id="obstacle_pass_sensor_timeout_seconds" data-setting="obstacle_pass_sensor_timeout_seconds" type="number" min="1" max="120" step=".5"></div>
+        </div>
+        <div class="hint">The RoadForge ONNX model starts avoidance only after it repeatedly predicts obstacle_ahead=yes and lane=left above the configured confidence thresholds. AVIS first changes from the right lane to the left and confirms the lane line. It then switches the sensor array to the configured pass angle and watches only the right-side sensor: the sensor must first see the obstacle, then report a clear distance for the confirmation frames. Only then does the return-delay timer start. After the delay, AVIS steers back to the right lane. If the right sensor never confirms the pass before the timeout, AVIS enters a safe stop instead of guessing that the obstacle is gone.</div>
         <div class="section-label">Adaptive lane ROI recovery</div>
         <div class="fields">
           <div class="field full"><label for="adaptive_roi_enabled">Adaptive ROI expansion</label><select id="adaptive_roi_enabled" data-setting="adaptive_roi_enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
