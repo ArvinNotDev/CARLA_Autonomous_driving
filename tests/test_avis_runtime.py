@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +14,7 @@ from avis_runtime import (
     AvisSteeringController,
     AvisObstacleLaneChangeController,
     AvisModelObstacleLaneChangeController,
+    AvisObstacleLaneClassifier,
     apply_avis_profile,
     load_avis_profile,
     normalize_avis_controls,
@@ -2096,3 +2098,100 @@ def test_pass_sensor_timeout_fails_safe_without_blind_return():
     assert state["phase"] == controller.FAILED
     assert state["safe_stop"] is True
     assert state["pass_sensor_timeout"] is True
+
+
+
+def test_avis_onnx_classifier_uses_roadforge_task_metadata_and_training_preprocess(
+    tmp_path, monkeypatch
+):
+    tasks = [
+        {
+            "key": "obstacle_ahead",
+            "name": "Obstacle ahead",
+            "classes": ["no", "yes"],
+            "output_name": "logits_obstacle_ahead",
+            "output_index": 0,
+        },
+        {
+            "key": "lane",
+            "name": "Lane",
+            "classes": ["right", "left"],
+            "output_name": "logits_lane",
+            "output_index": 1,
+        },
+    ]
+    metadata = {
+        "task": "classification",
+        "roadforge_format": "avis_multitask_classification_v1",
+        "backbone": "resnet18",
+        "input_size": "224",
+        "normalization_mean": json.dumps([0.485, 0.456, 0.406]),
+        "normalization_std": json.dumps([0.229, 0.224, 0.225]),
+        "tasks": json.dumps(tasks),
+    }
+
+    class FakeSession:
+        def __init__(self):
+            self.feed = None
+
+        def get_modelmeta(self):
+            return SimpleNamespace(custom_metadata_map=metadata)
+
+        def get_inputs(self):
+            return [
+                SimpleNamespace(
+                    name="images",
+                    type="tensor(float)",
+                    shape=["batch", 3, 224, 224],
+                )
+            ]
+
+        def get_outputs(self):
+            return [
+                SimpleNamespace(name="logits_obstacle_ahead"),
+                SimpleNamespace(name="logits_lane"),
+            ]
+
+        def get_providers(self):
+            return ["CPUExecutionProvider"]
+
+        def run(self, output_names, feeds):
+            assert output_names == ["logits_obstacle_ahead", "logits_lane"]
+            self.feed = feeds["images"]
+            return [
+                np.asarray([[0.0, 2.0]], dtype=np.float32),
+                np.asarray([[2.0, 0.0]], dtype=np.float32),
+            ]
+
+    fake_session = FakeSession()
+    fake_ort = SimpleNamespace(
+        get_available_providers=lambda: ["CPUExecutionProvider"],
+        InferenceSession=lambda _path, providers: fake_session,
+    )
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake_ort)
+    checkpoint = tmp_path / "avis_classifier.onnx"
+    checkpoint.write_bytes(b"mock ONNX placeholder")
+
+    classifier = AvisObstacleLaneClassifier(checkpoint)
+    frame_bgr = np.full((32, 48, 3), 128, dtype=np.uint8)
+    prediction = classifier.predict(frame_bgr)
+
+    assert prediction["valid"] is True
+    assert prediction["backbone"] == "resnet18"
+    assert prediction["obstacle_ahead"]["label"] == "yes"
+    assert prediction["lane"]["label"] == "right"
+    assert prediction["obstacle_ahead"]["probabilities"]["yes"] > 0.85
+    assert prediction["lane"]["probabilities"]["right"] > 0.85
+
+    assert fake_session.feed.shape == (1, 3, 224, 224)
+    assert fake_session.feed.dtype == np.float32
+    mean = np.asarray([0.485, 0.456, 0.406], dtype=np.float32)
+    std = np.asarray([0.229, 0.224, 0.225], dtype=np.float32)
+    expected = (128.0 / 255.0 - mean) / std
+    for channel in range(3):
+        np.testing.assert_allclose(
+            fake_session.feed[0, channel],
+            expected[channel],
+            rtol=0.0,
+            atol=1e-6,
+        )
