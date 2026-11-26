@@ -1398,6 +1398,7 @@ def test_avis_dashboard_lane_change_settings_are_persistent_and_validated(tmp_pa
     restored = AvisDashboardState(settings_path=tmp_path / "avis_settings.json")
     restored_settings, _ = restored.settings_snapshot()
     assert restored_settings["obstacle_clearance_after_pass_m"] == pytest.approx(6.5)
+    assert restored_settings["obstacle_lane_change_enabled"] is True
 
     # The front threshold may exceed the configured clear threshold; runtime
     # applies hysteresis automatically instead of rejecting the form.
@@ -1473,7 +1474,8 @@ def test_avis_import_profile_migrates_removed_obstacle_slowdown_setting(tmp_path
 def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     state = AvisDashboardState(settings_path=tmp_path / "avis_settings.json")
     html = create_avis_dashboard_app(state).test_client().get("/").get_data(as_text=True)
-    assert 'id="obstacle_lane_change_enabled"' in html
+    assert 'id="obstacle_lane_change_enabled" type="checkbox" data-setting="obstacle_lane_change_enabled"' in html
+    assert "model predictions remain visible" in html
     assert 'id="drivable_recovery_enabled" data-setting="drivable_recovery_enabled"' in html
     assert "five-inference median" in html
     assert "1.5-second persistence gate" in html
@@ -2544,6 +2546,50 @@ def test_obstacle_yes_starts_left_change_without_requiring_lane_head_to_say_left
     assert state["phase"] == controller.STEER_LEFT
     assert state["obstacle_trigger_sensor"] == "MODEL"
     assert state["steering_override"] == pytest.approx(-settings["obstacle_lane_change_left_steer"])
+
+
+def test_disabling_obstacle_avoidance_aborts_and_blocks_model_lane_changes():
+    controller = AvisModelObstacleLaneChangeController()
+    enabled = dict(DEFAULT_AVIS_SETTINGS)
+    enabled["obstacle_model_confirm_frames"] = 1
+    prediction = _model_obstacle_prediction(obstacle_yes=0.96, lane_left=0.10)
+
+    active = controller.update(
+        sensors=[1500, 1500, 1500],
+        speed_kmh=8.0, dt=0.1,
+        left_x=100, right_x=220, settings=enabled,
+        classifier_output=prediction,
+        observation_id=1, frame_width=320, now=10.0,
+    )
+    assert active["phase"] == controller.STEER_LEFT
+    assert active["steering_override"] is not None
+
+    disabled = dict(enabled)
+    disabled["obstacle_lane_change_enabled"] = False
+    cancelled = controller.update(
+        sensors=[1500, 1500, 1500],
+        speed_kmh=8.0, dt=0.1,
+        left_x=100, right_x=220, settings=disabled,
+        classifier_output=prediction,
+        observation_id=2, frame_width=320, now=10.1,
+    )
+    assert cancelled["phase"] == controller.RIGHT_LANE
+    assert cancelled["steering_override"] is None
+    assert cancelled["active"] is False
+    assert cancelled["safe_stop"] is False
+    assert cancelled["obstacle_latched"] is False
+    assert cancelled["obstacle_model_probability"] == pytest.approx(0.96)
+    assert cancelled["obstacle_lane_prediction"] == "right"
+
+    still_disabled = controller.update(
+        sensors=[1500, 1500, 1500],
+        speed_kmh=8.0, dt=0.1,
+        left_x=100, right_x=220, settings=disabled,
+        classifier_output=prediction,
+        observation_id=3, frame_width=320, now=10.2,
+    )
+    assert still_disabled["phase"] == controller.RIGHT_LANE
+    assert still_disabled["steering_override"] is None
 
 
 def test_model_lane_output_drives_gentle_retries_in_both_directions():

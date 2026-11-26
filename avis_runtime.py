@@ -666,6 +666,10 @@ class AvisObstacleLaneChangeController:
         self.steering_pulse_index = 0
         self.line_search_distance_m = 0.0
 
+    def reset(self) -> None:
+        """Reset every obstacle-avoidance state, including subclass-specific state."""
+        self.__init__()
+
     @staticmethod
     def front_sensor_distance_cm(sensors: Any) -> float | None:
         """AVIS sensor order is left, middle/front, right; all values are cm."""
@@ -1592,6 +1596,60 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
         now: float | None = None,
     ) -> dict[str, Any]:
         detection_enabled = bool(settings.get("obstacle_lane_change_enabled", True))
+        if not detection_enabled:
+            # Turning avoidance off must also cancel an already-started lane change.
+            # Keep the current classifier output for dashboard inspection, but never
+            # let a stale latch or steering override leak into vehicle control.
+            self.reset()
+            obstacle = (classifier_output or {}).get("obstacle_ahead", {})
+            lane = (classifier_output or {}).get("lane", {})
+            obstacle_probs = obstacle.get("probabilities", {}) if isinstance(obstacle, dict) else {}
+            lane_probs = lane.get("probabilities", {}) if isinstance(lane, dict) else {}
+            try:
+                obstacle_probability = float(obstacle_probs.get("yes", 0.0))
+                lane_probability = float(lane_probs.get("left", 0.0))
+                lane_confidence = float(
+                    lane.get("confidence", max(lane_probability, 1.0 - lane_probability))
+                )
+            except (TypeError, ValueError):
+                obstacle_probability = lane_probability = lane_confidence = float("nan")
+            if not math.isfinite(obstacle_probability) or not 0.0 <= obstacle_probability <= 1.0:
+                obstacle_probability = None
+            if not math.isfinite(lane_probability) or not 0.0 <= lane_probability <= 1.0:
+                lane_probability = None
+            if not math.isfinite(lane_confidence) or not 0.0 <= lane_confidence <= 1.0:
+                lane_confidence = None
+            lane_label = (
+                str(lane.get("label", "")).strip().lower()
+                if isinstance(lane, dict) else ""
+            )
+            if lane_label not in {"left", "right"}:
+                lane_label = (
+                    "left" if lane_probability is not None and lane_probability > 0.5
+                    else "right" if lane_probability is not None else None
+                )
+            disabled_state = super().snapshot(sensors)
+            disabled_state.update({
+                "obstacle_latched": False,
+                "obstacle_model_confirm_frames": 0,
+                "obstacle_model_rearm_frames": 0,
+                "obstacle_model_probability": obstacle_probability,
+                "obstacle_lane_probability": lane_probability,
+                "obstacle_lane_prediction": lane_label,
+                "obstacle_lane_confidence": lane_confidence,
+                "model_lane_confirm_frames": 0,
+                "lane_change_attempt_number": 0,
+                "lane_change_retry_steer": None,
+                "lane_change_retry_pulse_distance_m": None,
+                "return_distance_stage": "DISABLED",
+                "return_after_distance_m": self.RETURN_AFTER_DISTANCE_M,
+                "return_distance_travelled_m": 0.0,
+                "return_distance_remaining_m": 0.0,
+                "sensor_angle_override": int(settings.get("sensor_angle", 40)),
+                "search_limit_reached": False,
+            })
+            return disabled_state
+
         observation_is_new = (
             observation_id is not None
             and observation_id != self.last_model_observation_id
