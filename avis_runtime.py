@@ -2081,13 +2081,14 @@ def run_avis(args: argparse.Namespace) -> int:
         settings, settings_revision = dashboard_state.settings_snapshot()
         _apply_avis_roi_settings(conf, settings)
         if settings["vision_backend"] == "ultralytics":
-            print(f"[AVIS] Ultralytics lane checkpoint: {conf.MODEL_PATH}")
+            print(f"[AVIS] Lane-line checkpoint: {conf.MODEL_PATH}")
 
+        obstacle_classifier = AvisObstacleLaneClassifier()
         from avis_adaptive_roi import AvisAdaptiveROIController
 
         adaptive_roi_controller = AvisAdaptiveROIController(settings)
         try:
-            vision_processor = _create_avis_vision_processor(
+            lane_vision_processor = _create_avis_vision_processor(
                 settings["vision_backend"],
                 settings,
                 adaptive_roi_controller=adaptive_roi_controller,
@@ -2104,12 +2105,16 @@ def run_avis(args: argparse.Namespace) -> int:
             )
             settings_revision = dashboard_state.settings_snapshot()[1]
             adaptive_roi_controller.configure(settings)
-            vision_processor = _create_avis_vision_processor(
+            lane_vision_processor = _create_avis_vision_processor(
                 "classical",
                 settings,
                 adaptive_roi_controller=adaptive_roi_controller,
             )
 
+        vision_processor = AvisCombinedVisionProcessor(
+            lane_vision_processor, obstacle_classifier
+        )
+        print("[AVIS] Obstacle detection and lane-change direction use the RoadForge multi-task ONNX classifier.")
         inference_worker = InferenceWorker(vision_processor=vision_processor)
         inference_worker.start()
 
@@ -2129,7 +2134,7 @@ def run_avis(args: argparse.Namespace) -> int:
             min_speed_kmh=float(settings["min_speed_kmh"]),
             max_speed_kmh=float(settings["max_speed_kmh"]),
         )
-        obstacle_lane_change = AvisObstacleLaneChangeController()
+        obstacle_lane_change = AvisModelObstacleLaneChangeController()
 
         if not bool(conf.AUTO_MODE_DEFAULT):
             dashboard_state.set_mode("stopped")
@@ -2228,10 +2233,13 @@ def run_avis(args: argparse.Namespace) -> int:
 
                     selected_backend = str(current_settings["vision_backend"])
                     if selected_backend != active_backend:
-                        replacement = _create_avis_vision_processor(
+                        lane_replacement = _create_avis_vision_processor(
                             selected_backend,
                             current_settings,
                             adaptive_roi_controller=adaptive_roi_controller,
+                        )
+                        replacement = AvisCombinedVisionProcessor(
+                            lane_replacement, obstacle_classifier
                         )
                         inference_worker.set_vision_processor(replacement)
                         vision_processor = replacement
@@ -2385,15 +2393,23 @@ def run_avis(args: argparse.Namespace) -> int:
                         left_x=debug_data.get("left_x") if result_fresh else None,
                         right_x=debug_data.get("right_x") if result_fresh else None,
                         settings=current_settings,
-                        # The distance sensor is independent of lane inference:
-                        # do not suppress a confirmed obstacle response just
-                        # because the lane marking temporarily disappeared.
+                        classifier_output=(
+                            vision_data.get("obstacle_classifier") if result_fresh else None
+                        ),
                         allow_new_maneuver=True,
                         observation_id=(
                             last_vision_result.completed_at if result_fresh else None
                         ),
                         frame_width=int(frame_bgr.shape[1]),
                     )
+                    requested_sensor_angle = int(
+                        lane_change_state.get(
+                            "sensor_angle_override", current_settings["sensor_angle"]
+                        )
+                    )
+                    if requested_sensor_angle != active_sensor_angle:
+                        client.set_sensor_angle(requested_sensor_angle)
+                        active_sensor_angle = requested_sensor_angle
                     if lane_change_state.get("pid_reset"):
                         steering_controller.reset()
 
@@ -2484,11 +2500,17 @@ def run_avis(args: argparse.Namespace) -> int:
                         coasting = requested_brake > 0.0
                         if coasting:
                             throttle = 0.0
-                        status = (
-                            "AVOIDANCE / LEFT LANE"
-                            if lane_change_state["phase"] == "LEFT_LANE"
-                            else "AUTO / COAST" if coasting else "AUTO"
-                        )
+                        if lane_change_state["phase"] == "WAIT_OBSTACLE_PASS":
+                            status = "OBSTACLE AVOIDANCE / WAITING FOR RIGHT SENSOR PASS CONFIRMATION"
+                        elif lane_change_state["phase"] == "RETURN_DELAY":
+                            status = (
+                                "OBSTACLE AVOIDANCE / RIGHT SENSOR CLEAR · RETURN IN "
+                                f"{lane_change_state.get('return_delay_remaining_s', 0.0):.1f}s"
+                            )
+                        elif lane_change_state["phase"] == "LEFT_LANE":
+                            status = "OBSTACLE AVOIDANCE / LEFT LANE"
+                        else:
+                            status = "AUTO / COAST" if coasting else "AUTO"
                     client.send_control(throttle, steering)
 
                 
@@ -2626,6 +2648,17 @@ def run_avis(args: argparse.Namespace) -> int:
                         "lane_change_steering_pulse_number": lane_change_state.get(
                             "steering_pulse_number", 0
                         ),
+                        "obstacle_classifier": vision_data.get("obstacle_classifier"),
+                        "obstacle_model_confirm_frames": lane_change_state.get("obstacle_model_confirm_frames", 0),
+                        "obstacle_model_probability": lane_change_state.get("obstacle_model_probability"),
+                        "obstacle_lane_probability": lane_change_state.get("obstacle_lane_probability"),
+                        "obstacle_lane_prediction": lane_change_state.get("obstacle_lane_prediction"),
+                        "obstacle_pass_sensor_stage": lane_change_state.get("pass_sensor_stage"),
+                        "obstacle_pass_right_sensor_cm": lane_change_state.get("pass_sensor_right_cm"),
+                        "obstacle_pass_clear_frames": lane_change_state.get("pass_sensor_clear_frames", 0),
+                        "obstacle_return_delay_remaining_s": lane_change_state.get("return_delay_remaining_s", 0.0),
+                        "obstacle_pass_sensor_timeout": lane_change_state.get("pass_sensor_timeout", False),
+                        "active_sensor_angle": active_sensor_angle,
                         "adaptive_roi": vision_data.get("debug", {}).get(
                             "adaptive_roi", adaptive_roi_controller.snapshot()
                         ),
