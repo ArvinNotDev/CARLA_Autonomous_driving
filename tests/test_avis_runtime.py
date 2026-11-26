@@ -1464,6 +1464,8 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     assert 'id="obstacle_pass_sensor_clear_threshold_cm"' not in html
     assert 'id="obstacle_return_delay_seconds"' not in html
     assert 'id="obstacle_pass_clearance_distance_m"' not in html
+    assert "exactly 10 metres" in html
+    assert "Right-side sensor readings and sensor timeouts do not control this return." in html
     assert 'id="obstacle_lane_change_retry_steer"' in html
     assert 'id="obstacle_lane_change_retry_pulse_distance_m"' in html
     assert 'id="obstacle_slowdown_start_cm"' not in html
