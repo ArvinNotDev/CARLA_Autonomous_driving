@@ -865,13 +865,22 @@ class AvisObstacleLaneClassifier:
                         f"{type(exc).__name__}: {exc}"
                     )
                     providers = ["CPUExecutionProvider"]
-            else:
-                print(
-                    "[AVIS] This ONNX Runtime build has no preload_dlls(); "
-                    "CUDA DLL sharing with PyTorch cannot be prepared. "
-                    "Use a compatible onnxruntime-gpu build or CPU inference."
-                )
-                providers = ["CPUExecutionProvider"]
+            elif "torch" not in sys.modules:
+                # preload_dlls was added in ONNX Runtime 1.21. Older builds
+                # rely on PyTorch being imported first to register CUDA DLLs.
+                try:
+                    import torch  # noqa: F401
+                    print(
+                        "[AVIS] PyTorch DLLs loaded before the older "
+                        "ONNX Runtime CUDA session."
+                    )
+                except Exception as exc:
+                    print(
+                        "[AVIS] Could not initialize PyTorch before ONNX "
+                        "Runtime; using CPU for the obstacle classifier: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    providers = ["CPUExecutionProvider"]
 
         try:
             self.session = ort.InferenceSession(
