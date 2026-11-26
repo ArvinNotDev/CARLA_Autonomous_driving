@@ -1973,13 +1973,11 @@ def _create_avis_vision_processor(
         )
 
     from vision.city_vision_processing import VisionProcessor
-    from avis_lane_line_selection import TemporalLaneLineSelector
 
     class AvisVisionProcessor(VisionProcessor):
-        """AVIS model adapter that extracts and visualizes lane lines only."""
+        """AVIS model adapter using raw lane pixels inside each configured ROI."""
 
         def detect(self, semantic_frame, rgb_frame=None):
-            # Apply adaptive AVIS ROI coordinates before resolving crop bounds.
             if self.adaptive_roi_controller is not None:
                 import config_city as avis_conf
 
@@ -1989,74 +1987,15 @@ def _create_avis_vision_processor(
                 )
 
             frame = rgb_frame if rgb_frame is not None else semantic_frame
-            self._avis_roi_bounds = {}
-            self._avis_line_selection_stats = {}
-            if frame is not None and getattr(frame, "ndim", 0) >= 2:
-                import config_city as avis_conf
-
-                height, width = frame.shape[:2]
-                self._avis_roi_bounds = {
-                    "ll": (
-                        int(float(avis_conf.LL_TOP_ROI) * height),
-                        int(float(avis_conf.LL_BOTTOM_ROI) * height),
-                        int(float(avis_conf.LL_LEFT_ROI) * width),
-                        int(float(avis_conf.LL_RIGHT_ROI) * width),
-                    ),
-                    "rl": (
-                        int(float(avis_conf.RL_TOP_ROI) * height),
-                        int(float(avis_conf.RL_BOTTOM_ROI) * height),
-                        int(float(avis_conf.RL_LEFT_ROI) * width),
-                        int(float(avis_conf.RL_RIGHT_ROI) * width),
-                    ),
-                }
-                signature = (
-                    (height, width),
-                    tuple(
-                        (key, settings.get(key))
-                        for key in (
-                            "hough_threshold",
-                            "hough_min_line_length_ratio",
-                            "hough_max_line_gap",
-                            "min_lane_angle_deg",
-                            "max_lane_angle_deg",
-                        )
-                    ),
-                )
-                if signature != self._avis_selection_signature:
-                    for selector in self._avis_line_selectors.values():
-                        selector.reset()
-                    self._avis_selection_signature = signature
-
             result = super().detect(semantic_frame, rgb_frame=rgb_frame)
-            if isinstance(result, dict):
-                debug = result.get("debug")
-                if isinstance(debug, dict):
-                    for side, prefix in (("ll", "left"), ("rl", "right")):
-                        stats = self._avis_line_selection_stats.get(side, {})
-                        debug[f"{prefix}_hough_segments"] = int(stats.get("segments", 0))
-                        debug[f"{prefix}_hough_candidates"] = int(stats.get("candidates", 0))
-                        debug[f"{prefix}_selected_line_x"] = stats.get("selected_x")
-                        debug[f"{prefix}_selected_line_quality"] = stats.get("quality")
-                        debug[f"{prefix}_selected_line_stable_frames"] = int(
-                            stats.get("stable_frames", 0)
-                        )
-                        debug[f"{prefix}_selected_line_missed_frames"] = int(
-                            stats.get("missed_frames", 0)
-                        )
-                        debug[f"{prefix}_pending_switch_frames"] = int(
-                            stats.get("pending_switch_frames", 0)
-                        )
-                        debug[f"{prefix}_selected_line_switched"] = bool(
-                            stats.get("switched", False)
-                        )
-                        debug[f"{prefix}_selected_line_predicted"] = bool(
-                            stats.get("predicted", False)
-                        )
 
+            # Adaptive ROI observes the same direct model-derived lane positions
+            # that feed steering. Drivable-area is deliberately not consulted.
             if (
                 self.adaptive_roi_controller is not None
                 and frame is not None
                 and getattr(frame, "ndim", 0) >= 2
+                and isinstance(result, dict)
             ):
                 debug = result.get("debug")
                 if isinstance(debug, dict):
@@ -2068,69 +2007,33 @@ def _create_avis_vision_processor(
                     debug["adaptive_roi"] = self.adaptive_roi_controller.snapshot()
             return result
 
-        def _boundary_from_roi(
-            self,
-            full_mask,
-            top,
-            bottom,
-            left,
-            right,
-        ):
-            bounds = (int(top), int(bottom), int(left), int(right))
-            side = next(
-                (
-                    name
-                    for name, expected in self._avis_roi_bounds.items()
-                    if expected == bounds
-                ),
-                None,
-            )
-            if side is not None and bottom > top and right > left:
-                selection = self._avis_line_selectors[side].select(
-                    full_mask[top:bottom, left:right],
-                    settings,
-                    x_offset=float(left),
-                )
-                self._avis_line_selection_stats[side] = {
-                    "segments": selection.segment_count,
-                    "candidates": selection.candidate_count,
-                    "selected_x": selection.selected_x,
-                    "quality": selection.quality,
-                    "stable_frames": selection.stable_frames,
-                    "missed_frames": selection.missed_frames,
-                    "pending_switch_frames": selection.pending_switch_frames,
-                    "switched": selection.switched,
-                    "predicted": selection.predicted,
-                }
-                # Always replace raw pixels; never reintroduce all candidate
-                # lines when Hough selection has a brief dropout.
-                full_mask[top:bottom, left:right] = selection.mask
-
-            return super()._boundary_from_roi(
-                full_mask, top, bottom, left, right
-            )
-
         @staticmethod
         def _class_ids_from_names(
             class_names: dict[int, str],
-        ) -> tuple[int, None, None]:
-            """Require only lane_lines; all other semantic classes are ignored."""
+        ) -> tuple[int, int | None, None]:
+            """Require lane_lines and optionally expose drivable area for debug."""
             lane_ids = [
                 class_id
                 for class_id, name in class_names.items()
                 if name == "lane_lines"
             ]
-            if len(lane_ids) != 1:
+            drivable_ids = [
+                class_id
+                for class_id, name in class_names.items()
+                if name == "ego_drivable_area"
+            ]
+            if len(lane_ids) != 1 or len(drivable_ids) > 1:
                 raise RuntimeError(
                     "The AVIS Ultralytics checkpoint must contain exactly one "
-                    "'lane_lines' class; drivable-area and vehicle classes are "
-                    "not required. "
+                    "'lane_lines' class and at most one 'ego_drivable_area' class. "
                     f"Found names {class_names!r}"
                 )
-            return lane_ids[0], None, None
+            return lane_ids[0], (
+                drivable_ids[0] if drivable_ids else None
+            ), None
 
         def _extract_masks_from_ultralytics(self, camera_frame):
-            """Extract only lane-line pixels; never construct other class masks."""
+            """Return lane pixels for control and optional drivable pixels for debug."""
             import numpy as np
 
             predictions = self._predict_ultralytics(camera_frame)
@@ -2153,8 +2056,6 @@ def _create_avis_vision_processor(
                 semantic_data = semantic_data.numpy()
 
             class_map = np.asarray(semantic_data)
-            # Remove only leading batch dimensions. A full squeeze would turn
-            # valid one-row or one-column masks into one-dimensional arrays.
             while class_map.ndim > 2 and class_map.shape[0] == 1:
                 class_map = class_map[0]
             if class_map.ndim != 2:
@@ -2174,20 +2075,21 @@ def _create_avis_vision_processor(
                 )
 
             lane_mask = (class_map == self.lane_class_id).astype(np.uint8) * 255
-            return None, lane_mask, None
+            drivable_class_id = getattr(self, "drivable_class_id", None)
+            drivable_mask = (
+                (class_map == drivable_class_id).astype(np.uint8) * 255
+                if drivable_class_id is not None
+                else None
+            )
+            return drivable_mask, lane_mask, None
 
         def __init__(self, mode: str):
             super().__init__(mode)
             self.adaptive_roi_controller = adaptive_roi_controller
-            self._avis_line_selectors = {
-                "ll": TemporalLaneLineSelector("ll"),
-                "rl": TemporalLaneLineSelector("rl"),
-            }
-            self._avis_selection_signature = None
             self.last_lane_half_width: float | None = None
             print(
-                "[AVIS] Model inference is used for lane_lines only; "
-                "drivable-area and vehicle masks are disabled."
+                "[AVIS] Lane selection uses the raw lane_lines segmentation "
+                "inside each LL/RL ROI; drivable-area is debug-only."
             )
 
         def _pick_sticky_lane(
@@ -2203,9 +2105,6 @@ def _create_avis_vision_processor(
                 self.active_side = None
                 return "both", left_x + self.last_lane_half_width
 
-            # If one lane marking disappears temporarily, infer the target
-            # from the most recently measured lane half-width. Only use the
-            # configured fixed ratio before any complete lane width is known.
             offset_px = (
                 self.last_lane_half_width
                 if self.last_lane_half_width is not None
@@ -2265,12 +2164,12 @@ def _create_avis_vision_processor(
             import cv2
             import numpy as np
 
-            # Keep the shared frame-centre, ROI and boundary annotations, but
-            # explicitly disable every non-lane segmentation overlay.
+            # Show drivable-area only as a visual overlay. It is not used by
+            # boundary extraction, lane centring, speed control or steering.
             visual = super()._draw_debug(
                 frame=frame,
                 line_mask=None,
-                drivable_mask=None,
+                drivable_mask=drivable_mask,
                 left_x=left_x,
                 right_x=right_x,
                 lane_center=lane_center,
@@ -2296,7 +2195,6 @@ def _create_avis_vision_processor(
                     interpolation=cv2.INTER_NEAREST,
                 ) > 0
 
-            # OpenCV uses BGR: (0, 0, 255) is pure red.
             visual[lane_pixels] = (0, 0, 255)
             return visual
 
