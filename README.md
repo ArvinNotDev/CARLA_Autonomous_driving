@@ -254,11 +254,13 @@ The AVIS settings profile is `AVIS_StableV2`. It copies the StableV2 lane
 perception, PID, inference cadence, and speed settings while omitting CARLA-only
 camera placement, map navigation, junction, trajectory, and LiDAR settings.
 The AVIS API supplies RGB frames, speed feedback, and three distance readings
-in centimetres ([left, middle/front, right]). AVIS obstacle avoidance uses the
-middle sensor to initiate a right-to-left lane change below 950 cm by default. Speed starts tapering below 1500 cm and reaches the configured minimum at the 950 cm lane-change trigger. It applies a short steering pulse,
+in centimetres ([left, middle/front, right]). The default obstacle trigger is
+950 cm, and any one of the three sensors reaching that threshold can initiate
+the existing lane-change manoeuvre. No separate speed reduction is applied
+from 1500 cm. It applies a short steering pulse,
 then continues straight until the target-side lane marking is reacquired in the
 corresponding LL or RL ROI. Once the left-lane line is reacquired, the
-return distance is calculated from the last measured front-obstacle distance
+return distance is calculated from the last measured triggering-sensor distance
 plus a configurable clearance (5 m by default), rather than a fixed travel
 distance. A newly detected obstacle in the left lane overrides that target and
 starts an immediate return to the right. The AVIS web dashboard exposes the

@@ -163,39 +163,6 @@ def select_avis_target_speed(
     return maximum - ((maximum - minimum) * turn_factor)
 
 
-def select_avis_obstacle_approach_speed(
-    base_target_kmh: float,
-    front_sensor_distance_cm: float | None,
-    minimum_speed_kmh: float,
-    *,
-    slowdown_start_cm: float = 1500.0,
-    lane_change_trigger_cm: float = 950.0,
-) -> float:
-    """Gradually lower the requested speed as a front obstacle approaches."""
-    base_speed = float(base_target_kmh)
-    minimum_speed = float(minimum_speed_kmh)
-    slowdown_start = float(slowdown_start_cm)
-    trigger = float(lane_change_trigger_cm)
-    if not all(math.isfinite(value) for value in (
-        base_speed, minimum_speed, slowdown_start, trigger
-    )):
-        raise ValueError("Obstacle approach speed settings must be finite.")
-    if minimum_speed <= 0.0 or slowdown_start <= trigger:
-        raise ValueError("Obstacle approach speed requires 0 < minimum speed and slowdown start above trigger.")
-
-    base_speed = max(minimum_speed, base_speed)
-    try:
-        distance = float(front_sensor_distance_cm)
-    except (TypeError, ValueError):
-        return base_speed
-    if not math.isfinite(distance) or distance >= slowdown_start:
-        return base_speed
-    if distance <= trigger:
-        return minimum_speed
-
-    progress = (slowdown_start - distance) / (slowdown_start - trigger)
-    return float(base_speed + (minimum_speed - base_speed) * progress)
-
 
 class AvisSteeringController:
     """StableV2 steering PID/rate-limit logic without CARLA-specific types."""
@@ -289,6 +256,7 @@ class AvisObstacleLaneChangeController:
         self.obstacle_confirm_frames = 0
         self.sensor_clear_frames = 0
         self.obstacle_latched = False
+        self.last_obstacle_sensor: str | None = None
         self.line_confirm_frames = 0
         self.last_line_observation_id = None
 
@@ -302,6 +270,18 @@ class AvisObstacleLaneChangeController:
         if not math.isfinite(value) or value < 0.0:
             return None
         return value
+
+    @staticmethod
+    def sensor_distances_cm(sensors: Any) -> tuple[float | None, float | None, float | None]:
+        """Return AVIS side/front/side distances in centimetres."""
+        values: list[float | None] = []
+        for index in range(3):
+            try:
+                value = float(sensors[index])
+            except (TypeError, ValueError, IndexError, KeyError):
+                value = float("nan")
+            values.append(value if math.isfinite(value) and value >= 0.0 else None)
+        return values[0], values[1], values[2]
 
     @staticmethod
     def _positive_setting(settings: dict[str, Any], key: str, default: float) -> float:
@@ -329,6 +309,8 @@ class AvisObstacleLaneChangeController:
             "return_reason": self.return_reason,
             "phase_distance_m": float(self.phase_distance_m),
             "front_sensor_cm": self.front_sensor_distance_cm(sensors),
+            "sensor_distances_cm": list(self.sensor_distances_cm(sensors)),
+            "obstacle_trigger_sensor": self.last_obstacle_sensor,
             "active": self.phase in {
                 self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
                 self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
@@ -358,7 +340,7 @@ class AvisObstacleLaneChangeController:
         allow_new_maneuver: bool = True,
         observation_id: Any = None,
     ) -> dict[str, Any]:
-        front_distance = self.front_sensor_distance_cm(sensors)
+        sensor_distances = self.sensor_distances_cm(sensors)
         try:
             speed = float(speed_kmh)
             elapsed = float(dt)
@@ -396,7 +378,13 @@ class AvisObstacleLaneChangeController:
             ))
         )
 
-        if front_distance is not None and front_distance >= clear_cm:
+        # Clear the latch only after every distance sensor reports a clear
+        # path; one side sensor still seeing an obstacle must keep it latched.
+        all_sensors_clear = all(
+            distance is not None and distance >= clear_cm
+            for distance in sensor_distances
+        )
+        if all_sensors_clear:
             self.sensor_clear_frames += 1
             if self.sensor_clear_frames >= clear_frames_required:
                 self.obstacle_latched = False
@@ -406,14 +394,16 @@ class AvisObstacleLaneChangeController:
 
         pid_reset = False
         detection_enabled = bool(settings.get("obstacle_lane_change_enabled", True))
-        # In the left lane, front-obstacle detection is a safety override and
-        # must not depend on the lane model successfully finding a line.
-        can_check_front_obstacle = (
-            self.phase == self.LEFT_LANE
-            or (self.phase == self.RIGHT_LANE and allow_new_maneuver)
-        )
-        if detection_enabled and can_check_front_obstacle and not self.obstacle_latched:
-            if front_distance is not None and front_distance <= trigger_cm:
+        # Any of the left, front, or right sensors can request the lane change.
+        # Distance sensing stays active even when lane perception is missing.
+        can_check_obstacle = self.phase in {self.RIGHT_LANE, self.LEFT_LANE}
+        triggered_sensors = [
+            (index, distance)
+            for index, distance in enumerate(sensor_distances)
+            if distance is not None and distance <= trigger_cm
+        ]
+        if detection_enabled and can_check_obstacle and not self.obstacle_latched:
+            if triggered_sensors:
                 self.obstacle_confirm_frames += 1
             else:
                 self.obstacle_confirm_frames = 0
@@ -421,25 +411,30 @@ class AvisObstacleLaneChangeController:
             if self.obstacle_confirm_frames >= trigger_frames:
                 self.obstacle_latched = True
                 self.obstacle_confirm_frames = 0
-                if front_distance is not None:
-                    self.last_obstacle_distance_m = max(0.0, front_distance) / 100.0
-                    clearance_m = self._positive_setting(
-                        settings, "obstacle_clearance_after_pass_m", 5.0
-                    )
-                    self.left_lane_target_distance_m = (
-                        self.last_obstacle_distance_m + clearance_m
-                    )
+                sensor_names = ("LEFT", "FRONT", "RIGHT")
+                sensor_index, obstacle_distance = min(
+                    triggered_sensors, key=lambda item: item[1]
+                )
+                self.last_obstacle_sensor = sensor_names[sensor_index]
+                self.last_obstacle_distance_m = obstacle_distance / 100.0
+                clearance_m = self._positive_setting(
+                    settings, "obstacle_clearance_after_pass_m", 5.0
+                )
+                self.left_lane_target_distance_m = (
+                    self.last_obstacle_distance_m + clearance_m
+                )
 
                 if self.phase == self.RIGHT_LANE:
                     self.phase = self.STEER_LEFT
                     self.phase_distance_m = 0.0
                     self.line_confirm_frames = 0
                     self.last_line_observation_id = None
-                    self.return_reason = "DISTANCE"
+                    self.return_reason = "OBSTACLE"
                     pid_reset = True
                 elif self.phase == self.LEFT_LANE:
-                    # A second obstacle in the left lane takes priority over
-                    # the old obstacle-distance + clearance target.
+                    # Any new obstacle sensor trigger while in the left lane
+                    # overrides the previous pass-distance target and returns
+                    # the vehicle to the right lane.
                     self._begin_right_return("OBSTACLE_IN_LEFT_LANE")
                     pid_reset = True
 
@@ -1497,17 +1492,7 @@ def run_avis(args: argparse.Namespace) -> int:
                             minimum_speed,
                             float(current_settings["max_speed_kmh"]),
                         )
-                        target_speed = select_avis_obstacle_approach_speed(
-                            base_target_speed,
-                            lane_change_state.get("front_sensor_cm"),
-                            minimum_speed,
-                            slowdown_start_cm=float(
-                                current_settings["obstacle_slowdown_start_cm"]
-                            ),
-                            lane_change_trigger_cm=float(
-                                current_settings["obstacle_front_threshold_cm"]
-                            ),
-                        )
+                        target_speed = base_target_speed
                         throttle, requested_brake = speed_controller.update(
                             current_speed, target_speed, dt=control_dt
                         )
@@ -1630,6 +1615,8 @@ def run_avis(args: argparse.Namespace) -> int:
                             else None
                         ),
                         "front_sensor_cm": lane_change_state.get("front_sensor_cm"),
+                        "sensor_distances_cm": lane_change_state.get("sensor_distances_cm"),
+                        "obstacle_trigger_sensor": lane_change_state.get("obstacle_trigger_sensor"),
                         "lane_change_phase": lane_change_state.get("phase", "RIGHT_LANE"),
                         "lane_change_side": lane_change_state.get("lane_side", "right"),
                         "lane_change_target": lane_change_state.get("target_lane", "right"),

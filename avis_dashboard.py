@@ -56,7 +56,6 @@ DEFAULT_AVIS_SETTINGS: dict[str, Any] = {
     "lane_offset_ratio": 0.16,
     "center_smoothing": 0.30,
     "obstacle_lane_change_enabled": True,
-    "obstacle_slowdown_start_cm": 1500,
     "obstacle_front_threshold_cm": 950,
     "obstacle_trigger_confirm_frames": 3,
     "obstacle_sensor_clear_threshold_cm": 900,
@@ -114,7 +113,6 @@ _NUMERIC_LIMITS: dict[str, tuple[float, float, bool]] = {
     "min_side_pixels": (1.0, 500.0, True),
     "lane_offset_ratio": (0.03, 0.45, False),
     "center_smoothing": (0.01, 1.0, False),
-    "obstacle_slowdown_start_cm": (951.0, 6000.0, True),
     "obstacle_front_threshold_cm": (50.0, 1499.0, True),
     "obstacle_trigger_confirm_frames": (1.0, 30.0, True),
     "obstacle_sensor_clear_threshold_cm": (51.0, 1500.0, True),
@@ -171,10 +169,6 @@ def validate_avis_settings(
 
     if result["min_speed_kmh"] >= result["max_speed_kmh"]:
         raise ValueError("Maximum speed must be greater than minimum speed.")
-    if result["obstacle_slowdown_start_cm"] <= result["obstacle_front_threshold_cm"]:
-        raise ValueError(
-            "Obstacle slowdown start must be greater than the lane-change trigger distance."
-        )
     if result["canny_low"] >= result["canny_high"]:
         raise ValueError("Canny high threshold must be greater than low threshold.")
     if result["yellow_h_min"] >= result["yellow_h_max"]:
@@ -231,6 +225,8 @@ class AvisDashboardState:
             "lane_valid": False,
             "sensors_cm": None,
             "front_sensor_cm": None,
+            "sensor_distances_cm": None,
+            "obstacle_trigger_sensor": None,
             "lane_change_phase": "RIGHT_LANE",
             "lane_change_side": "right",
             "lane_change_target": "right",
@@ -262,6 +258,7 @@ class AvisDashboardState:
                     "roi_bottom_half_width_ratio",
                     "lane_width_ratio",
                     "obstacle_return_distance_m",
+                    "obstacle_slowdown_start_cm",
                 ):
                     saved.pop(legacy_key, None)
             self._settings = validate_avis_settings(self._settings, saved)
@@ -318,8 +315,10 @@ class AvisDashboardState:
                             continue
                         try:
                             name = self._normalize_profile_name(entry.get("name"))
+                            saved_settings = dict(entry["settings"])
+                            saved_settings.pop("obstacle_slowdown_start_cm", None)
                             settings = validate_avis_settings(
-                                dict(DEFAULT_AVIS_SETTINGS), entry["settings"]
+                                dict(DEFAULT_AVIS_SETTINGS), saved_settings
                             )
                         except (TypeError, ValueError):
                             continue
@@ -403,7 +402,11 @@ class AvisDashboardState:
         settings = document.get("settings")
         if not isinstance(settings, dict):
             raise ValueError("The imported profile does not contain a settings object.")
-        validated = validate_avis_settings(dict(DEFAULT_AVIS_SETTINGS), settings)
+        compatible_settings = dict(settings)
+        compatible_settings.pop("obstacle_slowdown_start_cm", None)
+        validated = validate_avis_settings(
+            dict(DEFAULT_AVIS_SETTINGS), compatible_settings
+        )
         profile = {
             "schema_version": 1,
             "name": normalized,
@@ -657,8 +660,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
         <div class="section-label">Obstacle avoidance / automatic lane change</div>
         <div class="fields">
           <div class="field full"><label for="obstacle_lane_change_enabled">Automatic obstacle lane change</label><select id="obstacle_lane_change_enabled" data-setting="obstacle_lane_change_enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
-          <div class="field"><label for="obstacle_slowdown_start_cm">Begin slowing below (cm)</label><input id="obstacle_slowdown_start_cm" data-setting="obstacle_slowdown_start_cm" type="number" min="951" max="6000" step="1"></div>
-          <div class="field"><label for="obstacle_front_threshold_cm">Start lane change at (cm)</label><input id="obstacle_front_threshold_cm" data-setting="obstacle_front_threshold_cm" type="number" min="50" max="1499" step="1"></div>
+          <div class="field"><label for="obstacle_front_threshold_cm">Obstacle trigger distance (cm)</label><input id="obstacle_front_threshold_cm" data-setting="obstacle_front_threshold_cm" type="number" min="50" max="1499" step="1"></div>
           <div class="field"><label for="obstacle_trigger_confirm_frames">Obstacle confirmation frames</label><input id="obstacle_trigger_confirm_frames" data-setting="obstacle_trigger_confirm_frames" type="number" min="1" max="30" step="1"></div>
           <div class="field"><label for="obstacle_sensor_clear_threshold_cm">Sensor clear threshold (cm)</label><input id="obstacle_sensor_clear_threshold_cm" data-setting="obstacle_sensor_clear_threshold_cm" type="number" min="51" max="1500" step="1"></div>
           <div class="field"><label for="obstacle_sensor_clear_confirm_frames">Clear confirmation frames</label><input id="obstacle_sensor_clear_confirm_frames" data-setting="obstacle_sensor_clear_confirm_frames" type="number" min="1" max="30" step="1"></div>
@@ -669,7 +671,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
           <div class="field"><label for="obstacle_lane_line_search_max_distance_m">Maximum straight line-search distance (m)</label><input id="obstacle_lane_line_search_max_distance_m" data-setting="obstacle_lane_line_search_max_distance_m" type="number" min=".1" max="1000" step="any"></div>
           <div class="field"><label for="obstacle_clearance_after_pass_m">Extra distance after obstacle (m)</label><input id="obstacle_clearance_after_pass_m" data-setting="obstacle_clearance_after_pass_m" type="number" min="0" max="1000" step="any"></div>
         </div>
-        <div class="hint">AVIS uses the middle distance sensor (cm). Speed is gradually reduced below 1500 cm and reaches the configured minimum moving speed at the 950 cm lane-change trigger. All steering and target-line acquisition phases also use minimum speed. If a target ROI line is not reacquired within the configured search distance, the car keeps moving forward slowly while continuing to search instead of stopping because of lane loss.</div>
+        <div class="hint">AVIS monitors all three distance sensors (left, front and right). If any one of them reaches the configured obstacle trigger distance for the confirmation frames, the lane-change manoeuvre begins. The normal speed controller is not reduced based on a 1500 cm approach threshold. If a target ROI line is not reacquired within the configured search distance, the car keeps moving forward slowly while continuing to search instead of stopping because of lane loss.</div>
         <div class="section-label">Adaptive lane ROI recovery</div>
         <div class="fields">
           <div class="field full"><label for="adaptive_roi_enabled">Adaptive ROI expansion</label><select id="adaptive_roi_enabled" data-setting="adaptive_roi_enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
