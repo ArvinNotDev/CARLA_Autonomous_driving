@@ -815,6 +815,550 @@ class AvisObstacleLaneChangeController:
         return result
 
 
+
+class AvisObstacleLaneClassifier:
+    """ONNX Runtime adapter for RoadForge's AVIS two-head image classifier."""
+
+    DEFAULT_PATH = (
+        PROJECT_ROOT
+        / "models_and_datasets"
+        / "Avis_models"
+        / "obstacle_and_lane_Avis_model.onnx"
+    )
+
+    def __init__(self, model_path: Path | str | None = None) -> None:
+        import onnxruntime as ort
+
+        self.model_path = Path(model_path or self.DEFAULT_PATH).expanduser().resolve()
+        if not self.model_path.is_file():
+            raise FileNotFoundError(
+                "AVIS obstacle classifier was not found. Expected the RoadForge "
+                f"ONNX model at: {self.model_path}"
+            )
+
+        available = set(ort.get_available_providers())
+        providers = (
+            ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            if "CUDAExecutionProvider" in available
+            else ["CPUExecutionProvider"]
+        )
+        self.session = ort.InferenceSession(
+            str(self.model_path),
+            providers=providers,
+        )
+        metadata = self.session.get_modelmeta().custom_metadata_map
+        if metadata.get("task") != "classification":
+            raise RuntimeError(
+                "The AVIS ONNX model must declare task=classification in its metadata."
+            )
+        if metadata.get("roadforge_format") != "avis_multitask_classification_v1":
+            raise RuntimeError(
+                "The selected ONNX graph is not a supported RoadForge AVIS "
+                "multi-task classifier."
+            )
+
+        try:
+            self.mean = np.asarray(
+                json.loads(metadata["normalization_mean"]), dtype=np.float32
+            )
+            self.std = np.asarray(
+                json.loads(metadata["normalization_std"]), dtype=np.float32
+            )
+            self.tasks = json.loads(metadata["tasks"])
+            self.input_size = int(metadata["input_size"])
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                "The AVIS ONNX graph is missing valid preprocessing/task metadata."
+            ) from exc
+
+        if (
+            self.mean.shape != (3,)
+            or self.std.shape != (3,)
+            or not np.all(np.isfinite(self.mean))
+            or not np.all(np.isfinite(self.std))
+            or np.any(self.std <= 0)
+        ):
+            raise RuntimeError("AVIS classifier RGB normalization metadata is invalid.")
+        if self.input_size < 32 or self.input_size > 4096:
+            raise RuntimeError(f"Invalid AVIS classifier input size: {self.input_size}.")
+
+        inputs = self.session.get_inputs()
+        if len(inputs) != 1 or inputs[0].type != "tensor(float)":
+            raise RuntimeError("AVIS classifier must expose one float32 image input.")
+        input_shape = inputs[0].shape
+        if len(input_shape) != 4 or input_shape[1] not in (3, "3"):
+            raise RuntimeError(
+                f"AVIS classifier input must be NCHW RGB; received {input_shape!r}."
+            )
+        for axis in (2, 3):
+            expected = self.input_size
+            if isinstance(input_shape[axis], int) and input_shape[axis] != expected:
+                raise RuntimeError(
+                    f"AVIS classifier input resolution is {input_shape[axis]}, "
+                    f"but metadata declares {expected}."
+                )
+
+        if not isinstance(self.tasks, list):
+            raise RuntimeError("AVIS classifier task metadata must be a list.")
+        self.task_specs: dict[str, dict[str, Any]] = {}
+        for task in self.tasks:
+            if not isinstance(task, dict):
+                raise RuntimeError("AVIS classifier contains an invalid task entry.")
+            key = str(task.get("key", "")).strip()
+            classes = task.get("classes")
+            output_name = str(task.get("output_name", "")).strip()
+            if not key or not isinstance(classes, list) or len(classes) < 2 or not output_name:
+                raise RuntimeError("AVIS classifier task metadata is incomplete.")
+            if key in self.task_specs:
+                raise RuntimeError(f"Duplicate AVIS classifier task key: {key}.")
+            self.task_specs[key] = task
+
+        expected = {
+            "obstacle_ahead": ["no", "yes"],
+            "lane": ["right", "left"],
+        }
+        for key, classes in expected.items():
+            task = self.task_specs.get(key)
+            if task is None or task.get("classes") != classes:
+                raise RuntimeError(
+                    f"AVIS classifier must contain task {key!r} with classes {classes!r}."
+                )
+
+        output_names = [item["output_name"] for item in self.tasks]
+        graph_outputs = [item.name for item in self.session.get_outputs()]
+        if graph_outputs != output_names:
+            raise RuntimeError(
+                "AVIS classifier ONNX outputs do not match the task metadata order: "
+                f"graph={graph_outputs!r}, metadata={output_names!r}."
+            )
+
+        self.input_name = inputs[0].name
+        self.output_names = output_names
+        self.providers = list(self.session.get_providers())
+        print(
+            "[AVIS] RoadForge multi-task classifier loaded: "
+            f"{self.model_path} · input={self.input_size} · providers={self.providers}"
+        )
+
+    @staticmethod
+    def _softmax(values: np.ndarray) -> np.ndarray:
+        logits = np.asarray(values, dtype=np.float32).reshape(-1)
+        if logits.size < 2 or not np.all(np.isfinite(logits)):
+            raise RuntimeError("AVIS classifier produced invalid task logits.")
+        shifted = logits - float(np.max(logits))
+        exponentials = np.exp(shifted)
+        total = float(np.sum(exponentials))
+        if not math.isfinite(total) or total <= 0.0:
+            raise RuntimeError("AVIS classifier softmax could not be normalized.")
+        return exponentials / total
+
+    def predict(self, camera_frame: Any) -> dict[str, Any]:
+        from PIL import Image
+
+        frame = np.asarray(camera_frame)
+        if frame.ndim != 3 or frame.shape[2] < 3 or frame.size == 0:
+            raise ValueError(
+                f"AVIS classifier expects a BGR camera frame; received {frame.shape!r}."
+            )
+        if frame.dtype != np.uint8:
+            raise ValueError(
+                f"AVIS classifier expects uint8 camera pixels; received {frame.dtype}."
+            )
+
+        # AVIS Engine supplies BGR. RoadForge trained on RGB PIL images using
+        # Resize((224, 224)), ToTensor(), then ImageNet normalization.
+        rgb = np.ascontiguousarray(frame[:, :, :3][:, :, ::-1])
+        image = Image.fromarray(rgb, mode="RGB").resize(
+            (self.input_size, self.input_size),
+            resample=Image.Resampling.BILINEAR,
+        )
+        tensor = np.asarray(image, dtype=np.float32) / 255.0
+        tensor = (tensor - self.mean.reshape(1, 1, 3)) / self.std.reshape(1, 1, 3)
+        tensor = np.transpose(tensor, (2, 0, 1))[None, ...]
+        tensor = np.ascontiguousarray(tensor, dtype=np.float32)
+
+        raw_outputs = self.session.run(
+            self.output_names,
+            {self.input_name: tensor},
+        )
+        if len(raw_outputs) != len(self.tasks):
+            raise RuntimeError(
+                f"AVIS classifier returned {len(raw_outputs)} outputs; "
+                f"expected {len(self.tasks)}."
+            )
+
+        predictions: dict[str, Any] = {}
+        for task, raw in zip(self.tasks, raw_outputs):
+            key = task["key"]
+            classes = list(task["classes"])
+            values = np.asarray(raw)
+            expected_shape = (1, len(classes))
+            if values.shape != expected_shape:
+                raise RuntimeError(
+                    f"AVIS classifier output {key!r} has shape {values.shape!r}; "
+                    f"expected {expected_shape!r}."
+                )
+            probabilities = self._softmax(values[0])
+            selected = int(np.argmax(probabilities))
+            predictions[key] = {
+                "label": classes[selected],
+                "confidence": float(probabilities[selected]),
+                "probabilities": {
+                    label: float(probabilities[index])
+                    for index, label in enumerate(classes)
+                },
+            }
+
+        return {
+            "valid": True,
+            "backbone": str(self.session.get_modelmeta().custom_metadata_map.get("backbone", "unknown")),
+            "input_size": self.input_size,
+            "providers": list(self.providers),
+            **predictions,
+        }
+
+
+class AvisCombinedVisionProcessor:
+    """Keep lane-line geometry and AVIS classification in one worker request."""
+
+    def __init__(self, lane_processor, obstacle_classifier: AvisObstacleLaneClassifier):
+        object.__setattr__(self, "lane_processor", lane_processor)
+        object.__setattr__(self, "obstacle_classifier", obstacle_classifier)
+
+    def __getattr__(self, name):
+        return getattr(self.lane_processor, name)
+
+    def __setattr__(self, name, value):
+        lane_processor = self.__dict__.get("lane_processor")
+        if lane_processor is not None and hasattr(lane_processor, name):
+            setattr(lane_processor, name, value)
+            return
+        object.__setattr__(self, name, value)
+
+    def detect(self, semantic_frame, rgb_frame=None):
+        result = self.lane_processor.detect(semantic_frame, rgb_frame=rgb_frame)
+        if not isinstance(result, dict):
+            raise TypeError("AVIS lane-line processor returned a non-dict result.")
+        combined = dict(result)
+        camera_frame = rgb_frame if rgb_frame is not None else semantic_frame
+        combined["obstacle_classifier"] = self.obstacle_classifier.predict(camera_frame)
+        debug = combined.get("debug")
+        if isinstance(debug, dict):
+            debug["obstacle_classifier"] = combined["obstacle_classifier"]
+        return combined
+
+
+class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
+    """Model-triggered right-to-left pass with right-side sensor-confirmed return."""
+
+    WAIT_OBSTACLE_PASS = "WAIT_OBSTACLE_PASS"
+    RETURN_DELAY = "RETURN_DELAY"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.model_confirm_frames = 0
+        self.model_rearm_frames = 0
+        self.last_model_observation_id = None
+        self.model_trigger_latched = False
+        self.model_obstacle_probability: float | None = None
+        self.model_lane_probability: float | None = None
+        self.model_lane_label: str | None = None
+        self.pass_sensor_stage = "WAITING_FOR_OBSTACLE"
+        self.pass_sensor_seen_frames = 0
+        self.pass_sensor_clear_frames = 0
+        self.pass_sensor_started_at: float | None = None
+        self.pass_sensor_cleared_at: float | None = None
+        self.pass_sensor_timeout = False
+
+    @staticmethod
+    def _nonnegative_setting(
+        settings: dict[str, Any], key: str, default: float
+    ) -> float:
+        try:
+            value = float(settings.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return value if math.isfinite(value) and value >= 0.0 else default
+
+    def update(
+        self,
+        *,
+        sensors: Any,
+        speed_kmh: float,
+        dt: float,
+        left_x: int | float | None,
+        right_x: int | float | None,
+        settings: dict[str, Any],
+        classifier_output: dict[str, Any] | None,
+        allow_new_maneuver: bool = True,
+        observation_id: Any = None,
+        frame_width: int | float | None = None,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        current_time = time.monotonic() if now is None else float(now)
+        if not math.isfinite(current_time):
+            current_time = time.monotonic()
+
+        detection_enabled = bool(settings.get("obstacle_lane_change_enabled", True))
+        observation_is_new = (
+            observation_id is not None
+            and observation_id != self.last_model_observation_id
+        )
+        if observation_is_new:
+            self.last_model_observation_id = observation_id
+            obstacle = (classifier_output or {}).get("obstacle_ahead", {})
+            lane = (classifier_output or {}).get("lane", {})
+            obstacle_probs = obstacle.get("probabilities", {}) if isinstance(obstacle, dict) else {}
+            lane_probs = lane.get("probabilities", {}) if isinstance(lane, dict) else {}
+            try:
+                obstacle_probability = float(obstacle_probs.get("yes", 0.0))
+                no_probability = float(obstacle_probs.get("no", 0.0))
+                lane_probability = float(lane_probs.get("left", 0.0))
+                right_probability = float(lane_probs.get("right", 0.0))
+            except (TypeError, ValueError):
+                obstacle_probability = no_probability = lane_probability = right_probability = 0.0
+            valid_output = bool((classifier_output or {}).get("valid")) and all(
+                math.isfinite(value)
+                for value in (
+                    obstacle_probability, no_probability,
+                    lane_probability, right_probability,
+                )
+            )
+            obstacle_threshold = self._nonnegative_setting(
+                settings, "obstacle_model_confidence_threshold", 0.65
+            )
+            lane_threshold = self._nonnegative_setting(
+                settings, "obstacle_lane_confidence_threshold", 0.65
+            )
+            self.model_obstacle_probability = obstacle_probability if valid_output else None
+            self.model_lane_probability = lane_probability if valid_output else None
+            self.model_lane_label = (
+                str(lane.get("label", "")).lower()
+                if valid_output and isinstance(lane, dict) else None
+            )
+            obstacle_confirm_frames = max(
+                1, int(self._nonnegative_setting(
+                    settings, "obstacle_model_confirm_frames", 3
+                ))
+            )
+            rearm_frames_required = max(
+                1, int(self._nonnegative_setting(
+                    settings, "obstacle_model_rearm_frames", 3
+                ))
+            )
+            model_requests_left_pass = (
+                valid_output
+                and obstacle_probability >= obstacle_threshold
+                and no_probability < obstacle_probability
+                and lane_probability >= lane_threshold
+                and lane_probability > right_probability
+            )
+            model_reports_clear = (
+                valid_output
+                and no_probability >= obstacle_probability
+            )
+
+            if (
+                self.phase == self.RIGHT_LANE
+                and self.model_trigger_latched
+                and model_reports_clear
+            ):
+                self.model_rearm_frames += 1
+                if self.model_rearm_frames >= rearm_frames_required:
+                    self.model_trigger_latched = False
+                    self.model_rearm_frames = 0
+            elif self.phase == self.RIGHT_LANE and not model_reports_clear:
+                self.model_rearm_frames = 0
+
+            if (
+                detection_enabled
+                and allow_new_maneuver
+                and self.phase == self.RIGHT_LANE
+                and not self.model_trigger_latched
+            ):
+                if model_requests_left_pass:
+                    self.model_confirm_frames += 1
+                else:
+                    self.model_confirm_frames = 0
+                if self.model_confirm_frames >= obstacle_confirm_frames:
+                    self.model_trigger_latched = True
+                    self.model_confirm_frames = 0
+                    self._start_target_line_tracking("left", observation_id)
+                    self.phase = self.STEER_LEFT
+                    self.phase_distance_m = 0.0
+                    self.left_lane_distance_m = 0.0
+                    self.left_lane_target_distance_m = None
+                    self.last_obstacle_sensor = "MODEL"
+                    self.return_reason = "MODEL_OBSTACLE_AHEAD"
+            elif not model_requests_left_pass:
+                self.model_confirm_frames = 0
+
+        # Disable the legacy three-sensor trigger and distance-based return.
+        # The inherited controller still supplies its pulsed steering and
+        # stable target-line acquisition for both lane changes.
+        base_settings = dict(settings)
+        base_settings["obstacle_lane_change_enabled"] = False
+        base_settings["obstacle_front_threshold_cm"] = 0.0
+        base_settings["obstacle_sensor_clear_threshold_cm"] = 0.0
+        base_settings["obstacle_clearance_after_pass_m"] = 0.0
+        original_phase = self.phase
+        pass_wait_active = original_phase in {
+            self.WAIT_OBSTACLE_PASS, self.RETURN_DELAY
+        }
+        if pass_wait_active:
+            self.phase = self.LEFT_LANE
+        result = super().update(
+            sensors=sensors,
+            speed_kmh=speed_kmh,
+            dt=dt,
+            left_x=left_x,
+            right_x=right_x,
+            settings=base_settings,
+            allow_new_maneuver=False,
+            observation_id=observation_id,
+            frame_width=frame_width,
+        )
+        if pass_wait_active and self.phase == self.LEFT_LANE:
+            self.phase = original_phase
+
+        pid_reset = bool(result.get("pid_reset"))
+        if original_phase in {self.STEER_LEFT, self.ACQUIRE_LEFT_LINE} and self.phase == self.LEFT_LANE:
+            # The left lane is confirmed by the same temporal ROI tracker used
+            # by the CARLA lane-change manager's completion checks.
+            self.phase = self.WAIT_OBSTACLE_PASS
+            self.pass_sensor_stage = "WAITING_FOR_OBSTACLE"
+            self.pass_sensor_seen_frames = 0
+            self.pass_sensor_clear_frames = 0
+            self.pass_sensor_started_at = current_time
+            self.pass_sensor_cleared_at = None
+            self.pass_sensor_timeout = False
+            self.left_lane_target_distance_m = None
+
+        right_sensor_cm = self.sensor_distances_cm(sensors)[2]
+        presence_threshold = self._nonnegative_setting(
+            settings, "obstacle_pass_sensor_presence_threshold_cm", 250.0
+        )
+        clear_threshold = self._nonnegative_setting(
+            settings, "obstacle_pass_sensor_clear_threshold_cm", 550.0
+        )
+        presence_frames_required = max(
+            1, int(self._nonnegative_setting(
+                settings, "obstacle_pass_sensor_presence_frames", 2
+            ))
+        )
+        clear_frames_required = max(
+            1, int(self._nonnegative_setting(
+                settings, "obstacle_pass_sensor_clear_frames", 3
+            ))
+        )
+        return_delay = self._nonnegative_setting(
+            settings, "obstacle_return_delay_seconds", 2.0
+        )
+        pass_timeout = self._nonnegative_setting(
+            settings, "obstacle_pass_sensor_timeout_seconds", 30.0
+        )
+
+        if self.phase == self.WAIT_OBSTACLE_PASS:
+            if right_sensor_cm is not None and right_sensor_cm <= presence_threshold:
+                self.pass_sensor_seen_frames += 1
+                if self.pass_sensor_seen_frames >= presence_frames_required:
+                    self.pass_sensor_stage = "OBSTACLE_SEEN_ON_RIGHT"
+            else:
+                self.pass_sensor_seen_frames = 0
+
+            if self.pass_sensor_stage == "OBSTACLE_SEEN_ON_RIGHT":
+                if right_sensor_cm is not None and right_sensor_cm >= clear_threshold:
+                    self.pass_sensor_clear_frames += 1
+                else:
+                    self.pass_sensor_clear_frames = 0
+                if self.pass_sensor_clear_frames >= clear_frames_required:
+                    self.pass_sensor_cleared_at = current_time
+                    self.pass_sensor_stage = "OBSTACLE_CLEARED"
+                    self.phase = self.RETURN_DELAY
+
+            if (
+                self.phase == self.WAIT_OBSTACLE_PASS
+                and self.pass_sensor_started_at is not None
+                and current_time - self.pass_sensor_started_at >= pass_timeout
+            ):
+                self.phase = self.FAILED
+                self.pass_sensor_timeout = True
+                self.return_reason = "RIGHT_SENSOR_PASS_CONFIRMATION_TIMEOUT"
+
+        if (
+            self.phase == self.RETURN_DELAY
+            and self.pass_sensor_cleared_at is not None
+            and current_time - self.pass_sensor_cleared_at >= return_delay
+        ):
+            self._begin_right_return("RIGHT_SENSOR_CONFIRMED_PASS", observation_id)
+            pid_reset = True
+
+        # The side-angle is selected only after the car has acquired the left
+        # lane; restore the normal sensor spread before steering back right.
+        sensor_angle_override = (
+            int(settings.get("obstacle_pass_sensor_angle", settings.get("sensor_angle", 40)))
+            if self.phase in {self.WAIT_OBSTACLE_PASS, self.RETURN_DELAY}
+            else int(settings.get("sensor_angle", 40))
+        )
+        search_limit = self._nonnegative_setting(
+            settings, "obstacle_lane_line_search_max_distance_m", 40.0
+        )
+        search_limit_reached = bool(result.get("search_limit_reached"))
+        if (
+            self.phase in {
+                self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
+                self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
+            }
+            and search_limit > 0
+            and self.line_search_distance_m >= search_limit
+        ):
+            self.phase = self.FAILED
+            self.return_reason = "TARGET_LANE_LINE_SEARCH_TIMEOUT"
+
+        safe_stop = self.phase == self.FAILED
+        if safe_stop:
+            result["steering_override"] = 0.0
+        result.update({
+            "phase": self.phase,
+            "lane_side": (
+                "left"
+                if self.phase in {
+                    self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
+                    self.LEFT_LANE, self.WAIT_OBSTACLE_PASS, self.RETURN_DELAY,
+                }
+                else "right"
+            ),
+            "target_lane": "right" if self.phase in {
+                self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
+            } else "left" if self.phase in {
+                self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
+                self.LEFT_LANE, self.WAIT_OBSTACLE_PASS, self.RETURN_DELAY,
+            } else "right",
+            "pid_reset": pid_reset,
+            "safe_stop": safe_stop,
+            "obstacle_latched": self.model_trigger_latched,
+            "obstacle_trigger_sensor": "MODEL" if self.model_trigger_latched else self.last_obstacle_sensor,
+            "obstacle_model_confirm_frames": self.model_confirm_frames,
+            "obstacle_model_rearm_frames": self.model_rearm_frames,
+            "obstacle_model_probability": self.model_obstacle_probability,
+            "obstacle_lane_probability": self.model_lane_probability,
+            "obstacle_lane_prediction": self.model_lane_label,
+            "pass_sensor_stage": self.pass_sensor_stage,
+            "pass_sensor_right_cm": right_sensor_cm,
+            "pass_sensor_seen_frames": self.pass_sensor_seen_frames,
+            "pass_sensor_clear_frames": self.pass_sensor_clear_frames,
+            "pass_sensor_cleared_at": self.pass_sensor_cleared_at,
+            "return_delay_remaining_s": (
+                max(0.0, return_delay - (current_time - self.pass_sensor_cleared_at))
+                if self.phase == self.RETURN_DELAY and self.pass_sensor_cleared_at is not None
+                else 0.0
+            ),
+            "pass_sensor_timeout": self.pass_sensor_timeout,
+            "sensor_angle_override": sensor_angle_override,
+            "search_limit_reached": search_limit_reached,
+        })
+        return result
+
 def _candidate_api_directories(api_path: str | None) -> list[Path]:
     candidates: list[Path] = []
     if api_path:
