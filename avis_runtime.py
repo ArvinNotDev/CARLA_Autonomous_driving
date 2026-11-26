@@ -1030,10 +1030,30 @@ class AvisObstacleLaneClassifier:
         tensor = np.transpose(tensor, (2, 0, 1))[None, ...]
         tensor = np.ascontiguousarray(tensor, dtype=np.float32)
 
-        raw_outputs = self.session.run(
-            self.output_names,
-            {self.input_name: tensor},
-        )
+        try:
+            raw_outputs = self.session.run(
+                self.output_names,
+                {self.input_name: tensor},
+            )
+        except Exception as exc:
+            if "CUDAExecutionProvider" not in self.providers:
+                raise
+            print(
+                "[AVIS] ONNX obstacle-classifier CUDA inference failed; "
+                "recreating its session on CPU: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            import onnxruntime as ort
+
+            self.session = ort.InferenceSession(
+                str(self.model_path),
+                providers=["CPUExecutionProvider"],
+            )
+            self.providers = list(self.session.get_providers())
+            raw_outputs = self.session.run(
+                self.output_names,
+                {self.input_name: tensor},
+            )
         if len(raw_outputs) != len(self.tasks):
             raise RuntimeError(
                 f"AVIS classifier returned {len(raw_outputs)} outputs; "
