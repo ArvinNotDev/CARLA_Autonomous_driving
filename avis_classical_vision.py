@@ -429,10 +429,10 @@ class AvisClassicalVisionProcessor:
         line_mask = np.zeros((height, width), dtype=np.uint8)
         threshold_mask = np.zeros((height, width), dtype=np.uint8)
         _, _, ll_segments = self._hough_roi_mask(
-            frame, "ll", settings, line_mask, threshold_mask
+            frame, "ll", roi_settings, line_mask, threshold_mask
         )
         _, _, rl_segments = self._hough_roi_mask(
-            frame, "rl", settings, line_mask, threshold_mask
+            frame, "rl", roi_settings, line_mask, threshold_mask
         )
 
         min_side_pixels = max(1, int(settings["min_side_pixels"]))

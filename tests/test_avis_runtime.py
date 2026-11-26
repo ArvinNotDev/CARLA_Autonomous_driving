@@ -1129,3 +1129,45 @@ def test_avis_adaptive_roi_reconfiguration_resets_stale_expansion():
     assert adaptive.snapshot()["ll"]["expanded_left"] == 0
     adaptive.configure({"adaptive_roi_enabled": True})
     assert adaptive.snapshot()["ll"]["expanded_left"] == 0
+
+
+def test_avis_classical_vision_runs_hough_inside_temporarily_expanded_roi(monkeypatch):
+    settings = dict(DEFAULT_AVIS_SETTINGS)
+    adaptive = AvisAdaptiveROIController(settings)
+    frame_width = 200
+    left, right = settings["ll_left_roi"], settings["ll_right_roi"]
+    for ratio in (0.60, 0.42, 0.24, 0.16, 0.10):
+        adaptive.observe(
+            (left + (right - left) * ratio) * frame_width,
+            None,
+            frame_width,
+        )
+    expected_width = int(round(
+        (right - adaptive.snapshot()["ll"]["expanded_left"] - left) * frame_width
+    ))
+    assert adaptive.snapshot()["ll"]["expanded_left"] > 0
+
+    processor = AvisClassicalVisionProcessor(
+        settings,
+        adaptive_roi_controller=adaptive,
+    )
+    observed_shapes = []
+    def fake_threshold(roi_frame, _settings):
+        observed_shapes.append(roi_frame.shape[:2])
+        return np.zeros(roi_frame.shape[:2], dtype=np.uint8)
+
+    monkeypatch.setattr(
+        AvisClassicalVisionProcessor,
+        "_threshold_roi",
+        staticmethod(fake_threshold),
+    )
+    monkeypatch.setattr(
+        "avis_classical_vision.cv2.HoughLinesP",
+        lambda *args, **kwargs: None,
+    )
+    frame = np.zeros((100, frame_width, 3), dtype=np.uint8)
+    processor.detect(None, rgb_frame=frame)
+
+    base_width = int(round((right - left) * frame_width))
+    assert expected_width > base_width
+    assert observed_shapes[0][1] == expected_width
