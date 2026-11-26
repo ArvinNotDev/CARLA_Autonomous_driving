@@ -170,11 +170,11 @@ model and AVIS PID/speed defaults. The Classical CV backend does not run a
 segmentation model to obtain lane pixels: it independently crops the configured
 left-lane (LL) and right-lane (RL) rectangles, then runs HLS white/yellow
 thresholding, Gaussian blur, Canny, morphology, and HoughLinesP strictly inside
-each crop. Its resulting binary mask follows the same downstream procedure as
-the model-backed lane mask: median x-coordinate per ROI, line-angle estimation,
-sticky-side selection, lane-offset calculation, and centre smoothing. The
-classical drivable-area view is an estimated corridor, not a semantic
-road-surface prediction.
+each crop. Both backends supply only their selected lane-line mask to lane
+tracking: the model backend extracts only the `lane_lines` class, and AVIS does
+not calculate, consume, or display drivable-area or vehicle masks. The classical
+backend likewise detects lane boundaries only; it does not estimate a road
+corridor. The binary selected-line mask is rendered in red in the debug view.
 
 Use the Python API revision compatible with AVIS 1.2.4 (the vendor's
 `FIRA-ACL` branch). Clone it beside the project:
@@ -193,7 +193,7 @@ python main.py --avis
 ```
 
 The AVIS Flask dashboard starts at `http://127.0.0.1:5001`. It provides
-live camera/overlay views, the lane and drivable-area masks, Auto / Manual /
+live camera/overlay views, a red selected-lane mask, Auto / Manual /
 Emergency Stop modes, forward/reverse manual controls, and live controller
 and classical-vision settings. The live ROI editor overlays the camera image:
 select LL or RL, drag the rectangle to move it, or drag a corner to resize it.

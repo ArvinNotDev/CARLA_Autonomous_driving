@@ -64,7 +64,6 @@ AVIS_PROFILE_FIELDS = (
     "VISION_INFERENCE_INTERVAL_SECONDS",
     "LANE_PROB_THRESHOLD",
     "LANE_CENTER_SMOOTH_ALPHA",
-    "DRIVABLE_PROB_THRESHOLD",
     "RL_TOP_ROI",
     "RL_BOTTOM_ROI",
     "RL_LEFT_ROI",
@@ -76,7 +75,6 @@ AVIS_PROFILE_FIELDS = (
     "VISION_DEBUG",
     "DEBUG_SHOW_ROIS",
     "DEBUG_SHOW_LANE_MASK",
-    "DEBUG_SHOW_DRIVABLE_AREA",
     "DEBUG_SHOW_TEXT",
     "DEBUG_PANEL_HZ",
     "MODEL_PATH",
@@ -1135,7 +1133,7 @@ def _create_avis_vision_processor(
     from avis_lane_line_selection import TemporalLaneLineSelector
 
     class AvisVisionProcessor(VisionProcessor):
-        """AVIS model adapter; vehicle segmentation is optional and never drawn."""
+        """AVIS model adapter that extracts and visualizes lane lines only."""
 
         def detect(self, semantic_frame, rgb_frame=None):
             # Apply adaptive AVIS ROI coordinates before resolving crop bounds.
@@ -1272,68 +1270,64 @@ def _create_avis_vision_processor(
         @staticmethod
         def _class_ids_from_names(
             class_names: dict[int, str],
-        ) -> tuple[int, int, int | None]:
-            # Lane and drivable-area classes are required by AVIS lane following.
-            # Vehicle segmentation is not used by AVIS, so checkpoints without
-            # that class must remain valid.
-            required_ids = []
-            for class_name, label in (
-                ("lane_lines", "lane"),
-                ("ego_drivable_area", "drivable-area"),
-            ):
-                matches = [
-                    class_id
-                    for class_id, name in class_names.items()
-                    if name == class_name
-                ]
-                if len(matches) != 1:
-                    raise RuntimeError(
-                        "The AVIS Ultralytics checkpoint must contain exactly "
-                        f"one '{class_name}' class for {label} masks; "
-                        f"found names {class_names!r}"
-                    )
-                required_ids.append(matches[0])
-
-            vehicle_ids = [
+        ) -> tuple[int, None, None]:
+            """Require only lane_lines; all other semantic classes are ignored."""
+            lane_ids = [
                 class_id
                 for class_id, name in class_names.items()
-                if name == "vehicles"
+                if name == "lane_lines"
             ]
-            if len(vehicle_ids) > 1:
+            if len(lane_ids) != 1:
                 raise RuntimeError(
-                    "The AVIS Ultralytics checkpoint may contain at most one "
-                    f"'vehicles' class; found names {class_names!r}"
+                    "The AVIS Ultralytics checkpoint must contain exactly one "
+                    "'lane_lines' class; drivable-area and vehicle classes are "
+                    "not required. "
+                    f"Found names {class_names!r}"
                 )
-            vehicle_class_id = vehicle_ids[0] if vehicle_ids else None
-            return required_ids[0], required_ids[1], vehicle_class_id
+            return lane_ids[0], None, None
 
-        @staticmethod
-        def _semantic_map_to_masks(
-            semantic_map,
-            lane_class_id: int,
-            drivable_class_id: int,
-            vehicles_class_id: int | None,
-            frame_shape: tuple[int, int],
-        ):
-            if vehicles_class_id is not None:
-                return VisionProcessor._semantic_map_to_masks(
-                    semantic_map,
-                    lane_class_id,
-                    drivable_class_id,
-                    vehicles_class_id,
-                    frame_shape,
+        def _extract_masks_from_ultralytics(self, camera_frame):
+            """Extract only lane-line pixels; never construct other class masks."""
+            import numpy as np
+
+            predictions = self._predict_ultralytics(camera_frame)
+            if not predictions:
+                raise RuntimeError("Ultralytics returned no prediction result.")
+            semantic_output = getattr(predictions[0], "semantic_mask", None)
+            if semantic_output is None or getattr(semantic_output, "data", None) is None:
+                raise RuntimeError(
+                    "The configured checkpoint did not return semantic_mask. "
+                    "AVIS requires an Ultralytics semantic-segmentation checkpoint "
+                    "with a lane_lines class."
                 )
 
-            # Reuse the shared mask decoder for the required classes, then
-            # explicitly report that no vehicle mask exists for this model.
-            drivable_mask, lane_mask, _ = VisionProcessor._semantic_map_to_masks(
-                semantic_map,
-                lane_class_id,
-                drivable_class_id,
-                -1,
-                frame_shape,
-            )
-            return drivable_mask, lane_mask, None
+            semantic_data = semantic_output.data
+            if hasattr(semantic_data, "detach"):
+                semantic_data = semantic_data.detach()
+            if hasattr(semantic_data, "cpu"):
+                semantic_data = semantic_data.cpu()
+            if hasattr(semantic_data, "numpy"):
+                semantic_data = semantic_data.numpy()
+
+            class_map = np.squeeze(np.asarray(semantic_data))
+            if class_map.ndim != 2:
+                raise RuntimeError(
+                    "AVIS semantic output must be a two-dimensional class-ID map; "
+                    f"received shape {class_map.shape!r}"
+                )
+
+            frame_height, frame_width = np.asarray(camera_frame).shape[:2]
+            if class_map.shape != (frame_height, frame_width):
+                import cv2
+
+                class_map = cv2.resize(
+                    class_map.astype(np.float32),
+                    (frame_width, frame_height),
+                    interpolation=cv2.INTER_NEAREST,
+                )
+
+            lane_mask = (class_map == self.lane_class_id).astype(np.uint8) * 255
+            return None, lane_mask, None
 
         def __init__(self, mode: str):
             super().__init__(mode)
@@ -1344,11 +1338,10 @@ def _create_avis_vision_processor(
             }
             self._avis_selection_signature = None
             self.last_lane_half_width: float | None = None
-            if getattr(self, "vehicles_class_id", None) is None:
-                print(
-                    "[AVIS] Model has no 'vehicles' class; "
-                    "continuing without vehicle masks."
-                )
+            print(
+                "[AVIS] Model inference is used for lane_lines only; "
+                "drivable-area and vehicle masks are disabled."
+            )
 
         def _pick_sticky_lane(
             self,
@@ -1422,16 +1415,43 @@ def _create_avis_vision_processor(
             lane_type,
             vehicles_mask=None,
         ):
-            return super()._draw_debug(
+            import cv2
+            import numpy as np
+
+            # Keep the shared frame-centre, ROI and boundary annotations, but
+            # explicitly disable every non-lane segmentation overlay.
+            visual = super()._draw_debug(
                 frame=frame,
-                line_mask=line_mask,
-                drivable_mask=drivable_mask,
+                line_mask=None,
+                drivable_mask=None,
                 left_x=left_x,
                 right_x=right_x,
                 lane_center=lane_center,
                 lane_type=lane_type,
                 vehicles_mask=None,
             )
+            if line_mask is None:
+                return visual
+
+            lane = np.asarray(line_mask)
+            if lane.ndim == 3:
+                lane_pixels = np.any(lane > 0, axis=2)
+            elif lane.ndim == 2:
+                lane_pixels = lane > 0
+            else:
+                return visual
+
+            height, width = visual.shape[:2]
+            if lane_pixels.shape != (height, width):
+                lane_pixels = cv2.resize(
+                    lane_pixels.astype(np.uint8),
+                    (width, height),
+                    interpolation=cv2.INTER_NEAREST,
+                ) > 0
+
+            # OpenCV uses BGR: (0, 0, 255) is pure red.
+            visual[lane_pixels] = (0, 0, 255)
+            return visual
 
     return AvisVisionProcessor("ultralytics")
 
@@ -1448,6 +1468,32 @@ def _encode_avis_preview(cv2_module, image) -> bytes | None:
     except Exception:
         return None
     return encoded.tobytes() if ok else None
+
+
+def _colorize_avis_lane_mask(cv2_module, np_module, line_mask, frame_shape):
+    """Create a BGR debug preview where every selected lane pixel is pure red."""
+    height, width = int(frame_shape[0]), int(frame_shape[1])
+    preview = np_module.zeros((height, width, 3), dtype=np_module.uint8)
+    if line_mask is None:
+        return preview
+
+    mask = np_module.asarray(line_mask)
+    if mask.ndim == 3:
+        selected = np_module.any(mask > 0, axis=2)
+    elif mask.ndim == 2:
+        selected = mask > 0
+    else:
+        return preview
+
+    if selected.shape != (height, width):
+        selected = cv2_module.resize(
+            selected.astype(np_module.uint8),
+            (width, height),
+            interpolation=cv2_module.INTER_NEAREST,
+        ) > 0
+
+    preview[selected] = (0, 0, 255)
+    return preview
 
 
 def run_avis(args: argparse.Namespace) -> int:
@@ -1897,7 +1943,6 @@ def run_avis(args: argparse.Namespace) -> int:
                     debug_data = {}
                 combined = debug_data.get("combined")
                 line_mask = debug_data.get("lane_mask")
-                drivable_mask = debug_data.get("drivable_mask")
 
                 display = (
                     np.ascontiguousarray(combined).copy()
@@ -1973,13 +2018,9 @@ def run_avis(args: argparse.Namespace) -> int:
                             "combined": _encode_avis_preview(cv2, display),
                             "line-mask": _encode_avis_preview(
                                 cv2,
-                                line_mask if isinstance(line_mask, np.ndarray) else black_mask,
-                            ),
-                            "drivable-mask": _encode_avis_preview(
-                                cv2,
-                                drivable_mask
-                                if isinstance(drivable_mask, np.ndarray)
-                                else black_mask,
+                                _colorize_avis_lane_mask(
+                                    cv2, np, line_mask, frame_bgr.shape[:2]
+                                ),
                             ),
                         }
                     )

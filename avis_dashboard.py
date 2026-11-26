@@ -502,7 +502,7 @@ class AvisDashboardState:
     def publish_images(self, images: dict[str, bytes]) -> None:
         with self._lock:
             for name, payload in images.items():
-                if name not in {"camera", "combined", "line-mask", "drivable-mask"}:
+                if name not in {"camera", "combined", "line-mask"}:
                     continue
                 if payload:
                     self._images[name] = payload
@@ -632,10 +632,9 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
         <div class="views">
           <div class="view"><div class="view-title"><span>AVIS camera / ROI editor</span><small>Drag to move · handles to resize</small></div><div class="roi-editor-wrap"><img id="roiSource" class="roi-source" src="/stream/camera" alt="AVIS camera"><canvas id="roiCanvas"></canvas></div><div class="roi-toolbar"><button class="btn active" id="roiLeftButton" type="button">Left ROI</button><button class="btn" id="roiRightButton" type="button">Right ROI</button><button class="btn" id="resetRoiButton" type="button">Reset selected ROI</button><label class="hint"><input type="checkbox" id="showRois" checked> Show both ROIs</label><span class="message" id="roiCanvasMessage"></span></div><div class="roi-help">These are the same LL / RL rectangles used by the model-based lane processor. Classical CV runs thresholding, blur, Canny and HoughLinesP strictly inside the selected rectangles.</div></div>
           <div class="view"><div class="view-title"><span>Lane overlay</span><small>Detected boundaries</small></div><img src="/stream/combined" alt="Lane overlay"></div>
-          <div class="view"><div class="view-title"><span>Lane mask</span><small>Binary lane boundaries</small></div><img src="/stream/line-mask" alt="Lane mask"></div>
-          <div class="view" id="drivableView"><div class="view-title"><span>Semantic drivable area</span><small>Model segmentation only</small></div><img src="/stream/drivable-mask" alt="Semantic drivable-area mask"></div>
+          <div class="view"><div class="view-title"><span>Selected lane mask</span><small>Red pixels = lane-line pixels used for tracking</small></div><img src="/stream/line-mask" alt="Selected lane mask"></div>
         </div>
-        <div class="hint" id="backendDescription">The semantic model provides the road-surface mask. Classical Hough mode focuses only on lane boundaries and does not estimate a drivable area.</div>
+        <div class="hint" id="backendDescription">The semantic model extracts only lane_lines for lane tracking. Drivable-area and vehicle masks are not calculated or displayed. The selected lane mask is shown in red.</div>
       </div>
     </section>
     <aside class="right-panel">
@@ -1062,10 +1061,9 @@ function setModeButtons(mode) {
 function updateBackendVisibility(backend) {
   const classical = backend === "classical";
   $("classicalSettings").classList.toggle("hidden", !classical);
-  $("drivableView").classList.toggle("hidden", classical);
   $("backendDescription").textContent = classical
-    ? "HoughLinesP mode detects lane boundaries only. It does not construct or calculate a drivable-area mask."
-    : "The semantic model provides the road-surface mask and lane-boundary visualization.";
+    ? "HoughLinesP mode detects lane boundaries only. It does not construct or calculate a drivable-area mask. The selected lane mask is shown in red."
+    : "The semantic model extracts only lane_lines for lane tracking. Drivable-area and vehicle masks are not calculated or displayed; selected lane pixels are shown in red.";
 }
 function fillSettings(settings) {
   settingInputs.forEach(input => {
@@ -1599,7 +1597,7 @@ def create_avis_dashboard_app(state: AvisDashboardState) -> Flask:
 
     @app.get("/stream/<view_name>")
     def stream(view_name: str):
-        if view_name not in {"camera", "combined", "line-mask", "drivable-mask"}:
+        if view_name not in {"camera", "combined", "line-mask"}:
             return jsonify({"error": "Unknown image view."}), 404
 
         def generate():

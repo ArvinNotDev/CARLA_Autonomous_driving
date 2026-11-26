@@ -1507,8 +1507,10 @@ def test_avis_dashboard_roi_editor_is_available_for_both_vision_backends(tmp_pat
     assert 'data-panel="live"' in html
     assert 'data-panel="settings"' in html
     assert 'data-panel="roi"' in html
-    assert 'id="drivableView"' in html
-    assert "does not construct or calculate a drivable-area mask" in html
+    assert 'id="drivableView"' not in html
+    assert 'src="/stream/drivable-mask"' not in html
+    assert "drivable-area and vehicle masks are not calculated or displayed" in html
+    assert client.get("/stream/drivable-mask").status_code == 404
 
 
 def test_avis_classical_vision_stops_when_no_lane_is_detected():
@@ -1536,98 +1538,42 @@ def test_avis_client_sends_reverse_speed_only_for_manual_controls():
 
 
 
-def test_avis_model_allows_missing_vehicle_class_without_changing_shared_processor(monkeypatch):
+def test_avis_model_extracts_only_lane_lines_and_does_not_require_other_classes(monkeypatch):
     import numpy as np
     import vision.city_vision_processing as shared_vision
 
     class FakeVisionProcessor:
         def __init__(self, mode):
             self.mode = mode
-            self.vehicles_class_id = None
-
-        @staticmethod
-        def _semantic_map_to_masks(
-            semantic_map,
-            lane_class_id,
-            drivable_class_id,
-            vehicles_class_id,
-            frame_shape,
-        ):
-            class_map = np.asarray(semantic_map).squeeze()
-            if class_map.shape != frame_shape:
-                class_map = np.resize(class_map, frame_shape)
-            drivable = (class_map == drivable_class_id).astype(np.uint8) * 255
-            lane = (class_map == lane_class_id).astype(np.uint8) * 255
-            vehicles = (class_map == vehicles_class_id).astype(np.uint8) * 255
-            return drivable, lane, vehicles
 
     monkeypatch.setattr(shared_vision, "VisionProcessor", FakeVisionProcessor)
     processor = _create_avis_vision_processor("ultralytics", {})
 
-    class_names = {
+    # Both a lane-only checkpoint and an older multi-class checkpoint are valid.
+    assert processor._class_ids_from_names({
         0: "background",
-        1: "ego_drivable_area",
         2: "lane_lines",
-    }
-    lane_id, drivable_id, vehicles_id = processor._class_ids_from_names(class_names)
-    assert (lane_id, drivable_id, vehicles_id) == (2, 1, None)
-
-    semantic_map = np.array([[0, 1, 2]], dtype=np.uint8)
-    drivable_mask, lane_mask, vehicles_mask = processor._semantic_map_to_masks(
-        semantic_map,
-        lane_class_id=lane_id,
-        drivable_class_id=drivable_id,
-        vehicles_class_id=vehicles_id,
-        frame_shape=(1, 3),
-    )
-
-    assert drivable_mask.tolist() == [[0, 255, 0]]
-    assert lane_mask.tolist() == [[0, 0, 255]]
-    assert vehicles_mask is None
-
-
-def test_avis_model_still_uses_vehicle_class_when_checkpoint_has_it(monkeypatch):
-    import numpy as np
-    import vision.city_vision_processing as shared_vision
-
-    class FakeVisionProcessor:
-        def __init__(self, mode):
-            self.mode = mode
-            self.vehicles_class_id = 3
-
-        @staticmethod
-        def _semantic_map_to_masks(
-            semantic_map,
-            lane_class_id,
-            drivable_class_id,
-            vehicles_class_id,
-            frame_shape,
-        ):
-            class_map = np.asarray(semantic_map).reshape(frame_shape)
-            return (
-                (class_map == drivable_class_id).astype(np.uint8) * 255,
-                (class_map == lane_class_id).astype(np.uint8) * 255,
-                (class_map == vehicles_class_id).astype(np.uint8) * 255,
-            )
-
-    monkeypatch.setattr(shared_vision, "VisionProcessor", FakeVisionProcessor)
-    processor = _create_avis_vision_processor("ultralytics", {})
-
+    }) == (2, None, None)
     assert processor._class_ids_from_names({
         0: "background",
         1: "ego_drivable_area",
         2: "lane_lines",
         3: "vehicles",
-    }) == (2, 1, 3)
+    }) == (2, None, None)
 
-    _, _, vehicles_mask = processor._semantic_map_to_masks(
-        np.array([[3]], dtype=np.uint8),
-        lane_class_id=2,
-        drivable_class_id=1,
-        vehicles_class_id=3,
-        frame_shape=(1, 1),
+    processor.lane_class_id = 2
+    semantic_map = np.array([[0, 1, 2]], dtype=np.uint8)
+    processor._predict_ultralytics = lambda _frame: [
+        SimpleNamespace(semantic_mask=SimpleNamespace(data=semantic_map))
+    ]
+
+    drivable_mask, lane_mask, vehicles_mask = processor._extract_masks_from_ultralytics(
+        np.zeros((1, 3, 3), dtype=np.uint8)
     )
-    assert vehicles_mask.tolist() == [[255]]
+
+    assert drivable_mask is None
+    assert lane_mask.tolist() == [[0, 0, 255]]
+    assert vehicles_mask is None
 
 
 @pytest.mark.parametrize("active_side", [None, "left", "right"])
@@ -1695,7 +1641,8 @@ def test_avis_model_single_boundary_uses_last_measured_lane_half_width(monkeypat
     assert right_only_center == pytest.approx(160.0)
 
 
-def test_avis_model_debug_suppresses_vehicle_mask_without_mutating_shared_processor(monkeypatch):
+def test_avis_model_debug_uses_pure_red_lane_pixels_and_suppresses_other_masks(monkeypatch):
+    import numpy as np
     import vision.city_vision_processing as shared_vision
 
     received = {}
@@ -1705,25 +1652,46 @@ def test_avis_model_debug_suppresses_vehicle_mask_without_mutating_shared_proces
             received["mode"] = mode
 
         def _draw_debug(self, **kwargs):
+            received["line_mask"] = kwargs.get("line_mask")
+            received["drivable_mask"] = kwargs.get("drivable_mask")
             received["vehicles_mask"] = kwargs.get("vehicles_mask")
-            return "debug-frame"
+            return np.ascontiguousarray(kwargs["frame"]).copy()
 
     monkeypatch.setattr(shared_vision, "VisionProcessor", FakeVisionProcessor)
     processor = _create_avis_vision_processor("ultralytics", {})
+    frame = np.zeros((2, 3, 3), dtype=np.uint8)
+    lane_mask = np.array([[255, 0, 0], [0, 255, 0]], dtype=np.uint8)
     result = processor._draw_debug(
-        frame=None,
-        line_mask=None,
-        drivable_mask=None,
+        frame=frame,
+        line_mask=lane_mask,
+        drivable_mask=np.full((2, 3), 255, dtype=np.uint8),
         left_x=None,
         right_x=None,
-        lane_center=0.0,
+        lane_center=1.5,
         lane_type="none",
-        vehicles_mask=object(),
+        vehicles_mask=np.full((2, 3), 255, dtype=np.uint8),
     )
 
-    assert result == "debug-frame"
     assert received["mode"] == "ultralytics"
+    assert received["line_mask"] is None
+    assert received["drivable_mask"] is None
     assert received["vehicles_mask"] is None
+    assert tuple(result[0, 0]) == (0, 0, 255)
+    assert tuple(result[0, 1]) == (0, 0, 0)
+
+
+def test_avis_lane_mask_preview_is_black_with_pure_red_selected_pixels():
+    import cv2
+    import numpy as np
+    from avis_runtime import _colorize_avis_lane_mask
+
+    mask = np.array([[0, 255], [255, 0]], dtype=np.uint8)
+    preview = _colorize_avis_lane_mask(cv2, np, mask, mask.shape)
+
+    assert preview.shape == (2, 2, 3)
+    assert tuple(preview[0, 0]) == (0, 0, 0)
+    assert tuple(preview[0, 1]) == (0, 0, 255)
+    assert tuple(preview[1, 0]) == (0, 0, 255)
 
 
 def test_avis_adaptive_roi_uses_last_seven_frames_to_expand_toward_escape():
