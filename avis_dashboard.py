@@ -3,12 +3,17 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 from typing import Any
 
 from flask import Flask, Response, jsonify, request
+
+from avis_profiles import AvisGitHubProfileSync
 from werkzeug.serving import BaseWSGIServer, make_server
 
 
@@ -52,6 +57,23 @@ DEFAULT_AVIS_SETTINGS: dict[str, Any] = {
     "min_side_pixels": 12,
     "lane_offset_ratio": 0.16,
     "center_smoothing": 0.30,
+    "obstacle_lane_change_enabled": True,
+    "obstacle_front_threshold_cm": 950,
+    "obstacle_trigger_confirm_frames": 3,
+    "obstacle_sensor_clear_threshold_cm": 900,
+    "obstacle_sensor_clear_confirm_frames": 5,
+    "obstacle_lane_change_steer_distance_m": 3.0,
+    "obstacle_lane_change_left_steer": 0.30,
+    "obstacle_lane_change_right_steer": 0.30,
+    "obstacle_lane_line_confirm_frames": 3,
+    "obstacle_lane_line_search_max_distance_m": 40.0,
+    "obstacle_clearance_after_pass_m": 5.0,
+    "adaptive_roi_enabled": True,
+    "adaptive_roi_max_expansion_ratio": 0.12,
+    "adaptive_roi_edge_trigger_ratio": 0.22,
+    "adaptive_roi_expand_step_ratio": 0.02,
+    "adaptive_roi_recovery_frames": 7,
+    "adaptive_roi_restore_step_ratio": 0.005,
 }
 
 
@@ -93,6 +115,21 @@ _NUMERIC_LIMITS: dict[str, tuple[float, float, bool]] = {
     "min_side_pixels": (1.0, 500.0, True),
     "lane_offset_ratio": (0.03, 0.45, False),
     "center_smoothing": (0.01, 1.0, False),
+    "obstacle_front_threshold_cm": (50.0, 1499.0, True),
+    "obstacle_trigger_confirm_frames": (1.0, 30.0, True),
+    "obstacle_sensor_clear_threshold_cm": (51.0, 1500.0, True),
+    "obstacle_sensor_clear_confirm_frames": (1.0, 30.0, True),
+    "obstacle_lane_change_steer_distance_m": (0.1, 100.0, False),
+    "obstacle_lane_change_left_steer": (0.001, 1.0, False),
+    "obstacle_lane_change_right_steer": (0.001, 1.0, False),
+    "obstacle_lane_line_confirm_frames": (1.0, 60.0, True),
+    "obstacle_lane_line_search_max_distance_m": (0.1, 1000.0, False),
+    "obstacle_clearance_after_pass_m": (0.0, 1000.0, False),
+    "adaptive_roi_max_expansion_ratio": (0.0, 0.30, False),
+    "adaptive_roi_edge_trigger_ratio": (0.05, 0.45, False),
+    "adaptive_roi_expand_step_ratio": (0.001, 0.05, False),
+    "adaptive_roi_recovery_frames": (1.0, 60.0, True),
+    "adaptive_roi_restore_step_ratio": (0.001, 0.05, False),
 }
 
 
@@ -115,9 +152,9 @@ def validate_avis_settings(
                 raise ValueError("vision_backend must be 'ultralytics' or 'classical'.")
             result[key] = value
             continue
-        if key == "yellow_enabled":
+        if key in {"yellow_enabled", "obstacle_lane_change_enabled", "adaptive_roi_enabled"}:
             if not isinstance(value, bool):
-                raise ValueError("yellow_enabled must be a boolean.")
+                raise ValueError(f"{key} must be a boolean.")
             result[key] = value
             continue
 
@@ -156,14 +193,31 @@ class AvisDashboardState:
         initial_settings: dict[str, Any] | None = None,
         settings_path: Path | str = "avis_settings.json",
         manual_timeout_seconds: float = 0.45,
+        profile_path: Path | str | None = None,
+        github_sync: AvisGitHubProfileSync | None = None,
+        capture_directory: Path | str | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self.settings_path = Path(settings_path)
+        self.profile_path = (
+            Path(profile_path)
+            if profile_path is not None
+            else self.settings_path.with_name("avis_profiles.json")
+        )
+        self.github_sync = github_sync or AvisGitHubProfileSync()
+        self.capture_directory = (
+            Path(capture_directory).expanduser()
+            if capture_directory is not None
+            else Path.home() / "Documents" / "AVIS_RoadForge_Captures"
+        )
+        self.capture_session_id = uuid4().hex
         self.manual_timeout_seconds = max(0.15, float(manual_timeout_seconds))
         self._settings = dict(DEFAULT_AVIS_SETTINGS)
         if initial_settings:
             self._settings = validate_avis_settings(self._settings, initial_settings)
         self._load_saved_settings()
+        self._profiles: dict[str, dict[str, Any]] = {}
+        self._load_saved_profiles()
         self._settings_revision = 0
         self._mode = "auto"
         self._manual_throttle = 0.0
@@ -179,6 +233,28 @@ class AvisDashboardState:
             "lane_error_px": 0.0,
             "lane_valid": False,
             "sensors_cm": None,
+            "front_sensor_cm": None,
+            "sensor_distances_cm": None,
+            "obstacle_trigger_sensor": None,
+            "lane_change_phase": "RIGHT_LANE",
+            "lane_change_side": "right",
+            "lane_change_target": "right",
+            "lane_change_distance_m": 0.0,
+            "lane_change_target_distance_m": None,
+            "lane_change_obstacle_distance_m": None,
+            "lane_change_return_reason": "DISTANCE",
+            "lane_change_segment_distance_m": 0.0,
+            "lane_change_target_line_side": None,
+            "lane_change_target_line_baseline_x": None,
+            "lane_change_target_line_old_track_x": None,
+            "lane_change_target_line_old_cleared": False,
+            "lane_change_target_line_candidate_x": None,
+            "lane_change_line_confirm_frames": 0,
+            "lane_change_line_search_distance_m": 0.0,
+            "lane_change_steering_pulse_number": 0,
+            "frame_read_fps": 0.0,
+            "inference_fps": 0.0,
+            "control_loop_fps": 0.0,
             "vision_error": None,
         }
         self._images: dict[str, bytes] = {}
@@ -198,6 +274,8 @@ class AvisDashboardState:
                     "roi_top_half_width_ratio",
                     "roi_bottom_half_width_ratio",
                     "lane_width_ratio",
+                    "obstacle_return_distance_m",
+                    "obstacle_slowdown_start_cm",
                 ):
                     saved.pop(legacy_key, None)
             self._settings = validate_avis_settings(self._settings, saved)
@@ -224,6 +302,156 @@ class AvisDashboardState:
             self._settings = updated
             self._settings_revision += 1
             return dict(self._settings)
+
+    @staticmethod
+    def _normalize_profile_name(name: Any) -> str:
+        value = str(name or "").strip()
+        if not value or len(value) > 48 or any(
+            not (character.isalnum() or character in " _.-")
+            for character in value
+        ):
+            raise ValueError(
+                "Profile name must be 1-48 characters and may contain letters, "
+                "numbers, spaces, dots, underscores or hyphens."
+            )
+        return value
+
+    @staticmethod
+    def _profile_key(name: str) -> str:
+        return name.strip().casefold()
+
+    def _load_saved_profiles(self) -> None:
+        loaded: dict[str, dict[str, Any]] = {}
+        if self.profile_path.is_file():
+            try:
+                document = json.loads(self.profile_path.read_text(encoding="utf-8"))
+                entries = document.get("profiles", []) if isinstance(document, dict) else []
+                if isinstance(entries, list):
+                    for entry in entries:
+                        if not isinstance(entry, dict) or not isinstance(entry.get("settings"), dict):
+                            continue
+                        try:
+                            name = self._normalize_profile_name(entry.get("name"))
+                            saved_settings = dict(entry["settings"])
+                            saved_settings.pop("obstacle_slowdown_start_cm", None)
+                            settings = validate_avis_settings(
+                                dict(DEFAULT_AVIS_SETTINGS), saved_settings
+                            )
+                        except (TypeError, ValueError):
+                            continue
+                        loaded[self._profile_key(name)] = {
+                            "schema_version": 1,
+                            "name": name,
+                            "settings": settings,
+                            "saved_at": entry.get("saved_at"),
+                        }
+            except (OSError, json.JSONDecodeError, TypeError) as exc:
+                print(f"[AVIS WEB] Ignoring invalid profile file: {exc}")
+
+        default_key = self._profile_key("AVIS_StableV2")
+        if default_key not in loaded:
+            loaded[default_key] = {
+                "schema_version": 1,
+                "name": "AVIS_StableV2",
+                "settings": dict(self._settings),
+                "saved_at": None,
+            }
+        self._profiles = loaded
+
+    def _persist_profiles_locked(self) -> None:
+        self.profile_path.parent.mkdir(parents=True, exist_ok=True)
+        document = {
+            "schema_version": 1,
+            "profiles": sorted(
+                self._profiles.values(),
+                key=lambda item: str(item["name"]).casefold(),
+            ),
+        }
+        temporary_path = self.profile_path.with_suffix(
+            self.profile_path.suffix + ".tmp"
+        )
+        temporary_path.write_text(
+            json.dumps(document, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary_path, self.profile_path)
+
+    def profiles_snapshot(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [
+                {
+                    "name": item["name"],
+                    "saved_at": item.get("saved_at"),
+                }
+                for item in sorted(
+                    self._profiles.values(),
+                    key=lambda profile: str(profile["name"]).casefold(),
+                )
+            ]
+
+    def get_profile(self, name: Any) -> dict[str, Any]:
+        normalized = self._normalize_profile_name(name)
+        with self._lock:
+            profile = self._profiles.get(self._profile_key(normalized))
+            if profile is None:
+                raise ValueError(f"AVIS profile '{normalized}' was not found.")
+            return json.loads(json.dumps(profile, ensure_ascii=False))
+
+    def save_profile(self, name: Any) -> dict[str, Any]:
+        normalized = self._normalize_profile_name(name)
+        with self._lock:
+            profile = {
+                "schema_version": 1,
+                "name": normalized,
+                "settings": dict(self._settings),
+                "saved_at": time.time(),
+            }
+            self._profiles[self._profile_key(normalized)] = profile
+            self._persist_profiles_locked()
+            return json.loads(json.dumps(profile, ensure_ascii=False))
+
+    def import_profile(self, document: Any) -> dict[str, Any]:
+        if not isinstance(document, dict):
+            raise ValueError("Profile import must be a JSON object.")
+        if document.get("schema_version", 1) != 1:
+            raise ValueError("Unsupported AVIS profile schema version.")
+        normalized = self._normalize_profile_name(document.get("name"))
+        settings = document.get("settings")
+        if not isinstance(settings, dict):
+            raise ValueError("The imported profile does not contain a settings object.")
+        compatible_settings = dict(settings)
+        compatible_settings.pop("obstacle_slowdown_start_cm", None)
+        validated = validate_avis_settings(
+            dict(DEFAULT_AVIS_SETTINGS), compatible_settings
+        )
+        profile = {
+            "schema_version": 1,
+            "name": normalized,
+            "settings": validated,
+            "saved_at": document.get("saved_at") or time.time(),
+        }
+        with self._lock:
+            self._profiles[self._profile_key(normalized)] = profile
+            self._persist_profiles_locked()
+            return json.loads(json.dumps(profile, ensure_ascii=False))
+
+    def export_profile(self, name: Any) -> dict[str, Any]:
+        return self.get_profile(name)
+
+    def load_profile(self, name: Any) -> dict[str, Any]:
+        profile = self.get_profile(name)
+        return self.update_settings(profile["settings"], persist=True)
+
+    def delete_profile(self, name: Any) -> None:
+        normalized = self._normalize_profile_name(name)
+        if self._profile_key(normalized) == self._profile_key("AVIS_StableV2"):
+            raise ValueError("The AVIS_StableV2 baseline profile cannot be deleted.")
+        with self._lock:
+            key = self._profile_key(normalized)
+            if key not in self._profiles:
+                raise ValueError(f"AVIS profile '{normalized}' was not found.")
+            del self._profiles[key]
+            self._persist_profiles_locked()
 
     def set_mode(self, mode: str) -> str:
         if mode not in {"auto", "manual", "stopped"}:
@@ -274,7 +502,7 @@ class AvisDashboardState:
     def publish_images(self, images: dict[str, bytes]) -> None:
         with self._lock:
             for name, payload in images.items():
-                if name not in {"camera", "combined", "line-mask", "drivable-mask"}:
+                if name not in {"camera", "combined", "line-mask"}:
                     continue
                 if payload:
                     self._images[name] = payload
@@ -283,6 +511,48 @@ class AvisDashboardState:
     def image_snapshot(self, name: str) -> tuple[bytes | None, int]:
         with self._lock:
             return self._images.get(name), self._image_versions.get(name, 0)
+
+    def capture_roadforge_frame(self) -> dict[str, Any]:
+        """Persist the latest front-camera JPEG and its AVIS session telemetry."""
+        with self._lock:
+            payload = self._images.get("camera")
+            version = self._image_versions.get("camera", 0)
+            telemetry = dict(self._telemetry)
+            mode = self._mode
+            session_id = self.capture_session_id
+        if not payload:
+            raise RuntimeError("No front-camera frame is available yet. Wait for the live camera stream.")
+
+        now = datetime.now().astimezone()
+        filename = f"avis_{now.strftime('%Y%m%d_%H%M%S_%f')}_{uuid4().hex[:8]}.jpg"
+        images_dir = self.capture_directory / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        image_path = images_dir / filename
+        image_path.write_bytes(payload)
+        entry = {
+            "image": f"images/{filename}",
+            "filename": filename,
+            "captured_at": now.isoformat(timespec="milliseconds"),
+            "session_id": session_id,
+            "camera_view": "front_rgb",
+            "camera_version": int(version),
+            "mode": mode,
+            "telemetry": telemetry,
+        }
+        manifest_path = self.capture_directory / "manifest.jsonl"
+        with self._lock:
+            with manifest_path.open("a", encoding="utf-8") as manifest:
+                manifest.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+                manifest.flush()
+        return {
+            "captured": True,
+            "filename": filename,
+            "image": entry["image"],
+            "path": str(image_path.resolve()),
+            "manifest": str(manifest_path.resolve()),
+            "session_id": session_id,
+            "camera_version": int(version),
+        }
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -341,6 +611,11 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
 .roi-editor-wrap canvas{outline:0}
 @media(max-width:980px){.grid{grid-template-columns:1fr}.topline{align-items:start;flex-direction:column}.metrics{grid-template-columns:repeat(2,1fr)}.right-panel{position:static;max-height:none;overflow:visible}}
 @media(max-width:560px){header{padding:13px 14px}.brand h1{font-size:14px}.status{font-size:10px}.header-status{justify-content:flex-start}.views{grid-template-columns:1fr}.manual-grid,.fields{grid-template-columns:1fr}.panel{padding:13px}.metric strong{font-size:17px}.panel-tabs{position:static}}
+/* AVIS performance telemetry */
+.fps-metrics{grid-template-columns:repeat(3,minmax(0,1fr));margin-top:-6px}
+.fps-metrics .metric{padding:9px 11px}
+.fps-metrics .metric strong{font-size:18px}
+@media(max-width:560px){.fps-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 </head>
 <body>
@@ -357,10 +632,9 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
         <div class="views">
           <div class="view"><div class="view-title"><span>AVIS camera / ROI editor</span><small>Drag to move · handles to resize</small></div><div class="roi-editor-wrap"><img id="roiSource" class="roi-source" src="/stream/camera" alt="AVIS camera"><canvas id="roiCanvas"></canvas></div><div class="roi-toolbar"><button class="btn active" id="roiLeftButton" type="button">Left ROI</button><button class="btn" id="roiRightButton" type="button">Right ROI</button><button class="btn" id="resetRoiButton" type="button">Reset selected ROI</button><label class="hint"><input type="checkbox" id="showRois" checked> Show both ROIs</label><span class="message" id="roiCanvasMessage"></span></div><div class="roi-help">These are the same LL / RL rectangles used by the model-based lane processor. Classical CV runs thresholding, blur, Canny and HoughLinesP strictly inside the selected rectangles.</div></div>
           <div class="view"><div class="view-title"><span>Lane overlay</span><small>Detected boundaries</small></div><img src="/stream/combined" alt="Lane overlay"></div>
-          <div class="view"><div class="view-title"><span>Lane mask</span><small>Binary lane boundaries</small></div><img src="/stream/line-mask" alt="Lane mask"></div>
-          <div class="view" id="drivableView"><div class="view-title"><span>Semantic drivable area</span><small>Model segmentation only</small></div><img src="/stream/drivable-mask" alt="Semantic drivable-area mask"></div>
+          <div class="view"><div class="view-title"><span>Selected lane mask</span><small>Red pixels = lane-line pixels used for tracking</small></div><img src="/stream/line-mask" alt="Selected lane mask"></div>
         </div>
-        <div class="hint" id="backendDescription">The semantic model provides the road-surface mask. Classical Hough mode focuses only on lane boundaries and does not estimate a drivable area.</div>
+        <div class="hint" id="backendDescription">The semantic model extracts only lane_lines for lane tracking. Drivable-area and vehicle masks are not calculated or displayed. The selected lane mask is shown in red.</div>
       </div>
     </section>
     <aside class="right-panel">
@@ -376,6 +650,11 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
     <div class="metric"><span>Steering</span><strong id="steerValue">0.00</strong></div>
     <div class="metric"><span>Lane error</span><strong id="errorValue">-- <small>px</small></strong></div>
   </div>
+  <div class="metrics fps-metrics" aria-label="Runtime performance">
+    <div class="metric"><span>Frame read</span><strong id="frameReadFpsValue">0.0 <small>FPS</small></strong></div>
+    <div class="metric"><span>Vision inference</span><strong id="inferenceFpsValue">0.0 <small>FPS</small></strong></div>
+    <div class="metric"><span>Control loop</span><strong id="controlLoopFpsValue">0.0 <small>FPS</small></strong></div>
+  </div>
       <div class="panel">
         <div class="panel-head"><h3>Drive mode</h3><span class="tag" id="modeTag">AUTO</span></div>
         <div class="mode-row">
@@ -388,6 +667,8 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
           <div class="control"><label for="steeringInput">Steering <output id="steeringOutput">0%</output></label><input id="steeringInput" type="range" min="-100" max="100" value="0" step="1"></div>
         </div>
         <div class="keyhelp">Manual mode: W = forward, S = reverse, A / D = steer, Space = zero throttle and steering. The dashboard sends a short heartbeat; loss of heartbeat releases throttle.</div>
+        <div class="actions"><button class="btn save" id="roadforgeCaptureButton" type="button">Capture frame for RoadForge</button><span class="message" id="roadforgeCaptureMessage" aria-live="polite"></span></div>
+        <div class="hint">Saves the latest front-camera frame and AVIS telemetry to Documents/AVIS_RoadForge_Captures. This does not pause or modify vehicle control.</div>
       </div>
       <div class="panel">
         <div class="panel-head"><h3>Runtime telemetry</h3><span class="tag" id="runtimeStatus">Starting</span></div>
@@ -396,8 +677,33 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
 
       </section>
       <section class="panel-content" id="panel-settings">
-      <form class="panel" id="settingsForm">
+      <form class="panel" id="settingsForm" novalidate>
         <div class="panel-head"><h3>AVIS runtime settings</h3><span class="tag">Live apply</span></div>
+        <div class="section-label">Profiles · save / load / transfer</div>
+        <div class="fields">
+          <div class="field full"><label for="profileName">Profile name</label><input id="profileName" type="text" maxlength="48" placeholder="e.g. AVIS Night Track"></div>
+          <div class="field full"><label for="localProfileSelect">Saved profiles</label><select id="localProfileSelect"></select></div>
+        </div>
+        <div class="actions">
+          <button class="btn save" id="saveProfileButton" type="button">Save profile</button>
+          <button class="btn" id="loadProfileButton" type="button">Load</button>
+          <button class="btn" id="exportProfileButton" type="button">Export JSON</button>
+          <button class="btn" id="importProfileButton" type="button">Import JSON</button>
+          <button class="btn" id="deleteProfileButton" type="button">Delete</button>
+          <input id="profileImportFile" type="file" accept=".json,application/json" hidden>
+        </div>
+        <div class="message" id="profilesMessage"></div>
+        <div class="section-label">GitHub profile sync</div>
+        <div class="fields">
+          <div class="field full"><label for="githubProfileSelect">Profiles stored in GitHub · main / avis_profiles</label><select id="githubProfileSelect"><option value="">Refresh to load remote profiles</option></select></div>
+        </div>
+        <div class="actions">
+          <button class="btn" id="refreshGitHubProfilesButton" type="button">Refresh GitHub</button>
+          <button class="btn" id="publishGitHubProfileButton" type="button">Publish selected</button>
+          <button class="btn" id="loadGitHubProfileButton" type="button">Load from GitHub</button>
+        </div>
+        <div class="hint" id="githubProfilesMessage">Publishing uses GitHub CLI authentication on this PC (gh auth login), or GITHUB_TOKEN / GH_TOKEN. No token is stored in the dashboard or project files.</div>
+        <div class="divider"></div>
         <div class="section-label">Vision engine</div>
         <div class="fields">
           <div class="field full"><label for="vision_backend">Vision backend</label><select id="vision_backend" data-setting="vision_backend"><option value="ultralytics">Ultralytics semantic model</option><option value="classical">Classical CV · HLS / Canny / Hough</option></select></div>
@@ -411,6 +717,31 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
           <div class="field"><label for="max_speed_kmh">Maximum speed (km/h)</label><input id="max_speed_kmh" data-setting="max_speed_kmh" type="number" min="1.5" max="100" step=".5"></div>
           <div class="field full"><label for="acceleration_mps2">Acceleration limit (m/s²)</label><input id="acceleration_mps2" data-setting="acceleration_mps2" type="number" min=".2" max="8" step=".1"></div>
         </div>
+        <div class="section-label">Obstacle avoidance / automatic lane change</div>
+        <div class="fields">
+          <div class="field full"><label for="obstacle_lane_change_enabled">Automatic obstacle lane change</label><select id="obstacle_lane_change_enabled" data-setting="obstacle_lane_change_enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
+          <div class="field"><label for="obstacle_front_threshold_cm">Obstacle trigger distance (cm)</label><input id="obstacle_front_threshold_cm" data-setting="obstacle_front_threshold_cm" type="number" min="50" max="1499" step="1"></div>
+          <div class="field"><label for="obstacle_trigger_confirm_frames">Obstacle confirmation frames</label><input id="obstacle_trigger_confirm_frames" data-setting="obstacle_trigger_confirm_frames" type="number" min="1" max="30" step="1"></div>
+          <div class="field"><label for="obstacle_sensor_clear_threshold_cm">Sensor clear threshold (cm)</label><input id="obstacle_sensor_clear_threshold_cm" data-setting="obstacle_sensor_clear_threshold_cm" type="number" min="51" max="1500" step="1"></div>
+          <div class="field"><label for="obstacle_sensor_clear_confirm_frames">Clear confirmation frames</label><input id="obstacle_sensor_clear_confirm_frames" data-setting="obstacle_sensor_clear_confirm_frames" type="number" min="1" max="30" step="1"></div>
+          <div class="field"><label for="obstacle_lane_change_steer_distance_m">Initial steering distance (m)</label><input id="obstacle_lane_change_steer_distance_m" data-setting="obstacle_lane_change_steer_distance_m" type="number" min=".1" max="100" step="any"></div>
+          <div class="field"><label for="obstacle_lane_line_confirm_frames">Target ROI line confirm frames</label><input id="obstacle_lane_line_confirm_frames" data-setting="obstacle_lane_line_confirm_frames" type="number" min="1" max="20" step="1"></div>
+          <div class="field"><label for="obstacle_lane_change_left_steer">Left steering pulse</label><input id="obstacle_lane_change_left_steer" data-setting="obstacle_lane_change_left_steer" type="number" min=".001" max="1" step="any"></div>
+          <div class="field"><label for="obstacle_lane_change_right_steer">Right steering pulse</label><input id="obstacle_lane_change_right_steer" data-setting="obstacle_lane_change_right_steer" type="number" min=".001" max="1" step="any"></div>
+          <div class="field"><label for="obstacle_lane_line_search_max_distance_m">Maximum straight line-search distance (m)</label><input id="obstacle_lane_line_search_max_distance_m" data-setting="obstacle_lane_line_search_max_distance_m" type="number" min=".1" max="1000" step="any"></div>
+          <div class="field"><label for="obstacle_clearance_after_pass_m">Extra distance after obstacle (m)</label><input id="obstacle_clearance_after_pass_m" data-setting="obstacle_clearance_after_pass_m" type="number" min="0" max="1000" step="any"></div>
+        </div>
+        <div class="hint">AVIS monitors all three distance sensors (left, front and right). If any one of them reaches the configured obstacle trigger distance for the confirmation frames, the lane-change manoeuvre begins. The normal speed controller is not reduced based on a 1500 cm approach threshold. If a target ROI line is not reacquired within the configured search distance, the car keeps moving forward slowly while continuing to search instead of stopping because of lane loss.</div>
+        <div class="section-label">Adaptive lane ROI recovery</div>
+        <div class="fields">
+          <div class="field full"><label for="adaptive_roi_enabled">Adaptive ROI expansion</label><select id="adaptive_roi_enabled" data-setting="adaptive_roi_enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
+          <div class="field"><label for="adaptive_roi_max_expansion_ratio">Maximum expansion (frame ratio)</label><input id="adaptive_roi_max_expansion_ratio" data-setting="adaptive_roi_max_expansion_ratio" type="number" min="0" max=".30" step=".01"></div>
+          <div class="field"><label for="adaptive_roi_edge_trigger_ratio">Edge trigger ratio</label><input id="adaptive_roi_edge_trigger_ratio" data-setting="adaptive_roi_edge_trigger_ratio" type="number" min=".05" max=".45" step=".01"></div>
+          <div class="field"><label for="adaptive_roi_expand_step_ratio">Expansion per frame</label><input id="adaptive_roi_expand_step_ratio" data-setting="adaptive_roi_expand_step_ratio" type="number" min=".001" max=".05" step=".001"></div>
+          <div class="field"><label for="adaptive_roi_recovery_frames">Center confirmation frames</label><input id="adaptive_roi_recovery_frames" data-setting="adaptive_roi_recovery_frames" type="number" min="1" max="60" step="1"></div>
+          <div class="field full"><label for="adaptive_roi_restore_step_ratio">Restore step per frame</label><input id="adaptive_roi_restore_step_ratio" data-setting="adaptive_roi_restore_step_ratio" type="number" min=".001" max=".05" step=".001"></div>
+        </div>
+        <div class="hint">The last 7 inference results are tracked independently for LL and RL. When a marking trends toward an ROI edge, that side expands temporarily; after the marking stays near the center of its original ROI for the configured number of frames, the rectangle gradually returns to its saved size.</div>
         <div class="section-label">Steering PID</div>
         <div class="fields">
           <div class="field"><label for="kp">Kp</label><input id="kp" data-setting="kp" type="number" min="0" max=".2" step=".001"></div>
@@ -443,7 +774,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
             <div class="field"><label for="center_smoothing">Center smoothing (α)</label><input id="center_smoothing" data-setting="center_smoothing" type="number" min=".01" max="1" step=".01"></div>
             <div class="field"><label for="yellow_enabled">Detect yellow markings</label><select id="yellow_enabled" data-setting="yellow_enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
           </div>
-          <div class="hint">Only pixels inside the corresponding LL or RL ROI are sent through HLS thresholding, Gaussian blur, Canny, morphology and HoughLinesP. The resulting mask then uses the project's median-x, line-angle, sticky-side and lane-offset logic.</div>
+          <div class="hint">Only pixels inside each LL/RL crop are processed. Hough fragments are grouped and scored by line coverage and support. LL keeps the rightmost stable line and RL the leftmost stable line; a more extreme candidate must persist across three inference frames before switching. A short detection dropout holds the previous track for up to two frames instead of merging all lines.</div>
         </div>
         <div class="actions"><button class="btn save" type="submit">Apply and save settings</button><span class="message" id="settingsMessage"></span></div>
       </form>
@@ -730,16 +1061,15 @@ function setModeButtons(mode) {
 function updateBackendVisibility(backend) {
   const classical = backend === "classical";
   $("classicalSettings").classList.toggle("hidden", !classical);
-  $("drivableView").classList.toggle("hidden", classical);
   $("backendDescription").textContent = classical
-    ? "HoughLinesP mode detects lane boundaries only. It does not construct or calculate a drivable-area mask."
-    : "The semantic model provides the road-surface mask and lane-boundary visualization.";
+    ? "HoughLinesP mode detects lane boundaries only. It does not construct or calculate a drivable-area mask. The selected lane mask is shown in red."
+    : "The semantic model extracts only lane_lines for lane tracking. Drivable-area and vehicle masks are not calculated or displayed; selected lane pixels are shown in red.";
 }
 function fillSettings(settings) {
   settingInputs.forEach(input => {
     const key = input.dataset.setting;
     if (!(key in settings)) return;
-    if (input.tagName === "SELECT" && (key === "yellow_enabled")) {
+    if (input.tagName === "SELECT" && (key === "yellow_enabled" || key === "obstacle_lane_change_enabled" || key === "adaptive_roi_enabled")) {
       input.value = settings[key] ? "true" : "false";
     } else {
       input.value = settings[key];
@@ -753,8 +1083,13 @@ function collectSettings() {
   settingInputs.forEach(input => {
     const key = input.dataset.setting;
     if (input.tagName === "SELECT" && key === "vision_backend") result[key] = input.value;
-    else if (input.tagName === "SELECT" && key === "yellow_enabled") result[key] = input.value === "true";
-    else result[key] = input.valueAsNumber;
+    else if (input.tagName === "SELECT" && (key === "yellow_enabled" || key === "obstacle_lane_change_enabled" || key === "adaptive_roi_enabled")) result[key] = input.value === "true";
+    else {
+      const raw = input.value.trim();
+      if (raw === "") return;
+      const numeric = Number(raw);
+      if (Number.isFinite(numeric)) result[key] = numeric;
+    }
   });
   return result;
 }
@@ -767,14 +1102,29 @@ async function postJson(url, payload) {
 $("vision_backend").addEventListener("change", () => {
   updateBackendVisibility($("vision_backend").value);
 });
+let settingsEditRevision = 0;
 $("settingsForm").addEventListener("submit", async event => {
   event.preventDefault();
+  const form = $("settingsForm");
+  const submitButton = form.querySelector('button[type="submit"]');
+  const submittedRevision = settingsEditRevision;
+  submitButton.disabled = true;
+  showMessage("Applying settings...", false);
   try {
     const data = await postJson("/api/settings", collectSettings());
-    fillSettings(data.settings);
-    showMessage("Settings applied and saved.", false);
+    if (settingsEditRevision === submittedRevision) {
+      fillSettings(data.settings);
+      delete form.dataset.dirty;
+      showMessage("Settings applied and saved.", false);
+    } else {
+      form.dataset.dirty = "true";
+      showMessage("Settings saved. New edits are still pending; apply again.", false);
+    }
   } catch (error) {
+    form.dataset.dirty = "true";
     showMessage(error.message, true);
+  } finally {
+    submitButton.disabled = false;
   }
 });
 async function changeMode(mode) {
@@ -878,12 +1228,18 @@ async function refreshStatus() {
     $("targetValue").innerHTML = Number(t.target_speed_kmh || 0).toFixed(1) + " <small>km/h</small>";
     $("steerValue").textContent = Number(t.steering || 0).toFixed(2);
     $("errorValue").innerHTML = (t.lane_valid ? Number(t.lane_error_px || 0).toFixed(1) : "--") + " <small>px</small>";
+    $("frameReadFpsValue").innerHTML = Number(t.frame_read_fps || 0).toFixed(1) + " <small>FPS</small>";
+    $("inferenceFpsValue").innerHTML = Number(t.inference_fps || 0).toFixed(1) + " <small>FPS</small>";
+    $("controlLoopFpsValue").innerHTML = Number(t.control_loop_fps || 0).toFixed(1) + " <small>FPS</small>";
     $("runtimeStatus").textContent = t.status || "Running";
     $("runtimeDetails").textContent =
       "Drive mode: " + data.mode.toUpperCase() +
       " · Throttle: " + Math.round(Number(t.throttle || 0) * 100) + "%" +
       " · Lane: " + (t.lane_valid ? "tracking" : "not detected") +
       " · Sensors (L / C / R): " + (Array.isArray(t.sensors_cm) ? t.sensors_cm.join(" / ") + " cm" : "--") +
+      " · Lane-change: " + String(t.lane_change_phase || "RIGHT_LANE").replaceAll("_"," ") +
+      " · Side: " + String(t.lane_change_side || "right").toUpperCase() +
+      (t.lane_change_side === "left" ? " · Left-lane distance: " + Number(t.lane_change_distance_m || 0).toFixed(1) + " / " + (t.lane_change_target_distance_m == null ? "--" : Number(t.lane_change_target_distance_m).toFixed(1)) + " m" : "") +
       (t.vision_error ? " · Vision: " + t.vision_error : "");
     if (data.mode !== currentMode) setModeButtons(data.mode);
     if (!$("settingsForm").dataset.dirty) fillSettings(data.settings);
@@ -893,12 +1249,182 @@ async function refreshStatus() {
   }
 }
 settingInputs.forEach(input => input.addEventListener("input", () => {
+  settingsEditRevision += 1;
   $("settingsForm").dataset.dirty = "true";
   updateBackendVisibility($("vision_backend").value);
   if (input.dataset.setting.endsWith("_roi")) drawROIOverlays();
 }));
-$("settingsForm").addEventListener("change", () => {$("settingsForm").dataset.dirty = "true";});
-$("settingsForm").addEventListener("submit", () => {delete $("settingsForm").dataset.dirty;});
+$("settingsForm").addEventListener("change", () => {
+  settingsEditRevision += 1;
+  $("settingsForm").dataset.dirty = "true";
+});
+
+async function refreshLocalProfiles(selectedName) {
+  const response = await fetch("/api/profiles", {cache:"no-store"});
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Could not read local profiles.");
+  const select = $("localProfileSelect");
+  const previous = selectedName || select.value;
+  select.replaceChildren();
+  for (const profile of (data.profiles || [])) {
+    const option = document.createElement("option");
+    option.value = profile.name;
+    option.textContent = profile.name;
+    select.appendChild(option);
+  }
+  if (previous && Array.from(select.options).some(option => option.value === previous)) {
+    select.value = previous;
+  }
+  if (select.value) $("profileName").value = select.value;
+}
+async function refreshGitHubProfiles() {
+  const message = $("githubProfilesMessage");
+  message.textContent = "Reading public AVIS profiles from GitHub...";
+  try {
+    const response = await fetch("/api/github/profiles", {cache:"no-store"});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not read GitHub profiles.");
+    const select = $("githubProfileSelect");
+    select.replaceChildren();
+    for (const name of (data.profiles || [])) {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name;
+      select.appendChild(option);
+    }
+    if (!select.options.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No profiles found";
+      select.appendChild(option);
+    }
+    message.textContent = (data.profiles || []).length + " GitHub profile(s) available.";
+  } catch (error) {
+    message.textContent = error.message;
+  }
+}
+$("localProfileSelect").addEventListener("change", () => {
+  $("profileName").value = $("localProfileSelect").value;
+});
+$("saveProfileButton").addEventListener("click", async () => {
+  const name = $("profileName").value.trim();
+  if (!name) { $("profilesMessage").textContent = "Enter a profile name first."; return; }
+  try {
+    const applied = await postJson("/api/settings", collectSettings());
+    fillSettings(applied.settings);
+    delete $("settingsForm").dataset.dirty;
+    const saved = await postJson("/api/profiles/save", {name});
+    await refreshLocalProfiles(name);
+    $("profilesMessage").textContent = saved.github_synced
+      ? "Profile saved locally and published to GitHub."
+      : "Profile saved locally. GitHub: " + (saved.github_message || "not published.");
+  } catch (error) {
+    $("profilesMessage").textContent = error.message;
+  }
+});
+$("loadProfileButton").addEventListener("click", async () => {
+  const name = $("localProfileSelect").value;
+  if (!name) return;
+  try {
+    const data = await postJson("/api/profiles/load", {name});
+    fillSettings(data.settings);
+    delete $("settingsForm").dataset.dirty;
+    settingsEditRevision += 1;
+    $("profileName").value = name;
+    $("profilesMessage").textContent = "Loaded profile: " + name;
+  } catch (error) { $("profilesMessage").textContent = error.message; }
+});
+$("deleteProfileButton").addEventListener("click", async () => {
+  const name = $("localProfileSelect").value;
+  if (!name || !confirm("Delete profile '" + name + "'?")) return;
+  try {
+    await postJson("/api/profiles/delete", {name});
+    await refreshLocalProfiles();
+    $("profilesMessage").textContent = "Deleted profile: " + name;
+  } catch (error) { $("profilesMessage").textContent = error.message; }
+});
+$("exportProfileButton").addEventListener("click", async () => {
+  const name = $("localProfileSelect").value;
+  if (!name) return;
+  try {
+    const response = await fetch("/api/profiles/export?name=" + encodeURIComponent(name));
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.error || "Could not export profile.");
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name.replace(/[^A-Za-z0-9_.-]+/g, "_") + ".json";
+    link.click();
+    URL.revokeObjectURL(url);
+    $("profilesMessage").textContent = "Exported " + name + ".json";
+  } catch (error) { $("profilesMessage").textContent = error.message; }
+});
+$("importProfileButton").addEventListener("click", () => $("profileImportFile").click());
+$("profileImportFile").addEventListener("change", async event => {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  try {
+    const document = JSON.parse(await file.text());
+    const data = await postJson("/api/profiles/import", document);
+    await refreshLocalProfiles(data.profile.name);
+    fillSettings(data.settings);
+    delete $("settingsForm").dataset.dirty;
+    settingsEditRevision += 1;
+    $("profilesMessage").textContent = "Imported and loaded profile: " + data.profile.name;
+  } catch (error) { $("profilesMessage").textContent = error.message; }
+  finally { event.target.value = ""; }
+});
+$("refreshGitHubProfilesButton").addEventListener("click", refreshGitHubProfiles);
+$("publishGitHubProfileButton").addEventListener("click", async () => {
+  const name = $("localProfileSelect").value;
+  if (!name) return;
+  try {
+    await postJson("/api/github/profiles/publish", {name});
+    $("githubProfilesMessage").textContent = "Published " + name + " to GitHub.";
+    await refreshGitHubProfiles();
+  } catch (error) { $("githubProfilesMessage").textContent = error.message; }
+});
+$("loadGitHubProfileButton").addEventListener("click", async () => {
+  const name = $("githubProfileSelect").value;
+  if (!name) return;
+  try {
+    const data = await postJson("/api/github/profiles/load", {name});
+    await refreshLocalProfiles(data.profile.name);
+    fillSettings(data.settings);
+    delete $("settingsForm").dataset.dirty;
+    settingsEditRevision += 1;
+    $("profilesMessage").textContent = "Loaded GitHub profile: " + name;
+    $("githubProfilesMessage").textContent = "Downloaded and applied " + name + ".";
+  } catch (error) { $("githubProfilesMessage").textContent = error.message; }
+});
+
+const roadforgeCaptureButton = $("roadforgeCaptureButton");
+if (roadforgeCaptureButton) {
+  roadforgeCaptureButton.addEventListener("click", async () => {
+    const message = $("roadforgeCaptureMessage");
+    roadforgeCaptureButton.disabled = true;
+    message.textContent = "Saving latest camera frame…";
+    message.style.color = "#68dfa7";
+    try {
+      const response = await fetch("/api/roadforge/capture", {method: "POST"});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not capture the AVIS frame.");
+      message.textContent = "Captured " + data.filename + " · session " + data.session_id.slice(0, 8);
+    } catch (error) {
+      message.textContent = error.message;
+      message.style.color = "#ff8a9d";
+    } finally {
+      roadforgeCaptureButton.disabled = false;
+    }
+  });
+}
+
+refreshLocalProfiles().catch(error => {
+  $("profilesMessage").textContent = error.message;
+});
 updateManualLabels();
 refreshStatus();
 setInterval(refreshStatus, 500);
@@ -920,6 +1446,105 @@ def create_avis_dashboard_app(state: AvisDashboardState) -> Flask:
     @app.get("/api/status")
     def status():
         return jsonify(state.snapshot())
+
+    @app.get("/api/profiles")
+    def profiles():
+        return jsonify({"profiles": state.profiles_snapshot()})
+
+    @app.post("/api/profiles/save")
+    def save_profile():
+        payload = request.get_json(silent=True) or {}
+        try:
+            profile = state.save_profile(payload.get("name"))
+        except (TypeError, ValueError, OSError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        github_synced = False
+        github_message = "Run 'gh auth login' on this PC, then publish the profile to GitHub."
+        if request.remote_addr in {"127.0.0.1", "::1", "localhost"}:
+            try:
+                state.github_sync.publish_profile(profile)
+                github_synced = True
+                github_message = "Published to GitHub."
+            except Exception as exc:
+                github_message = str(exc)
+        else:
+            github_message = "GitHub publishing is restricted to a local dashboard connection."
+        return jsonify({
+            "profile": profile,
+            "github_synced": github_synced,
+            "github_message": github_message,
+        })
+
+    @app.post("/api/profiles/load")
+    def load_profile():
+        payload = request.get_json(silent=True) or {}
+        try:
+            settings = state.load_profile(payload.get("name"))
+        except (TypeError, ValueError, OSError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"settings": settings})
+
+    @app.post("/api/profiles/delete")
+    def delete_profile():
+        payload = request.get_json(silent=True) or {}
+        try:
+            state.delete_profile(payload.get("name"))
+        except (TypeError, ValueError, OSError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"deleted": True})
+
+    @app.post("/api/profiles/import")
+    def import_profile():
+        payload = request.get_json(silent=True)
+        try:
+            profile = state.import_profile(payload)
+            settings = state.load_profile(profile["name"])
+        except (TypeError, ValueError, OSError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"profile": profile, "settings": settings})
+
+    @app.get("/api/profiles/export")
+    def export_profile():
+        try:
+            profile = state.export_profile(request.args.get("name"))
+        except (TypeError, ValueError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        filename = re.sub(r"[^A-Za-z0-9_.-]+", "_", profile["name"]) + ".json"
+        return Response(
+            json.dumps(profile, indent=2, ensure_ascii=False) + "\n",
+            mimetype="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.get("/api/github/profiles")
+    def github_profiles():
+        try:
+            return jsonify({"profiles": state.github_sync.list_profiles()})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 502
+
+    @app.post("/api/github/profiles/publish")
+    def publish_github_profile():
+        if request.remote_addr not in {"127.0.0.1", "::1", "localhost"}:
+            return jsonify({"error": "GitHub publishing is restricted to a local dashboard connection."}), 403
+        payload = request.get_json(silent=True) or {}
+        try:
+            profile = state.get_profile(payload.get("name"))
+            result = state.github_sync.publish_profile(profile)
+        except (TypeError, ValueError, OSError, RuntimeError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"published": True, "result": result})
+
+    @app.post("/api/github/profiles/load")
+    def load_github_profile():
+        payload = request.get_json(silent=True) or {}
+        try:
+            remote = state.github_sync.load_profile(str(payload.get("name") or ""))
+            profile = state.import_profile(remote)
+            settings = state.load_profile(profile["name"])
+        except (TypeError, ValueError, OSError, RuntimeError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"profile": profile, "settings": settings})
 
     @app.post("/api/settings")
     def settings():
@@ -958,9 +1583,21 @@ def create_avis_dashboard_app(state: AvisDashboardState) -> Flask:
         state.set_mode("stopped")
         return jsonify({"mode": "stopped"})
 
+    @app.post("/api/roadforge/capture")
+    def capture_for_roadforge():
+        if request.remote_addr not in {"127.0.0.1", "::1", "localhost"}:
+            return jsonify({"error": "AVIS frame capture is restricted to the local dashboard."}), 403
+        try:
+            result = state.capture_roadforge_frame()
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+        except OSError as exc:
+            return jsonify({"error": f"Could not write the capture: {exc}"}), 500
+        return jsonify(result)
+
     @app.get("/stream/<view_name>")
     def stream(view_name: str):
-        if view_name not in {"camera", "combined", "line-mask", "drivable-mask"}:
+        if view_name not in {"camera", "combined", "line-mask"}:
             return jsonify({"error": "Unknown image view."}), 404
 
         def generate():

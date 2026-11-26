@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import importlib.util
 import json
 import math
@@ -12,12 +13,47 @@ from types import ModuleType
 from typing import Any, Optional
 
 
+class AvisFpsMonitor:
+    """Rolling-window FPS meter for AVIS frame, inference and control rates."""
+
+    def __init__(self, window_seconds: float = 2.0) -> None:
+        self.window_seconds = max(0.25, float(window_seconds))
+        self._timestamps: deque[float] = deque()
+
+    def _prune(self, now: float) -> None:
+        cutoff = now - self.window_seconds
+        while self._timestamps and self._timestamps[0] < cutoff:
+            self._timestamps.popleft()
+
+    def record(self, timestamp: float | None = None) -> None:
+        sample = time.perf_counter() if timestamp is None else float(timestamp)
+        if not math.isfinite(sample):
+            return
+        if self._timestamps and sample <= self._timestamps[-1]:
+            return
+        self._timestamps.append(sample)
+        self._prune(sample)
+
+    def fps(self, now: float | None = None) -> float:
+        current = time.perf_counter() if now is None else float(now)
+        if not math.isfinite(current):
+            return 0.0
+        self._prune(current)
+        if len(self._timestamps) < 2:
+            return 0.0
+        elapsed = self._timestamps[-1] - self._timestamps[0]
+        if elapsed <= 0.0:
+            return 0.0
+        return float((len(self._timestamps) - 1) / elapsed)
+
+
 PROJECT_ROOT = Path(__file__).resolve().parent
 AVIS_PROFILE_NAME = "AVIS_StableV2"
 
-# Only settings consumed by the AVIS lane-following runtime are copied from
-# StableV2. CARLA sensors, map navigation, junction, and LiDAR settings are
-# intentionally excluded.
+# AVIS copies its StableV2-compatible camera and lane-following settings.
+# Legacy drivable-area threshold/debug keys remain in the profile contract for
+# compatibility, but the AVIS model adapter does not extract or use that mask.
+# CARLA sensors, map navigation, junction, and LiDAR settings are excluded.
 AVIS_PROFILE_FIELDS = (
     "AUTO_MODE_DEFAULT",
     "KP",
@@ -128,6 +164,7 @@ def select_avis_target_speed(
     return maximum - ((maximum - minimum) * turn_factor)
 
 
+
 class AvisSteeringController:
     """StableV2 steering PID/rate-limit logic without CARLA-specific types."""
 
@@ -197,6 +234,585 @@ class AvisSteeringController:
 
         self.last_steer = steer
         return float(steer)
+
+
+class AvisObstacleLaneChangeController:
+    """AVIS-only obstacle lane-change state machine without GPS dependencies."""
+
+    RIGHT_LANE = "RIGHT_LANE"
+    STEER_LEFT = "STEER_LEFT"
+    ACQUIRE_LEFT_LINE = "ACQUIRE_LEFT_LINE"
+    LEFT_LANE = "LEFT_LANE"
+    STEER_RIGHT = "STEER_RIGHT"
+    ACQUIRE_RIGHT_LINE = "ACQUIRE_RIGHT_LINE"
+    FAILED = "FAILED"
+
+    FOLLOWUP_STEER_MAGNITUDE = 0.20
+    FOLLOWUP_PULSE_DISTANCE_M = 0.30
+    LINE_CHECK_INTERVAL_M = 0.15
+
+    def __init__(self) -> None:
+        self.phase = self.RIGHT_LANE
+        self.phase_distance_m = 0.0
+        self.left_lane_distance_m = 0.0
+        self.last_obstacle_distance_m: float | None = None
+        self.left_lane_target_distance_m: float | None = None
+        self.return_reason = "DISTANCE"
+        self.obstacle_confirm_frames = 0
+        self.sensor_clear_frames = 0
+        self.obstacle_latched = False
+        self.last_obstacle_sensor: str | None = None
+        self.line_confirm_frames = 0
+        self.last_line_observation_id = None
+        self.line_history: dict[str, deque[float | None]] = {
+            "left": deque(maxlen=7),
+            "right": deque(maxlen=7),
+        }
+        self.last_history_observation_id = None
+        self.line_target_side: str | None = None
+        self.line_baseline_x: float | None = None
+        self.line_old_track_x: float | None = None
+        self.line_old_missing_frames = 0
+        self.line_old_cleared = False
+        self.line_candidate_x: float | None = None
+        self.steering_pulse_index = 0
+        self.line_search_distance_m = 0.0
+
+    @staticmethod
+    def front_sensor_distance_cm(sensors: Any) -> float | None:
+        """AVIS sensor order is left, middle/front, right; all values are cm."""
+        try:
+            value = float(sensors[1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            return None
+        if not math.isfinite(value) or value < 0.0:
+            return None
+        return value
+
+    @staticmethod
+    def sensor_distances_cm(sensors: Any) -> tuple[float | None, float | None, float | None]:
+        """Return AVIS side/front/side distances in centimetres."""
+        values: list[float | None] = []
+        for index in range(3):
+            try:
+                value = float(sensors[index])
+            except (TypeError, ValueError, IndexError, KeyError):
+                value = float("nan")
+            values.append(value if math.isfinite(value) and value >= 0.0 else None)
+        return values[0], values[1], values[2]
+
+    @staticmethod
+    def _positive_setting(settings: dict[str, Any], key: str, default: float) -> float:
+        try:
+            value = float(settings.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return value if math.isfinite(value) and value > 0.0 else default
+
+    def _target_lane(self) -> str:
+        if self.phase in {self.STEER_LEFT, self.ACQUIRE_LEFT_LINE, self.LEFT_LANE}:
+            return "left"
+        return "right"
+
+    def snapshot(self, sensors: Any = None) -> dict[str, Any]:
+        return {
+            "phase": self.phase,
+            "lane_side": "left" if self.phase in {
+                self.LEFT_LANE, self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE
+            } else "right",
+            "target_lane": self._target_lane(),
+            "left_lane_distance_m": float(self.left_lane_distance_m),
+            "left_lane_target_distance_m": self.left_lane_target_distance_m,
+            "last_obstacle_distance_m": self.last_obstacle_distance_m,
+            "return_reason": self.return_reason,
+            "phase_distance_m": float(self.phase_distance_m),
+            "line_search_distance_m": float(self.line_search_distance_m),
+            "steering_pulse_number": (
+                self.steering_pulse_index + 1
+                if self.phase in {
+                    self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
+                    self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
+                }
+                else 0
+            ),
+            "front_sensor_cm": self.front_sensor_distance_cm(sensors),
+            "sensor_distances_cm": list(self.sensor_distances_cm(sensors)),
+            "obstacle_trigger_sensor": self.last_obstacle_sensor,
+            "target_line_side": self.line_target_side,
+            "target_line_baseline_x": self.line_baseline_x,
+            "target_line_old_track_x": self.line_old_track_x,
+            "target_line_old_cleared": self.line_old_cleared,
+            "target_line_candidate_x": self.line_candidate_x,
+            "line_confirm_frames": self.line_confirm_frames,
+            "active": self.phase in {
+                self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
+                self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
+            },
+            "failed": self.phase == self.FAILED,
+            "steering_override": None,
+            "safe_stop": self.phase == self.FAILED,
+            "pid_reset": False,
+        }
+
+    @staticmethod
+    def _line_x(value: Any) -> float | None:
+        try:
+            coordinate = float(value)
+        except (TypeError, ValueError):
+            return None
+        return coordinate if math.isfinite(coordinate) else None
+
+    @staticmethod
+    def _median(values: list[float]) -> float | None:
+        if not values:
+            return None
+        ordered = sorted(values)
+        middle = len(ordered) // 2
+        if len(ordered) % 2:
+            return float(ordered[middle])
+        return float((ordered[middle - 1] + ordered[middle]) / 2.0)
+
+    def _record_lane_history(
+        self,
+        left_x: int | float | None,
+        right_x: int | float | None,
+        observation_id: Any,
+    ) -> None:
+        if observation_id is None or observation_id == self.last_history_observation_id:
+            return
+        if self.phase not in {self.RIGHT_LANE, self.LEFT_LANE}:
+            return
+        self.last_history_observation_id = observation_id
+        self.line_history["left"].append(self._line_x(left_x))
+        self.line_history["right"].append(self._line_x(right_x))
+
+    @staticmethod
+    def _target_roi_width_px(
+        side: str,
+        settings: dict[str, Any],
+        frame_width: int | float | None,
+    ) -> float:
+        try:
+            image_width = float(frame_width) if frame_width is not None else 320.0
+        except (TypeError, ValueError):
+            image_width = 320.0
+        if not math.isfinite(image_width) or image_width <= 0.0:
+            image_width = 320.0
+        prefix = "ll" if side == "left" else "rl"
+        try:
+            roi_left = float(settings.get(f"{prefix}_left_roi", 0.24 if side == "left" else 0.56))
+            roi_right = float(settings.get(f"{prefix}_right_roi", 0.45 if side == "left" else 0.78))
+        except (TypeError, ValueError):
+            roi_left, roi_right = (0.24, 0.45) if side == "left" else (0.56, 0.78)
+        if not all(math.isfinite(value) for value in (roi_left, roi_right)) or roi_right <= roi_left:
+            roi_left, roi_right = (0.24, 0.45) if side == "left" else (0.56, 0.78)
+        return max(1.0, (roi_right - roi_left) * image_width)
+
+    def _start_target_line_tracking(
+        self,
+        side: str,
+        observation_id: Any = None,
+    ) -> None:
+        self.line_target_side = side
+        previous = [
+            value for value in self.line_history[side]
+            if value is not None and math.isfinite(value)
+        ]
+        # The median of recent, distinct inference frames is more resistant to
+        # a single noisy/misclassified ROI sample than using the latest x alone.
+        self.line_baseline_x = self._median(previous[-5:]) if len(previous) >= 2 else None
+        self.line_old_track_x = self.line_baseline_x
+        self.line_old_missing_frames = 0
+        self.line_old_cleared = False
+        self.line_candidate_x = None
+        self.line_confirm_frames = 0
+        # The frame which triggered the manoeuvre belongs to the old-lane
+        # history; do not count it again as a post-trigger observation.
+        self.last_line_observation_id = observation_id
+        self.steering_pulse_index = 0
+        self.line_search_distance_m = 0.0
+
+    def _reset_target_line_tracking(self) -> None:
+        self.line_target_side = None
+        self.line_baseline_x = None
+        self.line_old_track_x = None
+        self.line_old_missing_frames = 0
+        self.line_old_cleared = False
+        self.line_candidate_x = None
+        self.line_confirm_frames = 0
+        self.last_line_observation_id = None
+        self.line_history["left"].clear()
+        self.line_history["right"].clear()
+        self.steering_pulse_index = 0
+        self.line_search_distance_m = 0.0
+
+    def _confirm_new_line_candidate(
+        self,
+        coordinate: float,
+        tolerance_px: float,
+        frames_required: int,
+    ) -> None:
+        if (
+            self.line_candidate_x is not None
+            and abs(coordinate - self.line_candidate_x) <= tolerance_px
+        ):
+            self.line_candidate_x += (
+                coordinate - self.line_candidate_x
+            ) / (self.line_confirm_frames + 1)
+            self.line_confirm_frames += 1
+        else:
+            self.line_candidate_x = coordinate
+            self.line_confirm_frames = 1
+        if self.line_confirm_frames >= frames_required:
+            self.line_old_cleared = True
+
+    def _advance_target_line_tracking(
+        self,
+        value: int | float | None,
+        *,
+        roi_width_px: float,
+        frames_required: int,
+    ) -> None:
+        coordinate = self._line_x(value)
+        old_line_tolerance = max(5.0, roi_width_px * 0.10)
+        candidate_tolerance = max(3.0, roi_width_px * 0.06)
+
+        if coordinate is None:
+            self.line_old_missing_frames += 1
+            self.line_candidate_x = None
+            self.line_confirm_frames = 0
+            if self.line_old_missing_frames >= 2:
+                self.line_old_cleared = True
+            return
+
+        self.line_old_missing_frames = 0
+        if self.line_old_track_x is None and not self.line_old_cleared:
+            # No reliable pre-manoeuvre sample was available. Treat the first
+            # visible target-ROI line as the old marking, never as the new lane.
+            self.line_old_track_x = coordinate
+            self.line_candidate_x = None
+            self.line_confirm_frames = 0
+            return
+
+        if (
+            not self.line_old_cleared
+            and self.line_old_track_x is not None
+            and abs(coordinate - self.line_old_track_x) <= old_line_tolerance
+        ):
+            # Follow the same physical marking while it moves across the ROI.
+            self.line_old_track_x = coordinate
+            self.line_candidate_x = None
+            self.line_confirm_frames = 0
+            return
+
+        if (
+            self.line_old_cleared
+            and self.line_old_track_x is not None
+            and abs(coordinate - self.line_old_track_x) <= old_line_tolerance
+        ):
+            # The old marking re-entered the ROI; it must not be mistaken for
+            # the destination-lane marking after a brief detection dropout.
+            self.line_old_cleared = False
+            self.line_old_track_x = coordinate
+            self.line_candidate_x = None
+            self.line_confirm_frames = 0
+            return
+
+        self._confirm_new_line_candidate(
+            coordinate,
+            candidate_tolerance,
+            frames_required,
+        )
+
+    def _begin_right_return(
+        self,
+        reason: str,
+        observation_id: Any = None,
+    ) -> None:
+        self._start_target_line_tracking("right", observation_id)
+        self.phase = self.STEER_RIGHT
+        self.phase_distance_m = 0.0
+        self.return_reason = reason
+
+    def update(
+        self,
+        *,
+        sensors: Any,
+        speed_kmh: float,
+        dt: float,
+        left_x: int | float | None,
+        right_x: int | float | None,
+        settings: dict[str, Any],
+        allow_new_maneuver: bool = True,
+        observation_id: Any = None,
+        frame_width: int | float | None = None,
+    ) -> dict[str, Any]:
+        sensor_distances = self.sensor_distances_cm(sensors)
+        try:
+            speed = float(speed_kmh)
+            elapsed = float(dt)
+        except (TypeError, ValueError):
+            speed, elapsed = 0.0, 0.0
+        if not math.isfinite(speed):
+            speed = 0.0
+        if not math.isfinite(elapsed):
+            elapsed = 0.0
+        travelled_m = max(0.0, speed) / 3.6 * min(0.25, max(0.0, elapsed))
+        self._record_lane_history(left_x, right_x, observation_id)
+
+        if self.phase in {
+            self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
+            self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
+        }:
+            self.phase_distance_m += travelled_m
+            self.line_search_distance_m += travelled_m
+        elif self.phase == self.LEFT_LANE:
+            self.left_lane_distance_m += travelled_m
+
+        trigger_cm = self._positive_setting(
+            settings, "obstacle_front_threshold_cm", 950.0
+        )
+        configured_clear_cm = self._positive_setting(
+            settings, "obstacle_sensor_clear_threshold_cm", 900.0
+        )
+        # Keep sensor hysteresis valid automatically; users should not have to
+        # tune two coupled fields just to change the obstacle trigger distance.
+        clear_cm = max(configured_clear_cm, trigger_cm + 1.0)
+        trigger_frames = max(
+            1, int(self._positive_setting(settings, "obstacle_trigger_confirm_frames", 3))
+        )
+        clear_frames_required = max(
+            1, int(self._positive_setting(
+                settings, "obstacle_sensor_clear_confirm_frames", 5
+            ))
+        )
+
+        # Clear the latch only after every distance sensor reports a clear
+        # path; one side sensor still seeing an obstacle must keep it latched.
+        all_sensors_clear = all(
+            distance is not None and distance >= clear_cm
+            for distance in sensor_distances
+        )
+        if all_sensors_clear:
+            self.sensor_clear_frames += 1
+            if self.sensor_clear_frames >= clear_frames_required:
+                self.obstacle_latched = False
+                self.obstacle_confirm_frames = 0
+        else:
+            self.sensor_clear_frames = 0
+
+        pid_reset = False
+        detection_enabled = bool(settings.get("obstacle_lane_change_enabled", True))
+        # Any of the left, front, or right sensors can request the lane change.
+        # Distance sensing stays active even when lane perception is missing.
+        can_check_obstacle = self.phase in {self.RIGHT_LANE, self.LEFT_LANE}
+        triggered_sensors = [
+            (index, distance)
+            for index, distance in enumerate(sensor_distances)
+            if distance is not None and distance <= trigger_cm
+        ]
+        if detection_enabled and can_check_obstacle and not self.obstacle_latched:
+            if triggered_sensors:
+                self.obstacle_confirm_frames += 1
+            else:
+                self.obstacle_confirm_frames = 0
+
+            if self.obstacle_confirm_frames >= trigger_frames:
+                self.obstacle_latched = True
+                self.obstacle_confirm_frames = 0
+                sensor_names = ("LEFT", "FRONT", "RIGHT")
+                sensor_index, obstacle_distance = min(
+                    triggered_sensors, key=lambda item: item[1]
+                )
+                self.last_obstacle_sensor = sensor_names[sensor_index]
+                self.last_obstacle_distance_m = obstacle_distance / 100.0
+                clearance_m = self._positive_setting(
+                    settings, "obstacle_clearance_after_pass_m", 5.0
+                )
+                self.left_lane_target_distance_m = (
+                    self.last_obstacle_distance_m + clearance_m
+                )
+
+                if self.phase == self.RIGHT_LANE:
+                    self._start_target_line_tracking("left", observation_id)
+                    self.phase = self.STEER_LEFT
+                    self.phase_distance_m = 0.0
+                    self.return_reason = "OBSTACLE"
+                    pid_reset = True
+                elif self.phase == self.LEFT_LANE:
+                    # Any new obstacle sensor trigger while in the left lane
+                    # overrides the previous pass-distance target and returns
+                    # the vehicle to the right lane.
+                    self._begin_right_return("OBSTACLE_IN_LEFT_LANE", observation_id)
+                    pid_reset = True
+
+        steer_distance = self._positive_setting(
+            settings, "obstacle_lane_change_steer_distance_m", 3.0
+        )
+        left_steer = min(
+            1.0,
+            self._positive_setting(settings, "obstacle_lane_change_left_steer", 0.20),
+        )
+        right_steer = min(
+            1.0,
+            self._positive_setting(settings, "obstacle_lane_change_right_steer", 0.20),
+        )
+        line_frames_required = max(
+            1, int(self._positive_setting(
+                settings, "obstacle_lane_line_confirm_frames", 3
+            ))
+        )
+        line_search_max_m = self._positive_setting(
+            settings, "obstacle_lane_line_search_max_distance_m", 40.0
+        )
+        if self.phase == self.LEFT_LANE:
+            target_distance = self.left_lane_target_distance_m
+            if target_distance is not None and self.left_lane_distance_m >= target_distance:
+                self._begin_right_return("DISTANCE", observation_id)
+                pid_reset = True
+
+        # Track the pre-manoeuvre marking through both steering and acquisition
+        # phases. Only distinct inference results advance this state machine.
+        if self.phase in {self.STEER_LEFT, self.ACQUIRE_LEFT_LINE}:
+            target_side = "left"
+            target_x = left_x
+        elif self.phase in {self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE}:
+            target_side = "right"
+            target_x = right_x
+        else:
+            target_side = None
+            target_x = None
+
+        new_line_observation = False
+        if (
+            target_side is not None
+            and observation_id is not None
+            and observation_id != self.last_line_observation_id
+        ):
+            new_line_observation = True
+            self.last_line_observation_id = observation_id
+            self._advance_target_line_tracking(
+                target_x,
+                roi_width_px=self._target_roi_width_px(
+                    target_side,
+                    settings,
+                    frame_width,
+                ),
+                frames_required=line_frames_required,
+            )
+
+        steering_override: float | None = None
+        safe_stop = False
+        target_line_confirmed = (
+            self.line_old_cleared
+            and self.line_confirm_frames >= line_frames_required
+        )
+
+        if self.phase == self.STEER_LEFT:
+            pulse_distance = (
+                steer_distance
+                if self.steering_pulse_index == 0
+                else self.FOLLOWUP_PULSE_DISTANCE_M
+            )
+            # Losing the old line is not proof that the destination line has
+            # been found. Keep applying correction until a new line is stable.
+            if target_line_confirmed or self.phase_distance_m >= pulse_distance:
+                self.phase = self.ACQUIRE_LEFT_LINE
+                self.phase_distance_m = 0.0
+                steering_override = 0.0
+            else:
+                pulse_steer = (
+                    left_steer
+                    if self.steering_pulse_index == 0
+                    else min(self.FOLLOWUP_STEER_MAGNITUDE, left_steer)
+                )
+                steering_override = -pulse_steer
+
+        elif self.phase == self.ACQUIRE_LEFT_LINE:
+            steering_override = 0.0
+            if target_line_confirmed:
+                self.phase = self.LEFT_LANE
+                self.phase_distance_m = 0.0
+                self.left_lane_distance_m = 0.0
+                self._reset_target_line_tracking()
+                pid_reset = True
+            elif (
+                self.phase_distance_m >= self.LINE_CHECK_INTERVAL_M
+                and new_line_observation
+            ):
+                # Check the newest ROI result first; if no confirmed destination
+                # marking exists, start the next 0.20 correction immediately.
+                self.phase = self.STEER_LEFT
+                self.phase_distance_m = 0.0
+                self.steering_pulse_index += 1
+                steering_override = -min(
+                    self.FOLLOWUP_STEER_MAGNITUDE, left_steer
+                )
+
+        elif self.phase == self.STEER_RIGHT:
+            pulse_distance = (
+                steer_distance
+                if self.steering_pulse_index == 0
+                else self.FOLLOWUP_PULSE_DISTANCE_M
+            )
+            if target_line_confirmed or self.phase_distance_m >= pulse_distance:
+                self.phase = self.ACQUIRE_RIGHT_LINE
+                self.phase_distance_m = 0.0
+                steering_override = 0.0
+            else:
+                pulse_steer = (
+                    right_steer
+                    if self.steering_pulse_index == 0
+                    else min(self.FOLLOWUP_STEER_MAGNITUDE, right_steer)
+                )
+                steering_override = pulse_steer
+
+        elif self.phase == self.ACQUIRE_RIGHT_LINE:
+            steering_override = 0.0
+            if target_line_confirmed:
+                self.phase = self.RIGHT_LANE
+                self.phase_distance_m = 0.0
+                self.left_lane_distance_m = 0.0
+                self.left_lane_target_distance_m = None
+                self.last_obstacle_distance_m = None
+                self._reset_target_line_tracking()
+                self.return_reason = "DISTANCE"
+                pid_reset = True
+            elif (
+                self.phase_distance_m >= self.LINE_CHECK_INTERVAL_M
+                and new_line_observation
+            ):
+                self.phase = self.STEER_RIGHT
+                self.phase_distance_m = 0.0
+                self.steering_pulse_index += 1
+                steering_override = min(
+                    self.FOLLOWUP_STEER_MAGNITUDE, right_steer
+                )
+        
+        elif self.phase == self.FAILED:
+            safe_stop = True
+            steering_override = 0.0
+
+        # Evaluate after phase transitions so telemetry reflects the actual
+        # active line-acquisition phase for this control update.
+        search_limit_reached = (
+            self.phase in {
+                self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
+                self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
+            }
+            and self.line_search_distance_m >= line_search_max_m
+        )
+        result = self.snapshot(sensors)
+        result.update({
+            "steering_override": steering_override,
+            "safe_stop": safe_stop or self.phase == self.FAILED,
+            "pid_reset": pid_reset,
+            "obstacle_latched": self.obstacle_latched,
+            "line_confirm_frames": self.line_confirm_frames,
+            "target_line_confirmed": target_line_confirmed,
+            "search_limit_reached": search_limit_reached,
+        })
+        return result
 
 
 def _candidate_api_directories(api_path: str | None) -> list[Path]:
@@ -506,91 +1122,233 @@ def _build_avis_settings(conf: ModuleType, sensor_angle: int) -> dict[str, Any]:
 def _create_avis_vision_processor(
     backend: str,
     settings: dict[str, Any],
+    adaptive_roi_controller=None,
 ):
     if backend == "classical":
         from avis_classical_vision import AvisClassicalVisionProcessor
 
-        return AvisClassicalVisionProcessor(settings)
+        return AvisClassicalVisionProcessor(
+            settings,
+            adaptive_roi_controller=adaptive_roi_controller,
+        )
 
     from vision.city_vision_processing import VisionProcessor
+    from avis_lane_line_selection import TemporalLaneLineSelector
 
     class AvisVisionProcessor(VisionProcessor):
-        """AVIS model adapter; vehicle segmentation is optional and never drawn."""
+        """AVIS model adapter that extracts and visualizes lane lines only."""
+
+        def detect(self, semantic_frame, rgb_frame=None):
+            # Apply adaptive AVIS ROI coordinates before resolving crop bounds.
+            if self.adaptive_roi_controller is not None:
+                import config_city as avis_conf
+
+                _apply_avis_roi_settings(
+                    avis_conf,
+                    self.adaptive_roi_controller.active_settings(),
+                )
+
+            frame = rgb_frame if rgb_frame is not None else semantic_frame
+            self._avis_roi_bounds = {}
+            self._avis_line_selection_stats = {}
+            if frame is not None and getattr(frame, "ndim", 0) >= 2:
+                import config_city as avis_conf
+
+                height, width = frame.shape[:2]
+                self._avis_roi_bounds = {
+                    "ll": (
+                        int(float(avis_conf.LL_TOP_ROI) * height),
+                        int(float(avis_conf.LL_BOTTOM_ROI) * height),
+                        int(float(avis_conf.LL_LEFT_ROI) * width),
+                        int(float(avis_conf.LL_RIGHT_ROI) * width),
+                    ),
+                    "rl": (
+                        int(float(avis_conf.RL_TOP_ROI) * height),
+                        int(float(avis_conf.RL_BOTTOM_ROI) * height),
+                        int(float(avis_conf.RL_LEFT_ROI) * width),
+                        int(float(avis_conf.RL_RIGHT_ROI) * width),
+                    ),
+                }
+                signature = (
+                    (height, width),
+                    tuple(
+                        (key, settings.get(key))
+                        for key in (
+                            "hough_threshold",
+                            "hough_min_line_length_ratio",
+                            "hough_max_line_gap",
+                            "min_lane_angle_deg",
+                            "max_lane_angle_deg",
+                        )
+                    ),
+                )
+                if signature != self._avis_selection_signature:
+                    for selector in self._avis_line_selectors.values():
+                        selector.reset()
+                    self._avis_selection_signature = signature
+
+            result = super().detect(semantic_frame, rgb_frame=rgb_frame)
+            if isinstance(result, dict):
+                debug = result.get("debug")
+                if isinstance(debug, dict):
+                    for side, prefix in (("ll", "left"), ("rl", "right")):
+                        stats = self._avis_line_selection_stats.get(side, {})
+                        debug[f"{prefix}_hough_segments"] = int(stats.get("segments", 0))
+                        debug[f"{prefix}_hough_candidates"] = int(stats.get("candidates", 0))
+                        debug[f"{prefix}_selected_line_x"] = stats.get("selected_x")
+                        debug[f"{prefix}_selected_line_quality"] = stats.get("quality")
+                        debug[f"{prefix}_selected_line_stable_frames"] = int(
+                            stats.get("stable_frames", 0)
+                        )
+                        debug[f"{prefix}_selected_line_missed_frames"] = int(
+                            stats.get("missed_frames", 0)
+                        )
+                        debug[f"{prefix}_pending_switch_frames"] = int(
+                            stats.get("pending_switch_frames", 0)
+                        )
+                        debug[f"{prefix}_selected_line_switched"] = bool(
+                            stats.get("switched", False)
+                        )
+                        debug[f"{prefix}_selected_line_predicted"] = bool(
+                            stats.get("predicted", False)
+                        )
+
+            if (
+                self.adaptive_roi_controller is not None
+                and frame is not None
+                and getattr(frame, "ndim", 0) >= 2
+            ):
+                debug = result.get("debug")
+                if isinstance(debug, dict):
+                    self.adaptive_roi_controller.observe(
+                        debug.get("left_x"),
+                        debug.get("right_x"),
+                        int(frame.shape[1]),
+                    )
+                    debug["adaptive_roi"] = self.adaptive_roi_controller.snapshot()
+            return result
+
+        def _boundary_from_roi(
+            self,
+            full_mask,
+            top,
+            bottom,
+            left,
+            right,
+        ):
+            bounds = (int(top), int(bottom), int(left), int(right))
+            side = next(
+                (
+                    name
+                    for name, expected in self._avis_roi_bounds.items()
+                    if expected == bounds
+                ),
+                None,
+            )
+            if side is not None and bottom > top and right > left:
+                selection = self._avis_line_selectors[side].select(
+                    full_mask[top:bottom, left:right],
+                    settings,
+                    x_offset=float(left),
+                )
+                self._avis_line_selection_stats[side] = {
+                    "segments": selection.segment_count,
+                    "candidates": selection.candidate_count,
+                    "selected_x": selection.selected_x,
+                    "quality": selection.quality,
+                    "stable_frames": selection.stable_frames,
+                    "missed_frames": selection.missed_frames,
+                    "pending_switch_frames": selection.pending_switch_frames,
+                    "switched": selection.switched,
+                    "predicted": selection.predicted,
+                }
+                # Always replace raw pixels; never reintroduce all candidate
+                # lines when Hough selection has a brief dropout.
+                full_mask[top:bottom, left:right] = selection.mask
+
+            return super()._boundary_from_roi(
+                full_mask, top, bottom, left, right
+            )
 
         @staticmethod
         def _class_ids_from_names(
             class_names: dict[int, str],
-        ) -> tuple[int, int, int | None]:
-            # Lane and drivable-area classes are required by AVIS lane following.
-            # Vehicle segmentation is not used by AVIS, so checkpoints without
-            # that class must remain valid.
-            required_ids = []
-            for class_name, label in (
-                ("lane_lines", "lane"),
-                ("ego_drivable_area", "drivable-area"),
-            ):
-                matches = [
-                    class_id
-                    for class_id, name in class_names.items()
-                    if name == class_name
-                ]
-                if len(matches) != 1:
-                    raise RuntimeError(
-                        "The AVIS Ultralytics checkpoint must contain exactly "
-                        f"one '{class_name}' class for {label} masks; "
-                        f"found names {class_names!r}"
-                    )
-                required_ids.append(matches[0])
-
-            vehicle_ids = [
+        ) -> tuple[int, None, None]:
+            """Require only lane_lines; all other semantic classes are ignored."""
+            lane_ids = [
                 class_id
                 for class_id, name in class_names.items()
-                if name == "vehicles"
+                if name == "lane_lines"
             ]
-            if len(vehicle_ids) > 1:
+            if len(lane_ids) != 1:
                 raise RuntimeError(
-                    "The AVIS Ultralytics checkpoint may contain at most one "
-                    f"'vehicles' class; found names {class_names!r}"
+                    "The AVIS Ultralytics checkpoint must contain exactly one "
+                    "'lane_lines' class; drivable-area and vehicle classes are "
+                    "not required. "
+                    f"Found names {class_names!r}"
                 )
-            vehicle_class_id = vehicle_ids[0] if vehicle_ids else None
-            return required_ids[0], required_ids[1], vehicle_class_id
+            return lane_ids[0], None, None
 
-        @staticmethod
-        def _semantic_map_to_masks(
-            semantic_map,
-            lane_class_id: int,
-            drivable_class_id: int,
-            vehicles_class_id: int | None,
-            frame_shape: tuple[int, int],
-        ):
-            if vehicles_class_id is not None:
-                return VisionProcessor._semantic_map_to_masks(
-                    semantic_map,
-                    lane_class_id,
-                    drivable_class_id,
-                    vehicles_class_id,
-                    frame_shape,
+        def _extract_masks_from_ultralytics(self, camera_frame):
+            """Extract only lane-line pixels; never construct other class masks."""
+            import numpy as np
+
+            predictions = self._predict_ultralytics(camera_frame)
+            if not predictions:
+                raise RuntimeError("Ultralytics returned no prediction result.")
+            semantic_output = getattr(predictions[0], "semantic_mask", None)
+            if semantic_output is None or getattr(semantic_output, "data", None) is None:
+                raise RuntimeError(
+                    "The configured checkpoint did not return semantic_mask. "
+                    "AVIS requires an Ultralytics semantic-segmentation checkpoint "
+                    "with a lane_lines class."
                 )
 
-            # Reuse the shared mask decoder for the required classes, then
-            # explicitly report that no vehicle mask exists for this model.
-            drivable_mask, lane_mask, _ = VisionProcessor._semantic_map_to_masks(
-                semantic_map,
-                lane_class_id,
-                drivable_class_id,
-                -1,
-                frame_shape,
-            )
-            return drivable_mask, lane_mask, None
+            semantic_data = semantic_output.data
+            if hasattr(semantic_data, "detach"):
+                semantic_data = semantic_data.detach()
+            if hasattr(semantic_data, "cpu"):
+                semantic_data = semantic_data.cpu()
+            if hasattr(semantic_data, "numpy"):
+                semantic_data = semantic_data.numpy()
+
+            class_map = np.asarray(semantic_data)
+            # Remove only leading batch dimensions. A full squeeze would turn
+            # valid one-row or one-column masks into one-dimensional arrays.
+            while class_map.ndim > 2 and class_map.shape[0] == 1:
+                class_map = class_map[0]
+            if class_map.ndim != 2:
+                raise RuntimeError(
+                    "AVIS semantic output must be a two-dimensional class-ID map; "
+                    f"received shape {class_map.shape!r}"
+                )
+
+            frame_height, frame_width = np.asarray(camera_frame).shape[:2]
+            if class_map.shape != (frame_height, frame_width):
+                import cv2
+
+                class_map = cv2.resize(
+                    class_map.astype(np.float32),
+                    (frame_width, frame_height),
+                    interpolation=cv2.INTER_NEAREST,
+                )
+
+            lane_mask = (class_map == self.lane_class_id).astype(np.uint8) * 255
+            return None, lane_mask, None
 
         def __init__(self, mode: str):
             super().__init__(mode)
+            self.adaptive_roi_controller = adaptive_roi_controller
+            self._avis_line_selectors = {
+                "ll": TemporalLaneLineSelector("ll"),
+                "rl": TemporalLaneLineSelector("rl"),
+            }
+            self._avis_selection_signature = None
             self.last_lane_half_width: float | None = None
-            if getattr(self, "vehicles_class_id", None) is None:
-                print(
-                    "[AVIS] Model has no 'vehicles' class; "
-                    "continuing without vehicle masks."
-                )
+            print(
+                "[AVIS] Model inference is used for lane_lines only; "
+                "drivable-area and vehicle masks are disabled."
+            )
 
         def _pick_sticky_lane(
             self,
@@ -664,16 +1422,43 @@ def _create_avis_vision_processor(
             lane_type,
             vehicles_mask=None,
         ):
-            return super()._draw_debug(
+            import cv2
+            import numpy as np
+
+            # Keep the shared frame-centre, ROI and boundary annotations, but
+            # explicitly disable every non-lane segmentation overlay.
+            visual = super()._draw_debug(
                 frame=frame,
-                line_mask=line_mask,
-                drivable_mask=drivable_mask,
+                line_mask=None,
+                drivable_mask=None,
                 left_x=left_x,
                 right_x=right_x,
                 lane_center=lane_center,
                 lane_type=lane_type,
                 vehicles_mask=None,
             )
+            if line_mask is None:
+                return visual
+
+            lane = np.asarray(line_mask)
+            if lane.ndim == 3:
+                lane_pixels = np.any(lane > 0, axis=2)
+            elif lane.ndim == 2:
+                lane_pixels = lane > 0
+            else:
+                return visual
+
+            height, width = visual.shape[:2]
+            if lane_pixels.shape != (height, width):
+                lane_pixels = cv2.resize(
+                    lane_pixels.astype(np.uint8),
+                    (width, height),
+                    interpolation=cv2.INTER_NEAREST,
+                ) > 0
+
+            # OpenCV uses BGR: (0, 0, 255) is pure red.
+            visual[lane_pixels] = (0, 0, 255)
+            return visual
 
     return AvisVisionProcessor("ultralytics")
 
@@ -690,6 +1475,32 @@ def _encode_avis_preview(cv2_module, image) -> bytes | None:
     except Exception:
         return None
     return encoded.tobytes() if ok else None
+
+
+def _colorize_avis_lane_mask(cv2_module, np_module, line_mask, frame_shape):
+    """Create a BGR debug preview where every selected lane pixel is pure red."""
+    height, width = int(frame_shape[0]), int(frame_shape[1])
+    preview = np_module.zeros((height, width, 3), dtype=np_module.uint8)
+    if line_mask is None:
+        return preview
+
+    mask = np_module.asarray(line_mask)
+    if mask.ndim == 3:
+        selected = np_module.any(mask > 0, axis=2)
+    elif mask.ndim == 2:
+        selected = mask > 0
+    else:
+        return preview
+
+    if selected.shape != (height, width):
+        selected = cv2_module.resize(
+            selected.astype(np_module.uint8),
+            (width, height),
+            interpolation=cv2_module.INTER_NEAREST,
+        ) > 0
+
+    preview[selected] = (0, 0, 255)
+    return preview
 
 
 def run_avis(args: argparse.Namespace) -> int:
@@ -726,9 +1537,14 @@ def run_avis(args: argparse.Namespace) -> int:
         settings, settings_revision = dashboard_state.settings_snapshot()
         _apply_avis_roi_settings(conf, settings)
 
+        from avis_adaptive_roi import AvisAdaptiveROIController
+
+        adaptive_roi_controller = AvisAdaptiveROIController(settings)
         try:
             vision_processor = _create_avis_vision_processor(
-                settings["vision_backend"], settings
+                settings["vision_backend"],
+                settings,
+                adaptive_roi_controller=adaptive_roi_controller,
             )
         except (FileNotFoundError, ImportError) as exc:
             if settings["vision_backend"] != "ultralytics":
@@ -741,7 +1557,12 @@ def run_avis(args: argparse.Namespace) -> int:
                 {"vision_backend": "classical"}
             )
             settings_revision = dashboard_state.settings_snapshot()[1]
-            vision_processor = _create_avis_vision_processor("classical", settings)
+            adaptive_roi_controller.configure(settings)
+            vision_processor = _create_avis_vision_processor(
+                "classical",
+                settings,
+                adaptive_roi_controller=adaptive_roi_controller,
+            )
 
         inference_worker = InferenceWorker(vision_processor=vision_processor)
         inference_worker.start()
@@ -762,6 +1583,7 @@ def run_avis(args: argparse.Namespace) -> int:
             min_speed_kmh=float(settings["min_speed_kmh"]),
             max_speed_kmh=float(settings["max_speed_kmh"]),
         )
+        obstacle_lane_change = AvisObstacleLaneChangeController()
 
         if not bool(conf.AUTO_MODE_DEFAULT):
             dashboard_state.set_mode("stopped")
@@ -805,15 +1627,23 @@ def run_avis(args: argparse.Namespace) -> int:
         last_error_message = None
         consecutive_connection_errors = 0
         last_control_time = time.perf_counter()
+        recovery_steering = 0.0
         next_tick = last_control_time
+        frame_read_fps = AvisFpsMonitor(window_seconds=2.0)
+        inference_fps = AvisFpsMonitor(window_seconds=2.0)
+        control_loop_fps = AvisFpsMonitor(window_seconds=2.0)
+        last_inference_fps_timestamp: float | None = None
 
         print("[AVIS] AVIS runtime is ready.")
         print("[AVIS] Use the web dashboard for auto/manual mode and live tuning.")
         print("[AVIS] Press Q or Esc in the local preview window to stop.")
 
         while True:
+            control_loop_fps.record()
             try:
                 frame, current_speed, sensors = client.read_data()
+                if isinstance(frame, np.ndarray) and frame.size > 0:
+                    frame_read_fps.record()
                 consecutive_connection_errors = 0
             except Exception as exc:
                 consecutive_connection_errors += 1
@@ -831,6 +1661,7 @@ def run_avis(args: argparse.Namespace) -> int:
             current_settings, current_revision = dashboard_state.settings_snapshot()
             if current_revision != settings_revision:
                 try:
+                    adaptive_roi_controller.configure(current_settings)
                     _apply_avis_roi_settings(conf, current_settings)
                     if int(current_settings["sensor_angle"]) != active_sensor_angle:
                         client.set_sensor_angle(int(current_settings["sensor_angle"]))
@@ -852,7 +1683,9 @@ def run_avis(args: argparse.Namespace) -> int:
                     selected_backend = str(current_settings["vision_backend"])
                     if selected_backend != active_backend:
                         replacement = _create_avis_vision_processor(
-                            selected_backend, current_settings
+                            selected_backend,
+                            current_settings,
+                            adaptive_roi_controller=adaptive_roi_controller,
                         )
                         inference_worker.set_vision_processor(replacement)
                         vision_processor = replacement
@@ -910,6 +1743,11 @@ def run_avis(args: argparse.Namespace) -> int:
             )
             vision_error = None
             vision_data: dict[str, Any] = {}
+            fps_metrics = {
+                "frame_read_fps": frame_read_fps.fps(),
+                "inference_fps": inference_fps.fps(),
+                "control_loop_fps": control_loop_fps.fps(),
+            }
             if valid_frame:
                 frame_id += 1
                 frame_bgr = np.ascontiguousarray(frame[:, :, :3])
@@ -928,8 +1766,17 @@ def run_avis(args: argparse.Namespace) -> int:
                 )
                 if vision_snapshot is not None and vision_snapshot.valid:
                     last_vision_result = vision_snapshot
+                    completed_at = float(vision_snapshot.completed_at)
+                    if completed_at != last_inference_fps_timestamp:
+                        inference_fps.record(completed_at)
+                        last_inference_fps_timestamp = completed_at
                 if last_vision_result is not None:
                     vision_data = last_vision_result.result or {}
+                fps_metrics = {
+                    "frame_read_fps": frame_read_fps.fps(),
+                    "inference_fps": inference_fps.fps(),
+                    "control_loop_fps": control_loop_fps.fps(),
+                }
 
                 drive_mode, manual_throttle, manual_steering, manual_active = (
                     dashboard_state.drive_state()
@@ -941,6 +1788,11 @@ def run_avis(args: argparse.Namespace) -> int:
                 lane_valid = False
                 lane_error = 0.0
                 status = "WAITING FOR FIRST PREDICTION"
+
+                debug_data = vision_data.get("debug", {})
+                if not isinstance(debug_data, dict):
+                    debug_data = {}
+                lane_change_state = obstacle_lane_change.snapshot(sensors)
 
                 if drive_mode == "manual":
                     throttle = manual_throttle if manual_active else 0.0
@@ -965,50 +1817,139 @@ def run_avis(args: argparse.Namespace) -> int:
                             0.75, inference_interval * 8.0
                         )
 
-                    if not result_fresh:
-                        status = "VISION RESULT STALE - STOPPED"
-                    else:
-                        lane_valid = bool(
-                            vision_data.get(
-                                "lane_valid",
-                                vision_data.get("lane_type", "none") != "none",
-                            )
+                    lane_valid = bool(
+                        result_fresh
+                        and vision_data.get(
+                            "lane_valid",
+                            vision_data.get("lane_type", "none") != "none",
                         )
-                        lane_error = float(vision_data.get("error", 0.0) or 0.0)
-                        if not lane_valid:
-                            status = "LANE NOT DETECTED - STOPPED"
+                    )
+                    lane_error = (
+                        float(vision_data.get("error", 0.0) or 0.0)
+                        if result_fresh else 0.0
+                    )
+                    control_dt = min(
+                        0.1,
+                        max(0.005, time.perf_counter() - last_control_time),
+                    )
+                    lane_change_state = obstacle_lane_change.update(
+                        sensors=sensors,
+                        speed_kmh=current_speed,
+                        dt=control_dt,
+                        left_x=debug_data.get("left_x") if result_fresh else None,
+                        right_x=debug_data.get("right_x") if result_fresh else None,
+                        settings=current_settings,
+                        # The distance sensor is independent of lane inference:
+                        # do not suppress a confirmed obstacle response just
+                        # because the lane marking temporarily disappeared.
+                        allow_new_maneuver=True,
+                        observation_id=(
+                            last_vision_result.completed_at if result_fresh else None
+                        ),
+                        frame_width=int(frame_bgr.shape[1]),
+                    )
+                    if lane_change_state.get("pid_reset"):
+                        steering_controller.reset()
+
+                    minimum_speed = float(current_settings["min_speed_kmh"])
+                    steering_override = lane_change_state.get("steering_override")
+                    if lane_change_state.get("safe_stop"):
+                        # Reserved for an explicit controller failure; ordinary
+                        # lane loss and line-search timeout never enter this path.
+                        throttle = 0.0
+                        steering = 0.0
+                        status = "LANE CHANGE CONTROLLER FAILURE"
+                    elif steering_override is not None:
+                        # Steering and target-line acquisition phases all run
+                        # at the configured minimum moving speed.
+                        steering = float(steering_override)
+                        recovery_steering = steering
+                        target_speed = minimum_speed
+                        throttle, requested_brake = speed_controller.update(
+                            current_speed, target_speed, dt=control_dt
+                        )
+                        coasting = requested_brake > 0.0
+                        if coasting:
+                            throttle = 0.0
+                        if lane_change_state["phase"] == "STEER_LEFT":
+                            status = (
+                                "OBSTACLE AVOIDANCE / LEFT STEER PULSE "
+                                f"{lane_change_state.get('steering_pulse_number', 1)}"
+                            )
+                        elif lane_change_state["phase"] == "ACQUIRE_LEFT_LINE":
+                            status = (
+                                "OBSTACLE AVOIDANCE / LOW-SPEED LEFT ROI SEARCH"
+                                if lane_change_state.get("search_limit_reached")
+                                else "OBSTACLE AVOIDANCE / CHECKING LEFT ROI"
+                            )
+                        elif lane_change_state["phase"] == "STEER_RIGHT":
+                            status = (
+                                "OBSTACLE AVOIDANCE / RIGHT STEER PULSE "
+                                f"{lane_change_state.get('steering_pulse_number', 1)}"
+                            )
+                        elif lane_change_state["phase"] == "ACQUIRE_RIGHT_LINE":
+                            status = (
+                                "OBSTACLE AVOIDANCE / LOW-SPEED RIGHT ROI SEARCH"
+                                if lane_change_state.get("search_limit_reached")
+                                else "OBSTACLE AVOIDANCE / CHECKING RIGHT ROI"
+                            )
                         else:
-                            steering = steering_controller.update(lane_error)
-                            target_speed = select_avis_target_speed(
-                                steering,
-                                float(current_settings["min_speed_kmh"]),
-                                float(current_settings["max_speed_kmh"]),
-                            )
-                            dt = min(
-                                0.1,
-                                max(
-                                    0.005,
-                                    time.perf_counter() - last_control_time,
-                                ),
-                            )
-                            throttle, requested_brake = speed_controller.update(
-                                current_speed,
-                                target_speed,
-                                dt=dt,
-                            )
-                            # AVIS 1.2.4 has no independent service-brake command.
-                            coasting = requested_brake > 0.0
-                            if coasting:
-                                throttle = 0.0
-                            status = "AUTO / COAST" if coasting else "AUTO"
+                            status = "OBSTACLE AVOIDANCE"
+                    elif not result_fresh:
+                        recovery_steering = max(
+                            -0.25, min(0.25, recovery_steering * 0.85)
+                        )
+                        steering = recovery_steering
+                        target_speed = minimum_speed
+                        throttle, requested_brake = speed_controller.update(
+                            current_speed, target_speed, dt=control_dt
+                        )
+                        coasting = requested_brake > 0.0
+                        if coasting:
+                            throttle = 0.0
+                        status = "VISION RESULT STALE / LOW-SPEED FORWARD"
+                    elif not lane_valid:
+                        # Keep a gentle forward crawl while lane perception recovers.
+                        # Decay the last steering command instead of holding a sharp turn.
+                        recovery_steering = max(
+                            -0.25, min(0.25, recovery_steering * 0.85)
+                        )
+                        steering = recovery_steering
+                        target_speed = minimum_speed
+                        throttle, requested_brake = speed_controller.update(
+                            current_speed, target_speed, dt=control_dt
+                        )
+                        coasting = requested_brake > 0.0
+                        if coasting:
+                            throttle = 0.0
+                        status = "LANE NOT DETECTED / LOW-SPEED FORWARD"
+                    else:
+                        steering = steering_controller.update(lane_error)
+                        recovery_steering = steering
+                        base_target_speed = select_avis_target_speed(
+                            steering,
+                            minimum_speed,
+                            float(current_settings["max_speed_kmh"]),
+                        )
+                        target_speed = base_target_speed
+                        throttle, requested_brake = speed_controller.update(
+                            current_speed, target_speed, dt=control_dt
+                        )
+                        coasting = requested_brake > 0.0
+                        if coasting:
+                            throttle = 0.0
+                        status = (
+                            "AVOIDANCE / LEFT LANE"
+                            if lane_change_state["phase"] == "LEFT_LANE"
+                            else "AUTO / COAST" if coasting else "AUTO"
+                        )
                     client.send_control(throttle, steering)
 
-                debug_data = vision_data.get("debug", {})
+                
                 if not isinstance(debug_data, dict):
                     debug_data = {}
                 combined = debug_data.get("combined")
                 line_mask = debug_data.get("lane_mask")
-                drivable_mask = debug_data.get("drivable_mask")
 
                 display = (
                     np.ascontiguousarray(combined).copy()
@@ -1060,36 +2001,37 @@ def run_avis(args: argparse.Namespace) -> int:
                         1,
                         cv2.LINE_AA,
                     )
+                cv2.putText(
+                    display,
+                    (
+                        f"FPS | Read: {fps_metrics['frame_read_fps']:.1f} | "
+                        f"Inference: {fps_metrics['inference_fps']:.1f} | "
+                        f"Control: {fps_metrics['control_loop_fps']:.1f}"
+                    ),
+                    (12, 124),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.48,
+                    (100, 235, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
 
                 now = time.perf_counter()
                 if now - last_dashboard_publish >= 0.10:
-                    black_mask = np.zeros(frame_bgr.shape[:2], dtype=np.uint8)
                     dashboard_state.publish_images(
                         {
                             "camera": _encode_avis_preview(cv2, frame_bgr),
                             "combined": _encode_avis_preview(cv2, display),
                             "line-mask": _encode_avis_preview(
                                 cv2,
-                                line_mask if isinstance(line_mask, np.ndarray) else black_mask,
-                            ),
-                            "drivable-mask": _encode_avis_preview(
-                                cv2,
-                                drivable_mask
-                                if isinstance(drivable_mask, np.ndarray)
-                                else black_mask,
+                                _colorize_avis_lane_mask(
+                                    cv2, np, line_mask, frame_bgr.shape[:2]
+                                ),
                             ),
                         }
                     )
                     last_dashboard_publish = now
 
-                lane_valid = bool(
-                    vision_data.get(
-                        "lane_valid",
-                        vision_data.get("lane_type", "none") != "none",
-                    )
-                )
-                if drive_mode == "auto":
-                    lane_error = float(vision_data.get("error", 0.0) or 0.0)
                 dashboard_state.publish_telemetry(
                     {
                         "connected": True,
@@ -1105,6 +2047,43 @@ def run_avis(args: argparse.Namespace) -> int:
                             if isinstance(sensors, (list, tuple)) and len(sensors) >= 3
                             else None
                         ),
+                        "front_sensor_cm": lane_change_state.get("front_sensor_cm"),
+                        "sensor_distances_cm": lane_change_state.get("sensor_distances_cm"),
+                        "obstacle_trigger_sensor": lane_change_state.get("obstacle_trigger_sensor"),
+                        "lane_change_phase": lane_change_state.get("phase", "RIGHT_LANE"),
+                        "lane_change_side": lane_change_state.get("lane_side", "right"),
+                        "lane_change_target": lane_change_state.get("target_lane", "right"),
+                        "lane_change_distance_m": round(
+                            float(lane_change_state.get("left_lane_distance_m", 0.0)), 2
+                        ),
+                        "lane_change_target_distance_m": lane_change_state.get(
+                            "left_lane_target_distance_m"
+                        ),
+                        "lane_change_obstacle_distance_m": lane_change_state.get(
+                            "last_obstacle_distance_m"
+                        ),
+                        "lane_change_return_reason": lane_change_state.get(
+                            "return_reason", "DISTANCE"
+                        ),
+                        "lane_change_target_line_side": lane_change_state.get("target_line_side"),
+                        "lane_change_target_line_baseline_x": lane_change_state.get("target_line_baseline_x"),
+                        "lane_change_target_line_old_track_x": lane_change_state.get("target_line_old_track_x"),
+                        "lane_change_target_line_old_cleared": lane_change_state.get("target_line_old_cleared", False),
+                        "lane_change_target_line_candidate_x": lane_change_state.get("target_line_candidate_x"),
+                        "lane_change_line_confirm_frames": lane_change_state.get("line_confirm_frames", 0),
+                        "lane_change_segment_distance_m": round(
+                            float(lane_change_state.get("phase_distance_m", 0.0)), 2
+                        ),
+                        "lane_change_line_search_distance_m": round(
+                            float(lane_change_state.get("line_search_distance_m", 0.0)), 2
+                        ),
+                        "lane_change_steering_pulse_number": lane_change_state.get(
+                            "steering_pulse_number", 0
+                        ),
+                        "adaptive_roi": vision_data.get("debug", {}).get(
+                            "adaptive_roi", adaptive_roi_controller.snapshot()
+                        ),
+                        **fps_metrics,
                         "vision_error": (
                             str(vision_error) if vision_error else None
                         ),
@@ -1138,6 +2117,7 @@ def run_avis(args: argparse.Namespace) -> int:
                             if isinstance(sensors, (list, tuple)) and len(sensors) >= 3
                             else None
                         ),
+                        **fps_metrics,
                         "vision_error": "No valid AVIS camera frame.",
                     }
                 )

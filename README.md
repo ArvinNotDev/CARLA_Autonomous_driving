@@ -170,11 +170,11 @@ model and AVIS PID/speed defaults. The Classical CV backend does not run a
 segmentation model to obtain lane pixels: it independently crops the configured
 left-lane (LL) and right-lane (RL) rectangles, then runs HLS white/yellow
 thresholding, Gaussian blur, Canny, morphology, and HoughLinesP strictly inside
-each crop. Its resulting binary mask follows the same downstream procedure as
-the model-backed lane mask: median x-coordinate per ROI, line-angle estimation,
-sticky-side selection, lane-offset calculation, and centre smoothing. The
-classical drivable-area view is an estimated corridor, not a semantic
-road-surface prediction.
+each crop. Both backends supply only their selected lane-line mask to lane
+tracking: the model backend extracts only the `lane_lines` class, and AVIS does
+not calculate, consume, or display drivable-area or vehicle masks. The classical
+backend likewise detects lane boundaries only; it does not estimate a road
+corridor. The binary selected-line mask is rendered in red in the debug view.
 
 Use the Python API revision compatible with AVIS 1.2.4 (the vendor's
 `FIRA-ACL` branch). Clone it beside the project:
@@ -193,7 +193,7 @@ python main.py --avis
 ```
 
 The AVIS Flask dashboard starts at `http://127.0.0.1:5001`. It provides
-live camera/overlay views, the lane and drivable-area masks, Auto / Manual /
+live camera/overlay views, a red selected-lane mask, Auto / Manual /
 Emergency Stop modes, forward/reverse manual controls, and live controller
 and classical-vision settings. The live ROI editor overlays the camera image:
 select LL or RL, drag the rectangle to move it, or drag a corner to resize it.
@@ -202,10 +202,37 @@ are shared by Ultralytics and Classical CV. Settings are saved separately in
 `avis_settings.json`; this file is local and git-ignored. They do not modify
 `runtime_profiles.json`, CARLA configuration, or CARLA controllers.
 
+AVIS has its own named profile manager, separate from CARLA profiles. Create,
+load, delete, import, and export profiles from the Settings tab. Profile data
+is stored locally in the git-ignored `avis_profiles.json` and can be exported
+as portable JSON files. The GitHub profile panel reads public profiles from
+`avis_profiles/` on `main`, can load them, and can publish local profiles to
+the same folder. Publishing requires GitHub Contents write permission and
+authentication through `gh auth login` or the `GITHUB_TOKEN` / `GH_TOKEN`
+environment variable; credentials are never stored in AVIS settings or sent
+to the browser. GitHub writes are restricted to local dashboard connections.
+
+Adaptive ROI recovery is enabled by default for both AVIS vision backends.
+Each LL/RL region tracks the last seven inference results independently. When
+a detected marking trends toward an edge and reaches the configured boundary
+zone, that edge expands temporarily, up to the configured maximum. After the
+marking returns near the center of its original ROI for the configured
+confirmation frames, the expansion is reduced gradually until the original
+saved rectangle is restored. Permanent ROI coordinates are not changed by
+this automatic recovery; the feature and its tuning are profile settings.
+
 Select **Classical CV** in the Vision backend field to use the adjustable HLS,
-blur, Canny, morphology, and HoughLinesP pipeline. Both backends use the same
-LL/RL ROI rectangles and the same downstream lane-centre calculation. Select
-**Ultralytics** to use the trained semantic checkpoint. When the configured Ultralytics
+blur, Canny, morphology, and HoughLinesP pipeline. Both backends use one shared
+ROI line selector. Hough fragments are grouped by their projected position and
+signed angle, then candidates are scored using vertical coverage, line support,
+and fragment continuity. LL targets the rightmost candidate; RL targets the
+leftmost. A temporal tracker associates detections by position and angle,
+smooths the selected line, and requires a more extreme replacement to persist
+for three inference frames before switching. A short Hough dropout holds the
+last track for up to two frames. The selected track alone is used for median-x
+and angle calculation; the Ultralytics path never falls back to mixing the raw
+multi-line mask when Hough selection is temporarily unavailable. Select
+**Ultralytics** to use the trained semantic checkpoint. When the configured
 checkpoint is missing, AVIS starts in classical mode and reports the fallback.
 
 For manual driving, switch to **Manual** and use `W` / `S` for forward /
@@ -234,9 +261,31 @@ python main.py --avis --avis-host 127.0.0.1 --avis-port 25001
 The AVIS settings profile is `AVIS_StableV2`. It copies the StableV2 lane
 perception, PID, inference cadence, and speed settings while omitting CARLA-only
 camera placement, map navigation, junction, trajectory, and LiDAR settings.
-The AVIS API supplies only RGB frames, speed feedback, and three distance
-readings; the distance readings are displayed for diagnostics and are not used
-to introduce a different driving strategy.
+The AVIS API supplies RGB frames, speed feedback, and three distance readings
+in centimetres ([left, middle/front, right]). The default obstacle trigger is
+950 cm, and any one of the three sensors reaching that threshold can initiate
+the existing lane-change manoeuvre. No separate speed reduction is applied
+from 1500 cm. It applies a short steering pulse,
+then checks the pre-manoeuvre marking in the target ROI between pulses.
+The last seven distinct inference frames are used to establish the old line's
+position; that marking is followed and ignored until it leaves the ROI. Losing
+the old marking alone never stops correction: repeated 0.20 pulses continue
+while the destination line is missing or unconfirmed, with a fresh ROI result
+checked between pulses. Steering stops only after a spatially distinct target
+line remains consistent across the configured confirmation frames. Leftward
+changes use LL and
+rightward returns use RL. Steering uses an initial configured pulse (0.30 by
+default), followed by repeated 0.20 pulses of 0.30 m with short 0.15 m
+straight-check intervals. A fresh inference result is required between pulses;
+steering stops as soon as the old line clears or the destination marking is
+confirmed. The inner edges stay locked (LL-right and RL-left), so adaptive ROI
+recovery can only expand outward. Once the left-lane line is reacquired, the
+return distance is calculated from the last measured triggering-sensor distance
+plus a configurable clearance (5 m by default), rather than a fixed travel
+distance. A newly detected obstacle in the left lane overrides that target and
+starts an immediate return to the right. The AVIS web dashboard exposes the
+sensor threshold, confirmation, steering-pulse, line-search, and clearance
+settings.
 
 AVIS accepts engine power and steering commands but does not expose a separate
 brake control in this API revision. When the speed controller requests braking,
@@ -324,6 +373,9 @@ trajectory/                     Waypoint model, steering agent, visualization
 vision/                         ONNX/segmentation perception and debug views
 ui/                             Legacy desktop panel, renderers, spawn/goal startup dialogs
 models_and_datasets/             Model checkpoints and ONNX assets
+avis_adaptive_roi.py             AVIS-only 7-frame adaptive ROI recovery
+avis_profiles.py                  Local/GitHub AVIS profile import, export and sync
+avis_profiles/                    Versioned AVIS profiles published to GitHub
 tests/                           Regression and GUI smoke tests
 ```
 
