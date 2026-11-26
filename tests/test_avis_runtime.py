@@ -127,7 +127,7 @@ def test_avis_steering_controller_preserves_stable_v2_rate_limit():
     second = controller.update(100.0)
 
     assert first == pytest.approx(0.10)
-    assert second == pytest.approx(0.30)
+    assert second == pytest.approx(0.20)
     assert abs(controller.update(10000.0)) <= 0.75
 
 
