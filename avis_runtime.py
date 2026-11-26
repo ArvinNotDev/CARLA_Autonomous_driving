@@ -710,17 +710,27 @@ class AvisObstacleLaneChangeController:
         )
 
         if self.phase == self.STEER_LEFT:
+            retry_pulse_distance = (
+                self._positive_setting(
+                    settings,
+                    "obstacle_lane_change_retry_pulse_distance_m",
+                    self.FOLLOWUP_PULSE_DISTANCE_M,
+                )
+                if settings.get("_model_confirmed_lane_change")
+                else self.FOLLOWUP_PULSE_DISTANCE_M
+            )
+            retry_steer_magnitude = (
+                self._positive_setting(
+                    settings, "obstacle_lane_change_retry_steer",
+                    self.FOLLOWUP_STEER_MAGNITUDE,
+                )
+                if settings.get("_model_confirmed_lane_change")
+                else self.FOLLOWUP_STEER_MAGNITUDE
+            )
             pulse_distance = (
                 steer_distance
                 if self.steering_pulse_index == 0
-                else min(
-                    self._positive_setting(
-                        settings,
-                        "obstacle_lane_change_retry_pulse_distance_m",
-                        self.FOLLOWUP_PULSE_DISTANCE_M,
-                    ),
-                    steer_distance * 0.80,
-                )
+                else retry_pulse_distance
             )
             # Losing the old line is not proof that the destination line has
             # been found. Keep applying correction until a new line is stable.
@@ -732,13 +742,7 @@ class AvisObstacleLaneChangeController:
                 pulse_steer = (
                     left_steer
                     if self.steering_pulse_index == 0
-                    else min(
-                        self._positive_setting(
-                            settings, "obstacle_lane_change_retry_steer",
-                            self.FOLLOWUP_STEER_MAGNITUDE,
-                        ),
-                        left_steer,
-                    )
+                    else min(retry_steer_magnitude, left_steer)
                 )
                 steering_override = -pulse_steer
 
@@ -764,17 +768,27 @@ class AvisObstacleLaneChangeController:
                 )
 
         elif self.phase == self.STEER_RIGHT:
+            retry_pulse_distance = (
+                self._positive_setting(
+                    settings,
+                    "obstacle_lane_change_retry_pulse_distance_m",
+                    self.FOLLOWUP_PULSE_DISTANCE_M,
+                )
+                if settings.get("_model_confirmed_lane_change")
+                else self.FOLLOWUP_PULSE_DISTANCE_M
+            )
+            retry_steer_magnitude = (
+                self._positive_setting(
+                    settings, "obstacle_lane_change_retry_steer",
+                    self.FOLLOWUP_STEER_MAGNITUDE,
+                )
+                if settings.get("_model_confirmed_lane_change")
+                else self.FOLLOWUP_STEER_MAGNITUDE
+            )
             pulse_distance = (
                 steer_distance
                 if self.steering_pulse_index == 0
-                else min(
-                    self._positive_setting(
-                        settings,
-                        "obstacle_lane_change_retry_pulse_distance_m",
-                        self.FOLLOWUP_PULSE_DISTANCE_M,
-                    ),
-                    steer_distance * 0.80,
-                )
+                else retry_pulse_distance
             )
             if target_line_confirmed or self.phase_distance_m >= pulse_distance:
                 self.phase = self.ACQUIRE_RIGHT_LINE
@@ -784,13 +798,7 @@ class AvisObstacleLaneChangeController:
                 pulse_steer = (
                     right_steer
                     if self.steering_pulse_index == 0
-                    else min(
-                        self._positive_setting(
-                            settings, "obstacle_lane_change_retry_steer",
-                            self.FOLLOWUP_STEER_MAGNITUDE,
-                        ),
-                        right_steer,
-                    )
+                    else min(retry_steer_magnitude, right_steer)
                 )
                 steering_override = pulse_steer
 
@@ -1357,6 +1365,7 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
         base_settings["obstacle_front_threshold_cm"] = 0.0
         base_settings["obstacle_sensor_clear_threshold_cm"] = 0.0
         base_settings["obstacle_clearance_after_pass_m"] = 0.0
+        base_settings["_model_confirmed_lane_change"] = True
         original_phase = self.phase
         pass_wait_active = original_phase in {
             self.WAIT_OBSTACLE_PASS, self.RETURN_DELAY, self.WAIT_PASS_CLEARANCE
