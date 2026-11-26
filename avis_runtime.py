@@ -2241,6 +2241,32 @@ def _colorize_avis_lane_mask(cv2_module, np_module, line_mask, frame_shape):
     return preview
 
 
+def _colorize_avis_drivable_mask(cv2_module, np_module, drivable_mask, frame_shape):
+    """Create a green-only debug preview of the model's drivable-area mask."""
+    height, width = int(frame_shape[0]), int(frame_shape[1])
+    preview = np_module.zeros((height, width, 3), dtype=np_module.uint8)
+    if drivable_mask is None:
+        return preview
+
+    mask = np_module.asarray(drivable_mask)
+    if mask.ndim == 3:
+        selected = np_module.any(mask > 0, axis=2)
+    elif mask.ndim == 2:
+        selected = mask > 0
+    else:
+        return preview
+
+    if selected.shape != (height, width):
+        selected = cv2_module.resize(
+            selected.astype(np_module.uint8),
+            (width, height),
+            interpolation=cv2_module.INTER_NEAREST,
+        ) > 0
+
+    preview[selected] = (0, 255, 0)
+    return preview
+
+
 def run_avis(args: argparse.Namespace) -> int:
     client: Optional[AvisEngineClient] = None
     inference_worker = None
@@ -2749,6 +2775,7 @@ def run_avis(args: argparse.Namespace) -> int:
                     debug_data = {}
                 combined = debug_data.get("combined")
                 line_mask = debug_data.get("lane_mask")
+                drivable_mask = debug_data.get("drivable_mask")
 
                 display = (
                     np.ascontiguousarray(combined).copy()
@@ -2825,6 +2852,12 @@ def run_avis(args: argparse.Namespace) -> int:
                                 cv2,
                                 _colorize_avis_lane_mask(
                                     cv2, np, line_mask, frame_bgr.shape[:2]
+                                ),
+                            ),
+                            "drivable-area": _encode_avis_preview(
+                                cv2,
+                                _colorize_avis_drivable_mask(
+                                    cv2, np, drivable_mask, frame_bgr.shape[:2]
                                 ),
                             ),
                         }
