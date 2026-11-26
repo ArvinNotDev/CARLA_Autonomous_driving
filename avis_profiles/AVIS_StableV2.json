@@ -2,7 +2,7 @@
   "schema_version": 1,
   "name": "AVIS_StableV2",
   "settings": {
-    "vision_backend": "ultralytics",
+    "vision_backend": "classical",
     "control_loop_hz": 40.0,
     "inference_interval_ms": 10.0,
     "sensor_angle": 30,
@@ -11,7 +11,7 @@
     "acceleration_mps2": 2.0,
     "kp": 0.013,
     "ki": 0.0,
-    "kd": 0.002,
+    "kd": 0.003,
     "steer_limit": 0.75,
     "max_steer_step": 0.1,
     "blur_kernel": 5,
@@ -75,5 +75,5 @@
     "adaptive_roi_recovery_frames": 4,
     "adaptive_roi_restore_step_ratio": 0.01
   },
-  "saved_at": 1795724868.456677
+  "saved_at": 1795725263.2689228
 }
