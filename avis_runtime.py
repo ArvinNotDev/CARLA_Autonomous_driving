@@ -1292,6 +1292,9 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
             and current_time - self.pass_sensor_cleared_at >= return_delay
         ):
             self._begin_right_return("RIGHT_SENSOR_CONFIRMED_PASS", observation_id)
+            # The inherited CARLA-style helper resets its default reason to
+            # DISTANCE; preserve the sensor-confirmed reason for AVIS telemetry.
+            self.return_reason = "RIGHT_SENSOR_CONFIRMED_PASS"
             pid_reset = True
 
         # The side-angle is selected only after the car has acquired the left
