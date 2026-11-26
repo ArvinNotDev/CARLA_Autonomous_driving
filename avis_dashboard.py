@@ -294,6 +294,9 @@ class AvisDashboardState:
         }
         self._images: dict[str, bytes] = {}
         self._image_versions: dict[str, int] = {}
+        # Keep each completed classifier result so browser polling cannot skip
+        # fast inference updates between /api/status requests.
+        self._model_prediction_history: list[dict[str, Any]] = []
 
     def _load_saved_settings(self) -> None:
         if not self.settings_path.is_file():
@@ -534,6 +537,32 @@ class AvisDashboardState:
         with self._lock:
             self._telemetry = dict(telemetry)
 
+    def publish_model_prediction(self, prediction: dict[str, Any]) -> None:
+        """Append one completed model output to a bounded live history."""
+        if not isinstance(prediction, dict):
+            return
+        try:
+            request_id = int(prediction.get("request_id"))
+            frame_id = int(prediction.get("frame_id"))
+        except (TypeError, ValueError):
+            return
+        obstacle = prediction.get("obstacle")
+        lane = prediction.get("lane")
+        if not isinstance(obstacle, dict) or not isinstance(lane, dict):
+            return
+        event = dict(prediction)
+        event["request_id"] = request_id
+        event["frame_id"] = frame_id
+        with self._lock:
+            if (
+                self._model_prediction_history
+                and self._model_prediction_history[-1].get("request_id") == request_id
+            ):
+                return
+            self._model_prediction_history.append(event)
+            if len(self._model_prediction_history) > 30:
+                del self._model_prediction_history[:-30]
+
     def publish_images(self, images: dict[str, bytes]) -> None:
         with self._lock:
             for name, payload in images.items():
@@ -603,6 +632,9 @@ class AvisDashboardState:
                 "mode": mode,
                 "manual_active": manual_fresh,
                 "telemetry": dict(self._telemetry),
+                "model_prediction_history": [
+                    dict(item) for item in self._model_prediction_history
+                ],
             }
 
 
@@ -651,6 +683,21 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
 .fps-metrics .metric{padding:9px 11px}
 .fps-metrics .metric strong{font-size:18px}
 @media(max-width:560px){.fps-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.model-prediction-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.model-prediction-card{min-width:0;background:#0b1625;border:1px solid #293d55;border-radius:12px;padding:12px}
+.model-prediction-card span{display:block;color:#8fa2bb;font-size:10px;text-transform:uppercase;letter-spacing:.08em}
+.model-prediction-card strong{display:block;margin-top:8px;font-size:19px;line-height:1.25;overflow-wrap:anywhere}
+.model-prediction-card small{display:block;margin-top:6px;color:#91a8bf;font-size:11px;font-variant-numeric:tabular-nums}
+.model-state-yes{color:#ff7b8e}.model-state-no{color:#68dfa7}.model-state-left{color:#80e4ff}.model-state-right{color:#f2c879}
+.model-prediction-meta{margin-top:10px;color:#91a8bf;font-size:11px;font-variant-numeric:tabular-nums}
+.model-history-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:15px 0 8px;color:#9ab0c7;font-size:10px;text-transform:uppercase;letter-spacing:.1em}
+.model-history-list{display:grid;gap:5px;max-height:245px;overflow:auto;scrollbar-width:thin;scrollbar-color:#35516d transparent}
+.model-history-row{display:grid;grid-template-columns:.65fr 1fr 1fr .8fr;gap:8px;align-items:center;padding:8px 9px;border:1px solid #22364c;border-radius:8px;background:#0a1421;font-size:11px;font-variant-numeric:tabular-nums}
+.model-history-row span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.model-history-row .history-obstacle-yes{color:#ff7b8e}.model-history-row .history-obstacle-no{color:#68dfa7}
+.model-history-row .history-lane-left{color:#80e4ff}.model-history-row .history-lane-right{color:#f2c879}
+.model-history-empty{padding:12px;border:1px dashed #30455e;border-radius:9px;color:#8198b2;font-size:12px;text-align:center}
+@media(max-width:560px){.model-prediction-grid{grid-template-columns:1fr 1fr}.model-prediction-card:last-child{grid-column:1/-1}.model-history-row{grid-template-columns:.6fr 1fr 1fr}.model-history-row span:last-child{display:none}}
 </style>
 </head>
 <body>
@@ -704,6 +751,18 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
         <div class="keyhelp">Manual mode: W = forward, S = reverse, A / D = steer, Space = zero throttle and steering. The dashboard sends a short heartbeat; loss of heartbeat releases throttle.</div>
         <div class="actions"><button class="btn save" id="roadforgeCaptureButton" type="button">Capture frame for RoadForge</button><span class="message" id="roadforgeCaptureMessage" aria-live="polite"></span></div>
         <div class="hint">Saves the latest front-camera frame and AVIS telemetry to Documents/AVIS_RoadForge_Captures. This does not pause or modify vehicle control.</div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h3>Model inference outputs</h3><span class="tag" id="modelPredictionStatus">WAITING FOR MODEL</span></div>
+        <div class="model-prediction-grid">
+          <div class="model-prediction-card"><span>Obstacle ahead</span><strong id="modelObstacleLabel">--</strong><small id="modelObstacleConfidence">Confidence: --</small></div>
+          <div class="model-prediction-card"><span>Model lane prediction</span><strong id="modelLaneLabel">--</strong><small id="modelLaneConfidence">Confidence: --</small></div>
+          <div class="model-prediction-card"><span>Vehicle lane state</span><strong id="modelCurrentLane">--</strong><small id="modelLanePhase">Waiting for lane state</small></div>
+        </div>
+        <div class="model-prediction-meta" id="modelPredictionMeta">Waiting for the first completed classifier inference.</div>
+        <div class="model-history-head"><span>Recent predictions · each completed inference</span><span id="modelPredictionCount">0 records</span></div>
+        <div class="model-history-row" aria-hidden="true"><span>Frame</span><span>Obstacle</span><span>Lane output</span><span>Time</span></div>
+        <div class="model-history-list" id="modelPredictionHistory" aria-live="polite"><div class="model-history-empty">No model predictions yet.</div></div>
       </div>
       <div class="panel">
         <div class="panel-head"><h3>Runtime telemetry</h3><span class="tag" id="runtimeStatus">Starting</span></div>
@@ -1259,12 +1318,93 @@ async function heartbeat() {
     setModeButtons("stopped");
   }
 }
+function modelConfidenceText(value) {
+  const confidence = Number(value);
+  return Number.isFinite(confidence) ? "Confidence: " + (confidence * 100).toFixed(1) + "%" : "Confidence: --";
+}
+function modelPredictionTime(value) {
+  const timestamp = Number(value);
+  return Number.isFinite(timestamp) && timestamp > 0
+    ? new Date(timestamp * 1000).toLocaleTimeString()
+    : "--";
+}
+function renderModelPredictions(history, telemetry) {
+  const records = Array.isArray(history) ? history : [];
+  const latest = records.length ? records[records.length - 1] : null;
+  const obstacle = latest?.obstacle || telemetry.obstacle_classifier?.obstacle_ahead || null;
+  const lane = latest?.lane || telemetry.obstacle_classifier?.lane || null;
+  const obstacleLabel = String(obstacle?.label || "").toLowerCase();
+  const laneLabel = String(lane?.label || "").toLowerCase();
+
+  const obstacleValue = $("modelObstacleLabel");
+  obstacleValue.textContent = obstacleLabel === "yes" ? "YES · OBSTACLE" : obstacleLabel === "no" ? "NO · CLEAR" : "WAITING";
+  obstacleValue.className = obstacleLabel === "yes" ? "model-state-yes" : obstacleLabel === "no" ? "model-state-no" : "";
+  $("modelObstacleConfidence").textContent = modelConfidenceText(obstacle?.confidence);
+
+  const laneValue = $("modelLaneLabel");
+  laneValue.textContent = laneLabel ? laneLabel.toUpperCase() : "WAITING";
+  laneValue.className = laneLabel === "left" ? "model-state-left" : laneLabel === "right" ? "model-state-right" : "";
+  $("modelLaneConfidence").textContent = modelConfidenceText(lane?.confidence);
+
+  const currentLane = String(telemetry.lane_change_side || "").toLowerCase();
+  const currentLaneValue = $("modelCurrentLane");
+  currentLaneValue.textContent = currentLane ? currentLane.toUpperCase() : "--";
+  currentLaneValue.className = currentLane === "left" ? "model-state-left" : currentLane === "right" ? "model-state-right" : "";
+  $("modelLanePhase").textContent = String(telemetry.lane_change_phase || "Waiting for lane state").replaceAll("_", " ");
+
+  if (latest) {
+    const ageMs = Math.max(0, Date.now() - Number(latest.recorded_at || 0) * 1000);
+    $("modelPredictionStatus").textContent = ageMs < 1500 ? "LIVE · MODEL OUTPUT" : "LAST OUTPUT · STALE";
+    $("modelPredictionMeta").textContent =
+      String(latest.backbone || "Classifier") +
+      " · Inference #" + String(latest.request_id) +
+      " · Camera frame #" + String(latest.frame_id) +
+      " · " + modelPredictionTime(latest.recorded_at) +
+      " · " + (ageMs < 1000 ? ageMs.toFixed(0) + " ms ago" : (ageMs / 1000).toFixed(1) + " s ago");
+  } else {
+    $("modelPredictionStatus").textContent = "WAITING FOR MODEL";
+    $("modelPredictionMeta").textContent = "No completed classifier inference has been received yet.";
+  }
+
+  const list = $("modelPredictionHistory");
+  list.replaceChildren();
+  const visible = records.slice(-15).reverse();
+  $("modelPredictionCount").textContent = records.length + " stored · " + visible.length + " shown";
+  if (!visible.length) {
+    const empty = document.createElement("div");
+    empty.className = "model-history-empty";
+    empty.textContent = "No model predictions yet.";
+    list.appendChild(empty);
+    return;
+  }
+  for (const item of visible) {
+    const row = document.createElement("div");
+    row.className = "model-history-row";
+    const obstacleName = String(item.obstacle?.label || "--").toLowerCase();
+    const laneName = String(item.lane?.label || "--").toLowerCase();
+    const cells = [
+      "#" + String(item.frame_id ?? "--"),
+      obstacleName === "yes" ? "YES · " + (Number(item.obstacle?.confidence || 0) * 100).toFixed(0) + "%" : obstacleName === "no" ? "NO · " + (Number(item.obstacle?.confidence || 0) * 100).toFixed(0) + "%" : "--",
+      (laneName === "left" || laneName === "right" ? laneName.toUpperCase() : "--") + " · " + modelConfidenceText(item.lane?.confidence).replace("Confidence: ", ""),
+      modelPredictionTime(item.recorded_at),
+    ];
+    cells.forEach((value, index) => {
+      const cell = document.createElement("span");
+      cell.textContent = value;
+      if (index === 1) cell.className = obstacleName === "yes" ? "history-obstacle-yes" : obstacleName === "no" ? "history-obstacle-no" : "";
+      if (index === 2) cell.className = laneName === "left" ? "history-lane-left" : laneName === "right" ? "history-lane-right" : "";
+      row.appendChild(cell);
+    });
+    list.appendChild(row);
+  }
+}
 async function refreshStatus() {
   try {
     const response = await fetch("/api/status", {cache:"no-store"});
     if (!response.ok) throw new Error("Runtime unavailable");
     const data = await response.json();
     const t = data.telemetry || {};
+    renderModelPredictions(data.model_prediction_history || [], t);
     $("connectionDot").classList.toggle("online", !!t.connected);
     $("connectionText").textContent = t.connected ? "AVIS connected" : "Waiting for AVIS";
     $("backendTag").textContent = "VISION: " + String(data.settings.vision_backend).toUpperCase();
