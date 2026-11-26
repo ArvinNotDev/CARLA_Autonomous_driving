@@ -63,8 +63,13 @@ class AvisClassicalVisionProcessor:
         "rl_right_roi",
     )
 
-    def __init__(self, settings: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        settings: dict[str, Any] | None = None,
+        adaptive_roi_controller=None,
+    ) -> None:
         self._lock = threading.RLock()
+        self.adaptive_roi_controller = adaptive_roi_controller
         self._settings = dict(DEFAULT_CLASSICAL_SETTINGS)
         if settings:
             self.update_settings(settings)
@@ -82,6 +87,8 @@ class AvisClassicalVisionProcessor:
                 self.last_lane_center = None
                 self.last_lane_half_width = None
                 self.active_side = None
+            if self.adaptive_roi_controller is not None:
+                self.adaptive_roi_controller.configure(self._settings)
 
     def settings_snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -411,8 +418,13 @@ class AvisClassicalVisionProcessor:
         frame = np.ascontiguousarray(frame[:, :, :3])
         height, width = frame.shape[:2]
         settings = self.settings_snapshot()
-        ll_bounds = self._roi_bounds((height, width), settings, "ll")
-        rl_bounds = self._roi_bounds((height, width), settings, "rl")
+        roi_settings = (
+            self.adaptive_roi_controller.active_settings()
+            if self.adaptive_roi_controller is not None
+            else settings
+        )
+        ll_bounds = self._roi_bounds((height, width), roi_settings, "ll")
+        rl_bounds = self._roi_bounds((height, width), roi_settings, "rl")
 
         line_mask = np.zeros((height, width), dtype=np.uint8)
         threshold_mask = np.zeros((height, width), dtype=np.uint8)
@@ -458,6 +470,9 @@ class AvisClassicalVisionProcessor:
             rl_right,
             min_side_pixels,
         )
+
+        if self.adaptive_roi_controller is not None:
+            self.adaptive_roi_controller.observe(left_x, right_x, width)
 
         frame_center = width / 2.0
         lane_offset_px = width * float(settings["lane_offset_ratio"])
@@ -533,5 +548,10 @@ class AvisClassicalVisionProcessor:
                 "left_hough_segments": int(ll_segments or 0),
                 "right_hough_segments": int(rl_segments or 0),
                 "lane_valid": lane_valid,
+                "adaptive_roi": (
+                    self.adaptive_roi_controller.snapshot()
+                    if self.adaptive_roi_controller is not None
+                    else None
+                ),
             },
         }

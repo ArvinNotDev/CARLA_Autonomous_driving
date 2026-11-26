@@ -823,16 +823,48 @@ def _build_avis_settings(conf: ModuleType, sensor_angle: int) -> dict[str, Any]:
 def _create_avis_vision_processor(
     backend: str,
     settings: dict[str, Any],
+    adaptive_roi_controller=None,
 ):
     if backend == "classical":
         from avis_classical_vision import AvisClassicalVisionProcessor
 
-        return AvisClassicalVisionProcessor(settings)
+        return AvisClassicalVisionProcessor(
+            settings,
+            adaptive_roi_controller=adaptive_roi_controller,
+        )
 
     from vision.city_vision_processing import VisionProcessor
 
     class AvisVisionProcessor(VisionProcessor):
         """AVIS model adapter; vehicle segmentation is optional and never drawn."""
+
+        def detect(self, semantic_frame, rgb_frame=None):
+            # The shared processor reads ROI coordinates from config_city.
+            # Override them only inside this AVIS-specific adapter and only
+            # for the current inference; no shared CARLA code is modified.
+            if self.adaptive_roi_controller is not None:
+                import config_city as avis_conf
+
+                _apply_avis_roi_settings(
+                    avis_conf,
+                    self.adaptive_roi_controller.active_settings(),
+                )
+            result = super().detect(semantic_frame, rgb_frame=rgb_frame)
+            frame = rgb_frame if rgb_frame is not None else semantic_frame
+            if (
+                self.adaptive_roi_controller is not None
+                and frame is not None
+                and getattr(frame, "ndim", 0) >= 2
+            ):
+                debug = result.get("debug")
+                if isinstance(debug, dict):
+                    self.adaptive_roi_controller.observe(
+                        debug.get("left_x"),
+                        debug.get("right_x"),
+                        int(frame.shape[1]),
+                    )
+                    debug["adaptive_roi"] = self.adaptive_roi_controller.snapshot()
+            return result
 
         @staticmethod
         def _class_ids_from_names(
@@ -902,6 +934,7 @@ def _create_avis_vision_processor(
 
         def __init__(self, mode: str):
             super().__init__(mode)
+            self.adaptive_roi_controller = adaptive_roi_controller
             self.last_lane_half_width: float | None = None
             if getattr(self, "vehicles_class_id", None) is None:
                 print(
@@ -1043,9 +1076,14 @@ def run_avis(args: argparse.Namespace) -> int:
         settings, settings_revision = dashboard_state.settings_snapshot()
         _apply_avis_roi_settings(conf, settings)
 
+        from avis_adaptive_roi import AvisAdaptiveROIController
+
+        adaptive_roi_controller = AvisAdaptiveROIController(settings)
         try:
             vision_processor = _create_avis_vision_processor(
-                settings["vision_backend"], settings
+                settings["vision_backend"],
+                settings,
+                adaptive_roi_controller=adaptive_roi_controller,
             )
         except (FileNotFoundError, ImportError) as exc:
             if settings["vision_backend"] != "ultralytics":
@@ -1058,7 +1096,12 @@ def run_avis(args: argparse.Namespace) -> int:
                 {"vision_backend": "classical"}
             )
             settings_revision = dashboard_state.settings_snapshot()[1]
-            vision_processor = _create_avis_vision_processor("classical", settings)
+            adaptive_roi_controller.configure(settings)
+            vision_processor = _create_avis_vision_processor(
+                "classical",
+                settings,
+                adaptive_roi_controller=adaptive_roi_controller,
+            )
 
         inference_worker = InferenceWorker(vision_processor=vision_processor)
         inference_worker.start()
@@ -1156,6 +1199,7 @@ def run_avis(args: argparse.Namespace) -> int:
             current_settings, current_revision = dashboard_state.settings_snapshot()
             if current_revision != settings_revision:
                 try:
+                    adaptive_roi_controller.configure(current_settings)
                     _apply_avis_roi_settings(conf, current_settings)
                     if int(current_settings["sensor_angle"]) != active_sensor_angle:
                         client.set_sensor_angle(int(current_settings["sensor_angle"]))
@@ -1177,7 +1221,9 @@ def run_avis(args: argparse.Namespace) -> int:
                     selected_backend = str(current_settings["vision_backend"])
                     if selected_backend != active_backend:
                         replacement = _create_avis_vision_processor(
-                            selected_backend, current_settings
+                            selected_backend,
+                            current_settings,
+                            adaptive_roi_controller=adaptive_roi_controller,
                         )
                         inference_worker.set_vision_processor(replacement)
                         vision_processor = replacement
@@ -1520,6 +1566,9 @@ def run_avis(args: argparse.Namespace) -> int:
                         ),
                         "lane_change_segment_distance_m": round(
                             float(lane_change_state.get("phase_distance_m", 0.0)), 2
+                        ),
+                        "adaptive_roi": vision_data.get("debug", {}).get(
+                            "adaptive_roi", adaptive_roi_controller.snapshot()
                         ),
                         **fps_metrics,
                         "vision_error": (

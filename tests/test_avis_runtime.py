@@ -20,6 +20,7 @@ from avis_runtime import (
 )
 
 from avis_classical_vision import AvisClassicalVisionProcessor
+from avis_adaptive_roi import AvisAdaptiveROIController
 from avis_dashboard import (
     DEFAULT_AVIS_SETTINGS,
     AvisDashboardState,
@@ -961,3 +962,71 @@ def test_avis_model_debug_suppresses_vehicle_mask_without_mutating_shared_proces
     assert result == "debug-frame"
     assert received["mode"] == "ultralytics"
     assert received["vehicles_mask"] is None
+
+
+def test_avis_adaptive_roi_uses_last_seven_frames_to_expand_toward_escape():
+    settings = dict(DEFAULT_AVIS_SETTINGS)
+    adaptive = AvisAdaptiveROIController(settings)
+    frame_width = 1000
+    left, right = settings["ll_left_roi"], settings["ll_right_roi"]
+    positions = (0.68, 0.54, 0.39, 0.25, 0.17, 0.11, 0.08)
+    for ratio in positions:
+        x = (left + (right - left) * ratio) * frame_width
+        adaptive.observe(x, None, frame_width)
+
+    snapshot = adaptive.snapshot()
+    assert snapshot["ll"]["history_frames"] == 7
+    assert snapshot["ll"]["expanded_left"] > 0
+    assert snapshot["ll"]["expanded_right"] == 0
+    assert snapshot["ll"]["left"] < pytest.approx(left)
+
+
+def test_avis_adaptive_roi_restores_slowly_after_line_returns_to_base_roi_center():
+    settings = dict(DEFAULT_AVIS_SETTINGS)
+    adaptive = AvisAdaptiveROIController(settings)
+    frame_width = 1000
+    left, right = settings["ll_left_roi"], settings["ll_right_roi"]
+    for ratio in (0.60, 0.42, 0.24, 0.16, 0.10):
+        adaptive.observe((left + (right - left) * ratio) * frame_width, None, frame_width)
+
+    before = adaptive.snapshot()["ll"]["expanded_left"]
+    assert before > 0
+    center_x = (left + (right - left) * 0.50) * frame_width
+    for _ in range(7):
+        adaptive.observe(center_x, None, frame_width)
+
+    after = adaptive.snapshot()["ll"]["expanded_left"]
+    assert 0 <= after < before
+    for _ in range(20):
+        adaptive.observe(center_x, None, frame_width)
+    assert adaptive.snapshot()["ll"]["expanded_left"] == 0
+
+
+def test_avis_adaptive_roi_expands_the_correct_edge_of_each_independent_roi():
+    settings = dict(DEFAULT_AVIS_SETTINGS)
+    adaptive = AvisAdaptiveROIController(settings)
+    frame_width = 1000
+    rl_left, rl_right = settings["rl_left_roi"], settings["rl_right_roi"]
+    for ratio in (0.36, 0.50, 0.68, 0.82, 0.91):
+        x = (rl_left + (rl_right - rl_left) * ratio) * frame_width
+        adaptive.observe(None, x, frame_width)
+
+    snapshot = adaptive.snapshot()
+    assert snapshot["rl"]["expanded_right"] > 0
+    assert snapshot["rl"]["expanded_left"] == 0
+    assert snapshot["ll"]["expanded_left"] == 0
+    assert snapshot["ll"]["expanded_right"] == 0
+
+
+def test_avis_adaptive_roi_can_be_disabled_without_changing_base_rectangles():
+    settings = dict(DEFAULT_AVIS_SETTINGS)
+    settings["adaptive_roi_enabled"] = False
+    adaptive = AvisAdaptiveROIController(settings)
+    frame_width = 1000
+    left, right = settings["ll_left_roi"], settings["ll_right_roi"]
+    for ratio in (0.60, 0.42, 0.24, 0.16, 0.10):
+        adaptive.observe((left + (right - left) * ratio) * frame_width, None, frame_width)
+
+    active = adaptive.active_settings()
+    assert active["ll_left_roi"] == pytest.approx(left)
+    assert active["ll_right_roi"] == pytest.approx(right)
