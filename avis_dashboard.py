@@ -1440,10 +1440,14 @@ async function refreshStatus() {
       " · Sensors (L / C / R): " + (Array.isArray(t.sensors_cm) ? t.sensors_cm.join(" / ") + " cm" : "--") +
       " · Lane-change: " + String(t.lane_change_phase || "RIGHT_LANE").replaceAll("_"," ") +
       " · Side: " + String(t.lane_change_side || "right").toUpperCase() +
+      " · Attempt: " + (Number(t.lane_change_attempt_number || 0) > 0 ? "#" + String(t.lane_change_attempt_number) : "--") +
+      " · Model lane confirm: " + String(t.model_lane_confirm_frames || 0) + "/" + String(data.settings.obstacle_lane_line_confirm_frames || 3) +
+      " · Pass pattern: " + String(t.obstacle_pass_sensor_stage || "--").replaceAll("_"," ") +
+      " · Right sensor: " + (t.obstacle_pass_right_sensor_cm == null ? "--" : Number(t.obstacle_pass_right_sensor_cm).toFixed(0) + " cm") +
+      " · Pass clearance: " + Number(t.pass_clearance_travelled_m || 0).toFixed(1) + "/" + Number(t.pass_clearance_distance_m || 3).toFixed(1) + " m" +
       " · Obstacle model: " + String(t.obstacle_classifier?.obstacle_ahead?.label || "--") +
       " (" + (t.obstacle_model_probability == null ? "--" : (Number(t.obstacle_model_probability) * 100).toFixed(0) + "%") + ")" +
       " · Lane choice: " + String(t.obstacle_lane_prediction || "--") +
-      " · Right sensor: " + (t.obstacle_pass_right_sensor_cm == null ? "--" : Number(t.obstacle_pass_right_sensor_cm).toFixed(0) + " cm") +
       " · Pass: " + String(t.obstacle_pass_sensor_stage || "--").replaceAll("_"," ") +
       (t.obstacle_return_delay_remaining_s > 0 ? " · Return delay: " + Number(t.obstacle_return_delay_remaining_s).toFixed(1) + " s" : "") +
       " · Sensor angle: " + (t.active_sensor_angle == null ? "--" : String(t.active_sensor_angle) + "°") +
