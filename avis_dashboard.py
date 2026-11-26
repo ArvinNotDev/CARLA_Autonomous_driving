@@ -581,7 +581,7 @@ class AvisDashboardState:
     def publish_images(self, images: dict[str, bytes]) -> None:
         with self._lock:
             for name, payload in images.items():
-                if name not in {"camera", "combined", "line-mask"}:
+                if name not in {"camera", "combined", "line-mask", "drivable-area"}:
                     continue
                 if payload:
                     self._images[name] = payload
