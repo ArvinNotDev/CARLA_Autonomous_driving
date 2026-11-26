@@ -255,8 +255,7 @@ perception, PID, inference cadence, and speed settings while omitting CARLA-only
 camera placement, map navigation, junction, trajectory, and LiDAR settings.
 The AVIS API supplies RGB frames, speed feedback, and three distance readings
 in centimetres ([left, middle/front, right]). AVIS obstacle avoidance uses the
-middle sensor to initiate a right-to-left lane change below the configured
-distance threshold (700 cm / 7 m by default). It applies a short steering pulse,
+middle sensor to initiate a right-to-left lane change below 950 cm by default. Speed starts tapering below 1500 cm and reaches the configured minimum at the 950 cm lane-change trigger. It applies a short steering pulse,
 then continues straight until the target-side lane marking is reacquired in the
 corresponding LL or RL ROI. Once the left-lane line is reacquired, the
 return distance is calculated from the last measured front-obstacle distance

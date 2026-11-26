@@ -17,6 +17,7 @@ from avis_runtime import (
     normalize_avis_controls,
     normalize_avis_manual_controls,
     select_avis_target_speed,
+    select_avis_obstacle_approach_speed,
     _create_avis_vision_processor,
 )
 
@@ -135,6 +136,38 @@ def test_avis_speed_target_matches_stable_v2_turn_reduction():
     assert select_avis_target_speed(0.0, 8.0, 25.0) == pytest.approx(25.0)
     assert select_avis_target_speed(0.15, 8.0, 25.0) == pytest.approx(25.0)
     assert select_avis_target_speed(0.70, 8.0, 25.0) == pytest.approx(8.0)
+
+
+@pytest.mark.parametrize(
+    ("distance_cm", "expected_speed"),
+    [
+        (2000, 12.0),
+        (1500, 12.0),
+        (1225, 10.0),
+        (950, 8.0),
+        (500, 8.0),
+        (None, 12.0),
+    ],
+)
+def test_avis_obstacle_approach_speed_tapers_from_1500_to_950_cm(
+    distance_cm, expected_speed
+):
+    assert select_avis_obstacle_approach_speed(
+        12.0,
+        distance_cm,
+        8.0,
+        slowdown_start_cm=1500.0,
+        lane_change_trigger_cm=950.0,
+    ) == pytest.approx(expected_speed)
+
+
+def test_avis_obstacle_approach_speed_requires_slowdown_start_beyond_trigger():
+    with pytest.raises(ValueError, match="slowdown start above trigger"):
+        select_avis_obstacle_approach_speed(
+            12.0, 1200.0, 8.0,
+            slowdown_start_cm=950.0,
+            lane_change_trigger_cm=950.0,
+        )
 
 
 class FakeSocket:
@@ -430,6 +463,26 @@ def _obstacle_lane_change_test_settings(**overrides):
     return settings
 
 
+def test_avis_obstacle_lane_change_default_trigger_is_950_cm():
+    settings = dict(DEFAULT_AVIS_SETTINGS)
+    settings["obstacle_trigger_confirm_frames"] = 1
+    controller = AvisObstacleLaneChangeController()
+
+    state = controller.update(
+        sensors=[1500, 951, 1500], speed_kmh=8.0, dt=0.1,
+        left_x=100, right_x=220, settings=settings,
+        allow_new_maneuver=True, observation_id=1,
+    )
+    assert state["phase"] == "RIGHT_LANE"
+
+    state = controller.update(
+        sensors=[1500, 950, 1500], speed_kmh=8.0, dt=0.1,
+        left_x=100, right_x=220, settings=settings,
+        allow_new_maneuver=True, observation_id=2,
+    )
+    assert state["phase"] == "STEER_LEFT"
+
+
 def test_avis_obstacle_lane_change_uses_middle_sensor_and_confirms_obstacle():
     controller = AvisObstacleLaneChangeController()
     settings = _obstacle_lane_change_test_settings()
@@ -601,7 +654,7 @@ def test_avis_obstacle_in_left_lane_forces_immediate_return_before_old_target():
     assert state["left_lane_distance_m"] < state["left_lane_target_distance_m"]
 
 
-def test_avis_obstacle_lane_change_stops_if_target_roi_line_is_never_reacquired():
+def test_avis_obstacle_lane_change_keeps_moving_when_target_roi_line_is_missing():
     controller = AvisObstacleLaneChangeController()
     settings = _obstacle_lane_change_test_settings(
         obstacle_lane_line_search_max_distance_m=1.0,
@@ -624,25 +677,35 @@ def test_avis_obstacle_lane_change_stops_if_target_roi_line_is_never_reacquired(
         left_x=None, right_x=220, settings=settings,
         observation_id=5,
     )
-    assert state["phase"] == "FAILED"
-    assert state["safe_stop"] is True
+    assert state["phase"] == "ACQUIRE_LEFT_LINE"
+    assert state["search_limit_reached"] is True
+    assert state["safe_stop"] is False
 
 
 def test_avis_dashboard_lane_change_settings_are_persistent_and_validated(tmp_path):
     state = AvisDashboardState(settings_path=tmp_path / "avis_settings.json")
     updated = state.update_settings({
         "obstacle_lane_change_enabled": True,
-        "obstacle_front_threshold_cm": 650,
+        "obstacle_slowdown_start_cm": 1600,
+        "obstacle_front_threshold_cm": 950,
         "obstacle_clearance_after_pass_m": 6.5,
         "obstacle_lane_change_left_steer": 0.24,
     })
-    assert updated["obstacle_front_threshold_cm"] == 650
+    assert updated["obstacle_slowdown_start_cm"] == 1600
+    assert updated["obstacle_front_threshold_cm"] == 950
     assert updated["obstacle_clearance_after_pass_m"] == pytest.approx(6.5)
     assert updated["obstacle_lane_change_left_steer"] == pytest.approx(0.24)
 
     restored = AvisDashboardState(settings_path=tmp_path / "avis_settings.json")
     restored_settings, _ = restored.settings_snapshot()
     assert restored_settings["obstacle_clearance_after_pass_m"] == pytest.approx(6.5)
+    assert restored_settings["obstacle_slowdown_start_cm"] == 1600
+
+    with pytest.raises(ValueError, match="slowdown start must be greater"):
+        state.update_settings({
+            "obstacle_slowdown_start_cm": 900,
+            "obstacle_front_threshold_cm": 950,
+        }, persist=False)
 
     # The front threshold may exceed the configured clear threshold; runtime
     # applies hysteresis automatically instead of rejecting the form.
@@ -693,8 +756,10 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     html = create_avis_dashboard_app(state).test_client().get("/").get_data(as_text=True)
     assert 'id="obstacle_lane_change_enabled"' in html
     assert 'id="obstacle_front_threshold_cm"' in html
+    assert 'id="obstacle_slowdown_start_cm"' in html
     assert 'id="obstacle_clearance_after_pass_m"' in html
     assert 'id="obstacle_return_distance_m"' not in html
+    assert 'id="obstacle_slowdown_start_cm" data-setting="obstacle_slowdown_start_cm" type="number" min="1500" max="6000" step="1"' in html
     assert 'id="obstacle_front_threshold_cm" data-setting="obstacle_front_threshold_cm" type="number" min="50" max="1499" step="1"' in html
     assert 'id="obstacle_sensor_clear_threshold_cm" data-setting="obstacle_sensor_clear_threshold_cm" type="number" min="51" max="1500" step="1"' in html
     assert 'id="obstacle_lane_line_search_max_distance_m"' in html

@@ -163,6 +163,40 @@ def select_avis_target_speed(
     return maximum - ((maximum - minimum) * turn_factor)
 
 
+def select_avis_obstacle_approach_speed(
+    base_target_kmh: float,
+    front_sensor_distance_cm: float | None,
+    minimum_speed_kmh: float,
+    *,
+    slowdown_start_cm: float = 1500.0,
+    lane_change_trigger_cm: float = 950.0,
+) -> float:
+    """Gradually lower the requested speed as a front obstacle approaches."""
+    base_speed = float(base_target_kmh)
+    minimum_speed = float(minimum_speed_kmh)
+    slowdown_start = float(slowdown_start_cm)
+    trigger = float(lane_change_trigger_cm)
+    if not all(math.isfinite(value) for value in (
+        base_speed, minimum_speed, slowdown_start, trigger
+    )):
+        raise ValueError("Obstacle approach speed settings must be finite.")
+    if minimum_speed <= 0.0 or slowdown_start <= trigger:
+        raise ValueError("Obstacle approach speed requires 0 < minimum speed and slowdown start above trigger.")
+
+    base_speed = max(minimum_speed, base_speed)
+    try:
+        distance = float(front_sensor_distance_cm)
+    except (TypeError, ValueError):
+        return base_speed
+    if not math.isfinite(distance) or distance >= slowdown_start:
+        return base_speed
+    if distance <= trigger:
+        return minimum_speed
+
+    progress = (slowdown_start - distance) / (slowdown_start - trigger)
+    return float(base_speed + (minimum_speed - base_speed) * progress)
+
+
 class AvisSteeringController:
     """StableV2 steering PID/rate-limit logic without CARLA-specific types."""
 
@@ -345,7 +379,7 @@ class AvisObstacleLaneChangeController:
             self.left_lane_distance_m += travelled_m
 
         trigger_cm = self._positive_setting(
-            settings, "obstacle_front_threshold_cm", 700.0
+            settings, "obstacle_front_threshold_cm", 950.0
         )
         configured_clear_cm = self._positive_setting(
             settings, "obstacle_sensor_clear_threshold_cm", 900.0
@@ -428,7 +462,6 @@ class AvisObstacleLaneChangeController:
         line_search_max_m = self._positive_setting(
             settings, "obstacle_lane_line_search_max_distance_m", 40.0
         )
-
         if self.phase == self.LEFT_LANE:
             target_distance = self.left_lane_target_distance_m
             if target_distance is not None and self.left_lane_distance_m >= target_distance:
@@ -471,10 +504,7 @@ class AvisObstacleLaneChangeController:
                 self.line_confirm_frames = 0
                 self.last_line_observation_id = None
                 pid_reset = True
-            elif self.phase_distance_m >= line_search_max_m:
-                self.phase = self.FAILED
-                safe_stop = True
-
+        
         elif self.phase == self.STEER_RIGHT:
             if self.phase_distance_m >= steer_distance:
                 self.phase = self.ACQUIRE_RIGHT_LINE
@@ -497,14 +527,17 @@ class AvisObstacleLaneChangeController:
                 self.last_line_observation_id = None
                 self.return_reason = "DISTANCE"
                 pid_reset = True
-            elif self.phase_distance_m >= line_search_max_m:
-                self.phase = self.FAILED
-                safe_stop = True
-
+        
         elif self.phase == self.FAILED:
             safe_stop = True
             steering_override = 0.0
 
+        # Evaluate after phase transitions so telemetry reflects the actual
+        # active line-acquisition phase for this control update.
+        search_limit_reached = (
+            self.phase in {self.ACQUIRE_LEFT_LINE, self.ACQUIRE_RIGHT_LINE}
+            and self.phase_distance_m >= line_search_max_m
+        )
         result = self.snapshot(sensors)
         result.update({
             "steering_override": steering_override,
@@ -512,6 +545,7 @@ class AvisObstacleLaneChangeController:
             "pid_reset": pid_reset,
             "obstacle_latched": self.obstacle_latched,
             "line_confirm_frames": self.line_confirm_frames,
+            "search_limit_reached": search_limit_reached,
         })
         return result
 
@@ -1166,6 +1200,7 @@ def run_avis(args: argparse.Namespace) -> int:
         last_error_message = None
         consecutive_connection_errors = 0
         last_control_time = time.perf_counter()
+        recovery_steering = 0.0
         next_tick = last_control_time
         frame_read_fps = AvisFpsMonitor(window_seconds=2.0)
         inference_fps = AvisFpsMonitor(window_seconds=2.0)
@@ -1355,81 +1390,135 @@ def run_avis(args: argparse.Namespace) -> int:
                             0.75, inference_interval * 8.0
                         )
 
-                    if not result_fresh:
-                        status = "VISION RESULT STALE - STOPPED"
-                    else:
-                        lane_valid = bool(
-                            vision_data.get(
-                                "lane_valid",
-                                vision_data.get("lane_type", "none") != "none",
-                            )
+                    lane_valid = bool(
+                        result_fresh
+                        and vision_data.get(
+                            "lane_valid",
+                            vision_data.get("lane_type", "none") != "none",
                         )
-                        lane_error = float(vision_data.get("error", 0.0) or 0.0)
-                        control_dt = min(
-                            0.1,
-                            max(0.005, time.perf_counter() - last_control_time),
-                        )
-                        lane_change_state = obstacle_lane_change.update(
-                            sensors=sensors,
-                            speed_kmh=current_speed,
-                            dt=control_dt,
-                            left_x=debug_data.get("left_x"),
-                            right_x=debug_data.get("right_x"),
-                            settings=current_settings,
-                            allow_new_maneuver=lane_valid,
-                            observation_id=last_vision_result.completed_at,
-                        )
-                        if lane_change_state.get("pid_reset"):
-                            steering_controller.reset()
+                    )
+                    lane_error = (
+                        float(vision_data.get("error", 0.0) or 0.0)
+                        if result_fresh else 0.0
+                    )
+                    control_dt = min(
+                        0.1,
+                        max(0.005, time.perf_counter() - last_control_time),
+                    )
+                    lane_change_state = obstacle_lane_change.update(
+                        sensors=sensors,
+                        speed_kmh=current_speed,
+                        dt=control_dt,
+                        left_x=debug_data.get("left_x") if result_fresh else None,
+                        right_x=debug_data.get("right_x") if result_fresh else None,
+                        settings=current_settings,
+                        # The distance sensor is independent of lane inference:
+                        # do not suppress a confirmed obstacle response just
+                        # because the lane marking temporarily disappeared.
+                        allow_new_maneuver=True,
+                        observation_id=(
+                            last_vision_result.completed_at if result_fresh else None
+                        ),
+                    )
+                    if lane_change_state.get("pid_reset"):
+                        steering_controller.reset()
 
-                        steering_override = lane_change_state.get("steering_override")
-                        if lane_change_state.get("safe_stop"):
+                    minimum_speed = float(current_settings["min_speed_kmh"])
+                    steering_override = lane_change_state.get("steering_override")
+                    if lane_change_state.get("safe_stop"):
+                        # Reserved for an explicit controller failure; ordinary
+                        # lane loss and line-search timeout never enter this path.
+                        throttle = 0.0
+                        steering = 0.0
+                        status = "LANE CHANGE CONTROLLER FAILURE"
+                    elif steering_override is not None:
+                        # Steering and target-line acquisition phases all run
+                        # at the configured minimum moving speed.
+                        steering = float(steering_override)
+                        recovery_steering = steering
+                        target_speed = minimum_speed
+                        throttle, requested_brake = speed_controller.update(
+                            current_speed, target_speed, dt=control_dt
+                        )
+                        coasting = requested_brake > 0.0
+                        if coasting:
                             throttle = 0.0
-                            steering = 0.0
-                            status = "LANE CHANGE FAILED - TARGET ROI LINE NOT FOUND"
-                        elif steering_override is not None:
-                            steering = float(steering_override)
-                            target_speed = select_avis_target_speed(
-                                steering,
-                                float(current_settings["min_speed_kmh"]),
-                                float(current_settings["max_speed_kmh"]),
-                            )
-                            throttle, requested_brake = speed_controller.update(
-                                current_speed, target_speed, dt=control_dt
-                            )
-                            coasting = requested_brake > 0.0
-                            if coasting:
-                                throttle = 0.0
-                            if lane_change_state["phase"] == "STEER_LEFT":
-                                status = "OBSTACLE AVOIDANCE / STEERING LEFT"
-                            elif lane_change_state["phase"] == "ACQUIRE_LEFT_LINE":
-                                status = "OBSTACLE AVOIDANCE / WAITING FOR LEFT ROI"
-                            elif lane_change_state["phase"] == "STEER_RIGHT":
-                                status = "OBSTACLE AVOIDANCE / STEERING RIGHT"
-                            elif lane_change_state["phase"] == "ACQUIRE_RIGHT_LINE":
-                                status = "OBSTACLE AVOIDANCE / WAITING FOR RIGHT ROI"
-                            else:
-                                status = "OBSTACLE AVOIDANCE"
-                        elif not lane_valid:
-                            status = "LANE NOT DETECTED - STOPPED"
-                        else:
-                            steering = steering_controller.update(lane_error)
-                            target_speed = select_avis_target_speed(
-                                steering,
-                                float(current_settings["min_speed_kmh"]),
-                                float(current_settings["max_speed_kmh"]),
-                            )
-                            throttle, requested_brake = speed_controller.update(
-                                current_speed, target_speed, dt=control_dt
-                            )
-                            coasting = requested_brake > 0.0
-                            if coasting:
-                                throttle = 0.0
+                        if lane_change_state["phase"] == "STEER_LEFT":
+                            status = "OBSTACLE AVOIDANCE / STEERING LEFT"
+                        elif lane_change_state["phase"] == "ACQUIRE_LEFT_LINE":
                             status = (
-                                "AVOIDANCE / LEFT LANE"
-                                if lane_change_state["phase"] == "LEFT_LANE"
-                                else "AUTO / COAST" if coasting else "AUTO"
+                                "OBSTACLE AVOIDANCE / LOW-SPEED LEFT ROI SEARCH"
+                                if lane_change_state.get("search_limit_reached")
+                                else "OBSTACLE AVOIDANCE / WAITING FOR LEFT ROI"
                             )
+                        elif lane_change_state["phase"] == "STEER_RIGHT":
+                            status = "OBSTACLE AVOIDANCE / STEERING RIGHT"
+                        elif lane_change_state["phase"] == "ACQUIRE_RIGHT_LINE":
+                            status = (
+                                "OBSTACLE AVOIDANCE / LOW-SPEED RIGHT ROI SEARCH"
+                                if lane_change_state.get("search_limit_reached")
+                                else "OBSTACLE AVOIDANCE / WAITING FOR RIGHT ROI"
+                            )
+                        else:
+                            status = "OBSTACLE AVOIDANCE"
+                    elif not result_fresh:
+                        recovery_steering = max(
+                            -0.25, min(0.25, recovery_steering * 0.85)
+                        )
+                        steering = recovery_steering
+                        target_speed = minimum_speed
+                        throttle, requested_brake = speed_controller.update(
+                            current_speed, target_speed, dt=control_dt
+                        )
+                        coasting = requested_brake > 0.0
+                        if coasting:
+                            throttle = 0.0
+                        status = "VISION RESULT STALE / LOW-SPEED FORWARD"
+                    elif not lane_valid:
+                        # Keep a gentle forward crawl while lane perception recovers.
+                        # Decay the last steering command instead of holding a sharp turn.
+                        recovery_steering = max(
+                            -0.25, min(0.25, recovery_steering * 0.85)
+                        )
+                        steering = recovery_steering
+                        target_speed = minimum_speed
+                        throttle, requested_brake = speed_controller.update(
+                            current_speed, target_speed, dt=control_dt
+                        )
+                        coasting = requested_brake > 0.0
+                        if coasting:
+                            throttle = 0.0
+                        status = "LANE NOT DETECTED / LOW-SPEED FORWARD"
+                    else:
+                        steering = steering_controller.update(lane_error)
+                        recovery_steering = steering
+                        base_target_speed = select_avis_target_speed(
+                            steering,
+                            minimum_speed,
+                            float(current_settings["max_speed_kmh"]),
+                        )
+                        target_speed = select_avis_obstacle_approach_speed(
+                            base_target_speed,
+                            lane_change_state.get("front_sensor_cm"),
+                            minimum_speed,
+                            slowdown_start_cm=float(
+                                current_settings["obstacle_slowdown_start_cm"]
+                            ),
+                            lane_change_trigger_cm=float(
+                                current_settings["obstacle_front_threshold_cm"]
+                            ),
+                        )
+                        throttle, requested_brake = speed_controller.update(
+                            current_speed, target_speed, dt=control_dt
+                        )
+                        coasting = requested_brake > 0.0
+                        if coasting:
+                            throttle = 0.0
+                        status = (
+                            "AVOIDANCE / LEFT LANE"
+                            if lane_change_state["phase"] == "LEFT_LANE"
+                            else "AUTO / COAST" if coasting else "AUTO"
+                        )
                     client.send_control(throttle, steering)
 
                 
@@ -1525,14 +1614,6 @@ def run_avis(args: argparse.Namespace) -> int:
                     )
                     last_dashboard_publish = now
 
-                lane_valid = bool(
-                    vision_data.get(
-                        "lane_valid",
-                        vision_data.get("lane_type", "none") != "none",
-                    )
-                )
-                if drive_mode == "auto":
-                    lane_error = float(vision_data.get("error", 0.0) or 0.0)
                 dashboard_state.publish_telemetry(
                     {
                         "connected": True,
