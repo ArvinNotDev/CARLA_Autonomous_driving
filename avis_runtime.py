@@ -2257,6 +2257,7 @@ def run_avis(args: argparse.Namespace) -> int:
         active_sensor_angle = int(settings["sensor_angle"])
         last_inference_submit = 0.0
         last_vision_result = None
+        last_model_prediction_request_id = 0
         last_dashboard_publish = 0.0
         frame_id = 0
         last_error_message = None
@@ -2408,6 +2409,30 @@ def run_avis(args: argparse.Namespace) -> int:
                     if completed_at != last_inference_fps_timestamp:
                         inference_fps.record(completed_at)
                         last_inference_fps_timestamp = completed_at
+                    request_id = int(vision_snapshot.request_id)
+                    if request_id != last_model_prediction_request_id:
+                        prediction_result = vision_snapshot.result or {}
+                        classifier_output = (
+                            prediction_result.get("obstacle_classifier")
+                            if isinstance(prediction_result, dict) else None
+                        )
+                        if isinstance(classifier_output, dict) and classifier_output.get("valid"):
+                            obstacle_output = classifier_output.get("obstacle_ahead")
+                            lane_output = classifier_output.get("lane")
+                            if isinstance(obstacle_output, dict) and isinstance(lane_output, dict):
+                                dashboard_state.publish_model_prediction(
+                                    {
+                                        "request_id": request_id,
+                                        "frame_id": int(vision_snapshot.source_frame_id),
+                                        "recorded_at": time.time(),
+                                        "backbone": str(classifier_output.get("backbone", "classifier")),
+                                        "input_size": classifier_output.get("input_size"),
+                                        "providers": list(classifier_output.get("providers", [])),
+                                        "obstacle": dict(obstacle_output),
+                                        "lane": dict(lane_output),
+                                    }
+                                )
+                        last_model_prediction_request_id = request_id
                 if last_vision_result is not None:
                     vision_data = last_vision_result.result or {}
                 fps_metrics = {
@@ -2733,6 +2758,18 @@ def run_avis(args: argparse.Namespace) -> int:
                             "steering_pulse_number", 0
                         ),
                         "obstacle_classifier": vision_data.get("obstacle_classifier"),
+                        "model_prediction_request_id": (
+                            int(last_vision_result.request_id)
+                            if last_vision_result is not None else None
+                        ),
+                        "model_prediction_frame_id": (
+                            int(last_vision_result.source_frame_id)
+                            if last_vision_result is not None else None
+                        ),
+                        "model_prediction_age_ms": (
+                            round(max(0.0, time.perf_counter() - last_vision_result.completed_at) * 1000.0, 1)
+                            if last_vision_result is not None else None
+                        ),
                         "obstacle_model_confirm_frames": lane_change_state.get("obstacle_model_confirm_frames", 0),
                         "obstacle_model_probability": lane_change_state.get("obstacle_model_probability"),
                         "obstacle_lane_probability": lane_change_state.get("obstacle_lane_probability"),
