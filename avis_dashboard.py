@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
 from flask import Flask, Response, jsonify, request
+
+from avis_profiles import AvisGitHubProfileSync
 from werkzeug.serving import BaseWSGIServer, make_server
 
 
@@ -63,6 +66,12 @@ DEFAULT_AVIS_SETTINGS: dict[str, Any] = {
     "obstacle_lane_line_confirm_frames": 3,
     "obstacle_lane_line_search_max_distance_m": 40.0,
     "obstacle_clearance_after_pass_m": 5.0,
+    "adaptive_roi_enabled": True,
+    "adaptive_roi_max_expansion_ratio": 0.12,
+    "adaptive_roi_edge_trigger_ratio": 0.22,
+    "adaptive_roi_expand_step_ratio": 0.02,
+    "adaptive_roi_recovery_frames": 7,
+    "adaptive_roi_restore_step_ratio": 0.005,
 }
 
 
@@ -114,6 +123,11 @@ _NUMERIC_LIMITS: dict[str, tuple[float, float, bool]] = {
     "obstacle_lane_line_confirm_frames": (1.0, 60.0, True),
     "obstacle_lane_line_search_max_distance_m": (0.1, 1000.0, False),
     "obstacle_clearance_after_pass_m": (0.0, 1000.0, False),
+    "adaptive_roi_max_expansion_ratio": (0.0, 0.30, False),
+    "adaptive_roi_edge_trigger_ratio": (0.05, 0.45, False),
+    "adaptive_roi_expand_step_ratio": (0.001, 0.05, False),
+    "adaptive_roi_recovery_frames": (1.0, 60.0, True),
+    "adaptive_roi_restore_step_ratio": (0.001, 0.05, False),
 }
 
 
@@ -136,7 +150,7 @@ def validate_avis_settings(
                 raise ValueError("vision_backend must be 'ultralytics' or 'classical'.")
             result[key] = value
             continue
-        if key in {"yellow_enabled", "obstacle_lane_change_enabled"}:
+        if key in {"yellow_enabled", "obstacle_lane_change_enabled", "adaptive_roi_enabled"}:
             if not isinstance(value, bool):
                 raise ValueError(f"{key} must be a boolean.")
             result[key] = value
@@ -177,14 +191,24 @@ class AvisDashboardState:
         initial_settings: dict[str, Any] | None = None,
         settings_path: Path | str = "avis_settings.json",
         manual_timeout_seconds: float = 0.45,
+        profile_path: Path | str | None = None,
+        github_sync: AvisGitHubProfileSync | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self.settings_path = Path(settings_path)
+        self.profile_path = (
+            Path(profile_path)
+            if profile_path is not None
+            else self.settings_path.with_name("avis_profiles.json")
+        )
+        self.github_sync = github_sync or AvisGitHubProfileSync()
         self.manual_timeout_seconds = max(0.15, float(manual_timeout_seconds))
         self._settings = dict(DEFAULT_AVIS_SETTINGS)
         if initial_settings:
             self._settings = validate_avis_settings(self._settings, initial_settings)
         self._load_saved_settings()
+        self._profiles: dict[str, dict[str, Any]] = {}
+        self._load_saved_profiles()
         self._settings_revision = 0
         self._mode = "auto"
         self._manual_throttle = 0.0
@@ -258,6 +282,147 @@ class AvisDashboardState:
             self._settings = updated
             self._settings_revision += 1
             return dict(self._settings)
+
+    @staticmethod
+    def _normalize_profile_name(name: Any) -> str:
+        value = str(name or "").strip()
+        if not value or len(value) > 48 or not re.fullmatch(r"[\\w .-]{1,48}", value):
+            raise ValueError(
+                "Profile name must be 1-48 characters and may contain letters, "
+                "numbers, spaces, dots, underscores or hyphens."
+            )
+        return value
+
+    @staticmethod
+    def _profile_key(name: str) -> str:
+        return name.strip().casefold()
+
+    def _load_saved_profiles(self) -> None:
+        loaded: dict[str, dict[str, Any]] = {}
+        if self.profile_path.is_file():
+            try:
+                document = json.loads(self.profile_path.read_text(encoding="utf-8"))
+                entries = document.get("profiles", []) if isinstance(document, dict) else []
+                if isinstance(entries, list):
+                    for entry in entries:
+                        if not isinstance(entry, dict) or not isinstance(entry.get("settings"), dict):
+                            continue
+                        try:
+                            name = self._normalize_profile_name(entry.get("name"))
+                            settings = validate_avis_settings(
+                                dict(DEFAULT_AVIS_SETTINGS), entry["settings"]
+                            )
+                        except (TypeError, ValueError):
+                            continue
+                        loaded[self._profile_key(name)] = {
+                            "schema_version": 1,
+                            "name": name,
+                            "settings": settings,
+                            "saved_at": entry.get("saved_at"),
+                        }
+            except (OSError, json.JSONDecodeError, TypeError) as exc:
+                print(f"[AVIS WEB] Ignoring invalid profile file: {exc}")
+
+        default_key = self._profile_key("AVIS_StableV2")
+        if default_key not in loaded:
+            loaded[default_key] = {
+                "schema_version": 1,
+                "name": "AVIS_StableV2",
+                "settings": dict(self._settings),
+                "saved_at": None,
+            }
+        self._profiles = loaded
+
+    def _persist_profiles_locked(self) -> None:
+        self.profile_path.parent.mkdir(parents=True, exist_ok=True)
+        document = {
+            "schema_version": 1,
+            "profiles": sorted(
+                self._profiles.values(),
+                key=lambda item: str(item["name"]).casefold(),
+            ),
+        }
+        temporary_path = self.profile_path.with_suffix(
+            self.profile_path.suffix + ".tmp"
+        )
+        temporary_path.write_text(
+            json.dumps(document, indent=2, ensure_ascii=False) + "\\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary_path, self.profile_path)
+
+    def profiles_snapshot(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [
+                {
+                    "name": item["name"],
+                    "saved_at": item.get("saved_at"),
+                }
+                for item in sorted(
+                    self._profiles.values(),
+                    key=lambda profile: str(profile["name"]).casefold(),
+                )
+            ]
+
+    def get_profile(self, name: Any) -> dict[str, Any]:
+        normalized = self._normalize_profile_name(name)
+        with self._lock:
+            profile = self._profiles.get(self._profile_key(normalized))
+            if profile is None:
+                raise ValueError(f"AVIS profile '{normalized}' was not found.")
+            return json.loads(json.dumps(profile, ensure_ascii=False))
+
+    def save_profile(self, name: Any) -> dict[str, Any]:
+        normalized = self._normalize_profile_name(name)
+        with self._lock:
+            profile = {
+                "schema_version": 1,
+                "name": normalized,
+                "settings": dict(self._settings),
+                "saved_at": time.time(),
+            }
+            self._profiles[self._profile_key(normalized)] = profile
+            self._persist_profiles_locked()
+            return json.loads(json.dumps(profile, ensure_ascii=False))
+
+    def import_profile(self, document: Any) -> dict[str, Any]:
+        if not isinstance(document, dict):
+            raise ValueError("Profile import must be a JSON object.")
+        if document.get("schema_version", 1) != 1:
+            raise ValueError("Unsupported AVIS profile schema version.")
+        normalized = self._normalize_profile_name(document.get("name"))
+        settings = document.get("settings")
+        if not isinstance(settings, dict):
+            raise ValueError("The imported profile does not contain a settings object.")
+        validated = validate_avis_settings(dict(DEFAULT_AVIS_SETTINGS), settings)
+        profile = {
+            "schema_version": 1,
+            "name": normalized,
+            "settings": validated,
+            "saved_at": document.get("saved_at") or time.time(),
+        }
+        with self._lock:
+            self._profiles[self._profile_key(normalized)] = profile
+            self._persist_profiles_locked()
+            return json.loads(json.dumps(profile, ensure_ascii=False))
+
+    def export_profile(self, name: Any) -> dict[str, Any]:
+        return self.get_profile(name)
+
+    def load_profile(self, name: Any) -> dict[str, Any]:
+        profile = self.get_profile(name)
+        return self.update_settings(profile["settings"], persist=True)
+
+    def delete_profile(self, name: Any) -> None:
+        normalized = self._normalize_profile_name(name)
+        if self._profile_key(normalized) == self._profile_key("AVIS_StableV2"):
+            raise ValueError("The AVIS_StableV2 baseline profile cannot be deleted.")
+        with self._lock:
+            key = self._profile_key(normalized)
+            if key not in self._profiles:
+                raise ValueError(f"AVIS profile '{normalized}' was not found.")
+            del self._profiles[key]
+            self._persist_profiles_locked()
 
     def set_mode(self, mode: str) -> str:
         if mode not in {"auto", "manual", "stopped"}:
@@ -442,6 +607,31 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
       <section class="panel-content" id="panel-settings">
       <form class="panel" id="settingsForm" novalidate>
         <div class="panel-head"><h3>AVIS runtime settings</h3><span class="tag">Live apply</span></div>
+        <div class="section-label">Profiles · save / load / transfer</div>
+        <div class="fields">
+          <div class="field full"><label for="profileName">Profile name</label><input id="profileName" type="text" maxlength="48" placeholder="e.g. AVIS Night Track"></div>
+          <div class="field full"><label for="localProfileSelect">Saved profiles</label><select id="localProfileSelect"></select></div>
+        </div>
+        <div class="actions">
+          <button class="btn save" id="saveProfileButton" type="button">Save profile</button>
+          <button class="btn" id="loadProfileButton" type="button">Load</button>
+          <button class="btn" id="exportProfileButton" type="button">Export JSON</button>
+          <button class="btn" id="importProfileButton" type="button">Import JSON</button>
+          <button class="btn" id="deleteProfileButton" type="button">Delete</button>
+          <input id="profileImportFile" type="file" accept=".json,application/json" hidden>
+        </div>
+        <div class="message" id="profilesMessage"></div>
+        <div class="section-label">GitHub profile sync</div>
+        <div class="fields">
+          <div class="field full"><label for="githubProfileSelect">Profiles stored in GitHub · main / avis_profiles</label><select id="githubProfileSelect"><option value="">Refresh to load remote profiles</option></select></div>
+        </div>
+        <div class="actions">
+          <button class="btn" id="refreshGitHubProfilesButton" type="button">Refresh GitHub</button>
+          <button class="btn" id="publishGitHubProfileButton" type="button">Publish selected</button>
+          <button class="btn" id="loadGitHubProfileButton" type="button">Load from GitHub</button>
+        </div>
+        <div class="hint" id="githubProfilesMessage">Publishing uses GitHub CLI authentication on this PC (gh auth login), or GITHUB_TOKEN / GH_TOKEN. No token is stored in the dashboard or project files.</div>
+        <div class="divider"></div>
         <div class="section-label">Vision engine</div>
         <div class="fields">
           <div class="field full"><label for="vision_backend">Vision backend</label><select id="vision_backend" data-setting="vision_backend"><option value="ultralytics">Ultralytics semantic model</option><option value="classical">Classical CV · HLS / Canny / Hough</option></select></div>
@@ -470,6 +660,16 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
           <div class="field"><label for="obstacle_clearance_after_pass_m">Extra distance after obstacle (m)</label><input id="obstacle_clearance_after_pass_m" data-setting="obstacle_clearance_after_pass_m" type="number" min="0" max="1000" step="any"></div>
         </div>
         <div class="hint">AVIS uses the middle distance sensor (cm). The default 700 cm trigger is 7 m. It briefly steers left, then goes straight until the LL ROI line is confirmed; after the configured left-lane distance it steers right, goes straight until the RL ROI line is confirmed, and hands steering back to lane following. If the target line is not found within the safety distance, the car stops.</div>
+        <div class="section-label">Adaptive lane ROI recovery</div>
+        <div class="fields">
+          <div class="field full"><label for="adaptive_roi_enabled">Adaptive ROI expansion</label><select id="adaptive_roi_enabled" data-setting="adaptive_roi_enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
+          <div class="field"><label for="adaptive_roi_max_expansion_ratio">Maximum expansion (frame ratio)</label><input id="adaptive_roi_max_expansion_ratio" data-setting="adaptive_roi_max_expansion_ratio" type="number" min="0" max=".30" step=".01"></div>
+          <div class="field"><label for="adaptive_roi_edge_trigger_ratio">Edge trigger ratio</label><input id="adaptive_roi_edge_trigger_ratio" data-setting="adaptive_roi_edge_trigger_ratio" type="number" min=".05" max=".45" step=".01"></div>
+          <div class="field"><label for="adaptive_roi_expand_step_ratio">Expansion per frame</label><input id="adaptive_roi_expand_step_ratio" data-setting="adaptive_roi_expand_step_ratio" type="number" min=".001" max=".05" step=".001"></div>
+          <div class="field"><label for="adaptive_roi_recovery_frames">Center confirmation frames</label><input id="adaptive_roi_recovery_frames" data-setting="adaptive_roi_recovery_frames" type="number" min="1" max="60" step="1"></div>
+          <div class="field full"><label for="adaptive_roi_restore_step_ratio">Restore step per frame</label><input id="adaptive_roi_restore_step_ratio" data-setting="adaptive_roi_restore_step_ratio" type="number" min=".001" max=".05" step=".001"></div>
+        </div>
+        <div class="hint">The last 7 inference results are tracked independently for LL and RL. When a marking trends toward an ROI edge, that side expands temporarily; after the marking stays near the center of its original ROI for the configured number of frames, the rectangle gradually returns to its saved size.</div>
         <div class="section-label">Steering PID</div>
         <div class="fields">
           <div class="field"><label for="kp">Kp</label><input id="kp" data-setting="kp" type="number" min="0" max=".2" step=".001"></div>
@@ -798,7 +998,7 @@ function fillSettings(settings) {
   settingInputs.forEach(input => {
     const key = input.dataset.setting;
     if (!(key in settings)) return;
-    if (input.tagName === "SELECT" && (key === "yellow_enabled" || key === "obstacle_lane_change_enabled")) {
+    if (input.tagName === "SELECT" && (key === "yellow_enabled" || key === "obstacle_lane_change_enabled" || key === "adaptive_roi_enabled")) {
       input.value = settings[key] ? "true" : "false";
     } else {
       input.value = settings[key];
@@ -812,7 +1012,7 @@ function collectSettings() {
   settingInputs.forEach(input => {
     const key = input.dataset.setting;
     if (input.tagName === "SELECT" && key === "vision_backend") result[key] = input.value;
-    else if (input.tagName === "SELECT" && (key === "yellow_enabled" || key === "obstacle_lane_change_enabled")) result[key] = input.value === "true";
+    else if (input.tagName === "SELECT" && (key === "yellow_enabled" || key === "obstacle_lane_change_enabled" || key === "adaptive_roi_enabled")) result[key] = input.value === "true";
     else {
       const raw = input.value.trim();
       if (raw === "") return;
@@ -987,6 +1187,152 @@ $("settingsForm").addEventListener("change", () => {
   settingsEditRevision += 1;
   $("settingsForm").dataset.dirty = "true";
 });
+
+async function refreshLocalProfiles(selectedName) {
+  const response = await fetch("/api/profiles", {cache:"no-store"});
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Could not read local profiles.");
+  const select = $("localProfileSelect");
+  const previous = selectedName || select.value;
+  select.replaceChildren();
+  for (const profile of (data.profiles || [])) {
+    const option = document.createElement("option");
+    option.value = profile.name;
+    option.textContent = profile.name;
+    select.appendChild(option);
+  }
+  if (previous && Array.from(select.options).some(option => option.value === previous)) {
+    select.value = previous;
+  }
+  if (select.value) $("profileName").value = select.value;
+}
+async function refreshGitHubProfiles() {
+  const message = $("githubProfilesMessage");
+  message.textContent = "Reading public AVIS profiles from GitHub...";
+  try {
+    const response = await fetch("/api/github/profiles", {cache:"no-store"});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Could not read GitHub profiles.");
+    const select = $("githubProfileSelect");
+    select.replaceChildren();
+    for (const name of (data.profiles || [])) {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name;
+      select.appendChild(option);
+    }
+    if (!select.options.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No profiles found";
+      select.appendChild(option);
+    }
+    message.textContent = (data.profiles || []).length + " GitHub profile(s) available.";
+  } catch (error) {
+    message.textContent = error.message;
+  }
+}
+$("localProfileSelect").addEventListener("change", () => {
+  $("profileName").value = $("localProfileSelect").value;
+});
+$("saveProfileButton").addEventListener("click", async () => {
+  const name = $("profileName").value.trim();
+  if (!name) { $("profilesMessage").textContent = "Enter a profile name first."; return; }
+  try {
+    const applied = await postJson("/api/settings", collectSettings());
+    fillSettings(applied.settings);
+    delete $("settingsForm").dataset.dirty;
+    const saved = await postJson("/api/profiles/save", {name});
+    await refreshLocalProfiles(name);
+    $("profilesMessage").textContent = saved.github_synced
+      ? "Profile saved locally and published to GitHub."
+      : "Profile saved locally. GitHub: " + (saved.github_message || "not published.");
+  } catch (error) {
+    $("profilesMessage").textContent = error.message;
+  }
+});
+$("loadProfileButton").addEventListener("click", async () => {
+  const name = $("localProfileSelect").value;
+  if (!name) return;
+  try {
+    const data = await postJson("/api/profiles/load", {name});
+    fillSettings(data.settings);
+    delete $("settingsForm").dataset.dirty;
+    settingsEditRevision += 1;
+    $("profileName").value = name;
+    $("profilesMessage").textContent = "Loaded profile: " + name;
+  } catch (error) { $("profilesMessage").textContent = error.message; }
+});
+$("deleteProfileButton").addEventListener("click", async () => {
+  const name = $("localProfileSelect").value;
+  if (!name || !confirm("Delete profile '" + name + "'?")) return;
+  try {
+    await postJson("/api/profiles/delete", {name});
+    await refreshLocalProfiles();
+    $("profilesMessage").textContent = "Deleted profile: " + name;
+  } catch (error) { $("profilesMessage").textContent = error.message; }
+});
+$("exportProfileButton").addEventListener("click", async () => {
+  const name = $("localProfileSelect").value;
+  if (!name) return;
+  try {
+    const response = await fetch("/api/profiles/export?name=" + encodeURIComponent(name));
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.error || "Could not export profile.");
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name.replace(/[^\\w.-]+/g, "_") + ".json";
+    link.click();
+    URL.revokeObjectURL(url);
+    $("profilesMessage").textContent = "Exported " + name + ".json";
+  } catch (error) { $("profilesMessage").textContent = error.message; }
+});
+$("importProfileButton").addEventListener("click", () => $("profileImportFile").click());
+$("profileImportFile").addEventListener("change", async event => {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  try {
+    const document = JSON.parse(await file.text());
+    const data = await postJson("/api/profiles/import", document);
+    await refreshLocalProfiles(data.profile.name);
+    fillSettings(data.settings);
+    delete $("settingsForm").dataset.dirty;
+    settingsEditRevision += 1;
+    $("profilesMessage").textContent = "Imported and loaded profile: " + data.profile.name;
+  } catch (error) { $("profilesMessage").textContent = error.message; }
+  finally { event.target.value = ""; }
+});
+$("refreshGitHubProfilesButton").addEventListener("click", refreshGitHubProfiles);
+$("publishGitHubProfileButton").addEventListener("click", async () => {
+  const name = $("localProfileSelect").value;
+  if (!name) return;
+  try {
+    await postJson("/api/github/profiles/publish", {name});
+    $("githubProfilesMessage").textContent = "Published " + name + " to GitHub.";
+    await refreshGitHubProfiles();
+  } catch (error) { $("githubProfilesMessage").textContent = error.message; }
+});
+$("loadGitHubProfileButton").addEventListener("click", async () => {
+  const name = $("githubProfileSelect").value;
+  if (!name) return;
+  try {
+    const data = await postJson("/api/github/profiles/load", {name});
+    await refreshLocalProfiles(data.profile.name);
+    fillSettings(data.settings);
+    delete $("settingsForm").dataset.dirty;
+    settingsEditRevision += 1;
+    $("profilesMessage").textContent = "Loaded GitHub profile: " + name;
+    $("githubProfilesMessage").textContent = "Downloaded and applied " + name + ".";
+  } catch (error) { $("githubProfilesMessage").textContent = error.message; }
+});
+
+refreshLocalProfiles().catch(error => {
+  $("profilesMessage").textContent = error.message;
+});
 updateManualLabels();
 refreshStatus();
 setInterval(refreshStatus, 500);
@@ -1008,6 +1354,105 @@ def create_avis_dashboard_app(state: AvisDashboardState) -> Flask:
     @app.get("/api/status")
     def status():
         return jsonify(state.snapshot())
+
+    @app.get("/api/profiles")
+    def profiles():
+        return jsonify({"profiles": state.profiles_snapshot()})
+
+    @app.post("/api/profiles/save")
+    def save_profile():
+        payload = request.get_json(silent=True) or {}
+        try:
+            profile = state.save_profile(payload.get("name"))
+        except (TypeError, ValueError, OSError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        github_synced = False
+        github_message = "Run 'gh auth login' on this PC, then publish the profile to GitHub."
+        if request.remote_addr in {"127.0.0.1", "::1", "localhost"}:
+            try:
+                state.github_sync.publish_profile(profile)
+                github_synced = True
+                github_message = "Published to GitHub."
+            except Exception as exc:
+                github_message = str(exc)
+        else:
+            github_message = "GitHub publishing is restricted to a local dashboard connection."
+        return jsonify({
+            "profile": profile,
+            "github_synced": github_synced,
+            "github_message": github_message,
+        })
+
+    @app.post("/api/profiles/load")
+    def load_profile():
+        payload = request.get_json(silent=True) or {}
+        try:
+            settings = state.load_profile(payload.get("name"))
+        except (TypeError, ValueError, OSError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"settings": settings})
+
+    @app.post("/api/profiles/delete")
+    def delete_profile():
+        payload = request.get_json(silent=True) or {}
+        try:
+            state.delete_profile(payload.get("name"))
+        except (TypeError, ValueError, OSError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"deleted": True})
+
+    @app.post("/api/profiles/import")
+    def import_profile():
+        payload = request.get_json(silent=True)
+        try:
+            profile = state.import_profile(payload)
+            settings = state.load_profile(profile["name"])
+        except (TypeError, ValueError, OSError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"profile": profile, "settings": settings})
+
+    @app.get("/api/profiles/export")
+    def export_profile():
+        try:
+            profile = state.export_profile(request.args.get("name"))
+        except (TypeError, ValueError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        filename = re.sub(r"[^\\w.-]+", "_", profile["name"]) + ".json"
+        return Response(
+            json.dumps(profile, indent=2, ensure_ascii=False) + "\\n",
+            mimetype="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.get("/api/github/profiles")
+    def github_profiles():
+        try:
+            return jsonify({"profiles": state.github_sync.list_profiles()})
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 502
+
+    @app.post("/api/github/profiles/publish")
+    def publish_github_profile():
+        if request.remote_addr not in {"127.0.0.1", "::1", "localhost"}:
+            return jsonify({"error": "GitHub publishing is restricted to a local dashboard connection."}), 403
+        payload = request.get_json(silent=True) or {}
+        try:
+            profile = state.get_profile(payload.get("name"))
+            result = state.github_sync.publish_profile(profile)
+        except (TypeError, ValueError, OSError, RuntimeError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"published": True, "result": result})
+
+    @app.post("/api/github/profiles/load")
+    def load_github_profile():
+        payload = request.get_json(silent=True) or {}
+        try:
+            remote = state.github_sync.load_profile(str(payload.get("name") or ""))
+            profile = state.import_profile(remote)
+            settings = state.load_profile(profile["name"])
+        except (TypeError, ValueError, OSError, RuntimeError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({"profile": profile, "settings": settings})
 
     @app.post("/api/settings")
     def settings():
