@@ -404,7 +404,7 @@ def _obstacle_lane_change_test_settings(**overrides):
         "obstacle_lane_change_right_steer": 0.20,
         "obstacle_lane_line_confirm_frames": 2,
         "obstacle_lane_line_search_max_distance_m": 20.0,
-        "obstacle_return_distance_m": 3.0,
+        "obstacle_clearance_after_pass_m": 5.0,
     })
     settings.update(overrides)
     return settings
@@ -429,6 +429,8 @@ def test_avis_obstacle_lane_change_uses_middle_sensor_and_confirms_obstacle():
     assert second["phase"] == "STEER_LEFT"
     assert second["steering_override"] == pytest.approx(-0.20)
     assert second["obstacle_latched"] is True
+    assert second["last_obstacle_distance_m"] == pytest.approx(6.5)
+    assert second["left_lane_target_distance_m"] == pytest.approx(11.5)
 
 
 def test_avis_obstacle_lane_change_switches_to_straight_then_waits_for_left_roi():
@@ -494,12 +496,16 @@ def test_avis_obstacle_lane_change_returns_right_after_configured_distance():
         )
     assert state["phase"] == "LEFT_LANE"
 
-    for observation_id in (7, 8, 9):
+    # The first obstacle was detected at 6m; with 5m extra clearance,
+    # the controller should return after 11m in the left lane (not a fixed 750m).
+    for observation_id in range(7, 18):
         state = controller.update(
             sensors=[1500, 1500, 1500], speed_kmh=36.0, dt=0.1,
             left_x=100, right_x=220, settings=settings,
             observation_id=observation_id,
         )
+    assert state["left_lane_target_distance_m"] == pytest.approx(11.0)
+    assert state["left_lane_distance_m"] == pytest.approx(11.0)
     assert state["phase"] == "STEER_RIGHT"
     assert state["steering_override"] == pytest.approx(0.20)
 
@@ -520,6 +526,58 @@ def test_avis_obstacle_lane_change_returns_right_after_configured_distance():
         )
     assert state["phase"] == "RIGHT_LANE"
     assert state["pid_reset"] is True
+
+
+def test_avis_obstacle_in_left_lane_forces_immediate_return_before_old_target():
+    controller = AvisObstacleLaneChangeController()
+    settings = _obstacle_lane_change_test_settings(
+        obstacle_trigger_confirm_frames=2,
+        obstacle_sensor_clear_confirm_frames=2,
+        obstacle_clearance_after_pass_m=5.0,
+    )
+
+    # First obstacle starts the right-to-left change at 6m sensor distance.
+    for observation_id in (1, 2):
+        state = controller.update(
+            sensors=[1500, 600, 1500], speed_kmh=0.0, dt=0.0,
+            left_x=100, right_x=220, settings=settings,
+            observation_id=observation_id,
+        )
+    for observation_id in (3, 4):
+        state = controller.update(
+            sensors=[1500, 600, 1500], speed_kmh=36.0, dt=0.1,
+            left_x=None, right_x=220, settings=settings,
+            observation_id=observation_id,
+        )
+    for observation_id in (5, 6):
+        state = controller.update(
+            sensors=[1500, 600, 1500], speed_kmh=0.0, dt=0.0,
+            left_x=110, right_x=None, settings=settings,
+            observation_id=observation_id,
+        )
+    assert state["phase"] == "LEFT_LANE"
+    assert state["left_lane_target_distance_m"] == pytest.approx(11.0)
+
+    # Clear the first obstacle's latch; the original 11m travel target is not met.
+    for observation_id in (7, 8):
+        state = controller.update(
+            sensors=[1500, 1500, 1500], speed_kmh=0.0, dt=0.0,
+            left_x=110, right_x=None, settings=settings,
+            observation_id=observation_id,
+        )
+    assert state["left_lane_distance_m"] == pytest.approx(0.0)
+
+    # A second obstacle in front of the left lane must override the old target.
+    for observation_id in (9, 10):
+        state = controller.update(
+            sensors=[1500, 450, 1500], speed_kmh=0.0, dt=0.0,
+            left_x=110, right_x=None, settings=settings,
+            observation_id=observation_id,
+        )
+    assert state["phase"] == "STEER_RIGHT"
+    assert state["return_reason"] == "OBSTACLE_IN_LEFT_LANE"
+    assert state["steering_override"] == pytest.approx(0.20)
+    assert state["left_lane_distance_m"] < state["left_lane_target_distance_m"]
 
 
 def test_avis_obstacle_lane_change_stops_if_target_roi_line_is_never_reacquired():
@@ -554,22 +612,41 @@ def test_avis_dashboard_lane_change_settings_are_persistent_and_validated(tmp_pa
     updated = state.update_settings({
         "obstacle_lane_change_enabled": True,
         "obstacle_front_threshold_cm": 650,
-        "obstacle_return_distance_m": 820,
+        "obstacle_clearance_after_pass_m": 6.5,
         "obstacle_lane_change_left_steer": 0.24,
     })
     assert updated["obstacle_front_threshold_cm"] == 650
-    assert updated["obstacle_return_distance_m"] == pytest.approx(820.0)
+    assert updated["obstacle_clearance_after_pass_m"] == pytest.approx(6.5)
     assert updated["obstacle_lane_change_left_steer"] == pytest.approx(0.24)
 
     restored = AvisDashboardState(settings_path=tmp_path / "avis_settings.json")
     restored_settings, _ = restored.settings_snapshot()
-    assert restored_settings["obstacle_return_distance_m"] == pytest.approx(820.0)
+    assert restored_settings["obstacle_clearance_after_pass_m"] == pytest.approx(6.5)
 
-    with pytest.raises(ValueError, match="Sensor clear threshold"):
-        state.update_settings({
-            "obstacle_front_threshold_cm": 900,
-            "obstacle_sensor_clear_threshold_cm": 800,
-        }, persist=False)
+    # The front threshold may exceed the configured clear threshold; runtime
+    # applies hysteresis automatically instead of rejecting the form.
+    updated = state.update_settings({
+        "obstacle_front_threshold_cm": 1200,
+        "obstacle_sensor_clear_threshold_cm": 900,
+    }, persist=False)
+    assert updated["obstacle_front_threshold_cm"] == 1200
+
+
+def test_avis_dashboard_migrates_legacy_fixed_lane_return_distance(tmp_path):
+    settings_path = tmp_path / "avis_settings.json"
+    settings_path.write_text(
+        json.dumps({
+            "obstacle_return_distance_m": 750,
+            "obstacle_front_threshold_cm": 850,
+            "obstacle_clearance_after_pass_m": 7.0,
+        }),
+        encoding="utf-8",
+    )
+    state = AvisDashboardState(settings_path=settings_path)
+    settings, _ = state.settings_snapshot()
+    assert settings["obstacle_front_threshold_cm"] == 850
+    assert settings["obstacle_clearance_after_pass_m"] == pytest.approx(7.0)
+    assert "obstacle_return_distance_m" not in settings
 
 
 def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
@@ -577,7 +654,10 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     html = create_avis_dashboard_app(state).test_client().get("/").get_data(as_text=True)
     assert 'id="obstacle_lane_change_enabled"' in html
     assert 'id="obstacle_front_threshold_cm"' in html
-    assert 'id="obstacle_return_distance_m"' in html
+    assert 'id="obstacle_clearance_after_pass_m"' in html
+    assert 'id="obstacle_return_distance_m"' not in html
+    assert 'id="obstacle_front_threshold_cm" data-setting="obstacle_front_threshold_cm" type="number" min="50" max="1499" step="1"' in html
+    assert 'id="obstacle_sensor_clear_threshold_cm" data-setting="obstacle_sensor_clear_threshold_cm" type="number" min="51" max="1500" step="1"' in html
     assert 'id="obstacle_lane_line_search_max_distance_m"' in html
 
 

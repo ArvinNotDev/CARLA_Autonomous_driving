@@ -214,6 +214,9 @@ class AvisObstacleLaneChangeController:
         self.phase = self.RIGHT_LANE
         self.phase_distance_m = 0.0
         self.left_lane_distance_m = 0.0
+        self.last_obstacle_distance_m: float | None = None
+        self.left_lane_target_distance_m: float | None = None
+        self.return_reason = "DISTANCE"
         self.obstacle_confirm_frames = 0
         self.sensor_clear_frames = 0
         self.obstacle_latched = False
@@ -252,6 +255,9 @@ class AvisObstacleLaneChangeController:
             } else "right",
             "target_lane": self._target_lane(),
             "left_lane_distance_m": float(self.left_lane_distance_m),
+            "left_lane_target_distance_m": self.left_lane_target_distance_m,
+            "last_obstacle_distance_m": self.last_obstacle_distance_m,
+            "return_reason": self.return_reason,
             "phase_distance_m": float(self.phase_distance_m),
             "front_sensor_cm": self.front_sensor_distance_cm(sensors),
             "active": self.phase in {
@@ -263,6 +269,13 @@ class AvisObstacleLaneChangeController:
             "safe_stop": self.phase == self.FAILED,
             "pid_reset": False,
         }
+
+    def _begin_right_return(self, reason: str) -> None:
+        self.phase = self.STEER_RIGHT
+        self.phase_distance_m = 0.0
+        self.line_confirm_frames = 0
+        self.last_line_observation_id = None
+        self.return_reason = reason
 
     def update(
         self,
@@ -299,9 +312,12 @@ class AvisObstacleLaneChangeController:
         trigger_cm = self._positive_setting(
             settings, "obstacle_front_threshold_cm", 700.0
         )
-        clear_cm = self._positive_setting(
+        configured_clear_cm = self._positive_setting(
             settings, "obstacle_sensor_clear_threshold_cm", 900.0
         )
+        # Keep sensor hysteresis valid automatically; users should not have to
+        # tune two coupled fields just to change the obstacle trigger distance.
+        clear_cm = max(configured_clear_cm, trigger_cm + 1.0)
         trigger_frames = max(
             1, int(self._positive_setting(settings, "obstacle_trigger_confirm_frames", 3))
         )
@@ -311,7 +327,6 @@ class AvisObstacleLaneChangeController:
             ))
         )
 
-        # Hysteresis prevents a noisy sensor from repeatedly starting changes.
         if front_distance is not None and front_distance >= clear_cm:
             self.sensor_clear_frames += 1
             if self.sensor_clear_frames >= clear_frames_required:
@@ -321,24 +336,43 @@ class AvisObstacleLaneChangeController:
             self.sensor_clear_frames = 0
 
         pid_reset = False
-        if (
-            self.phase == self.RIGHT_LANE
-            and bool(settings.get("obstacle_lane_change_enabled", True))
-            and allow_new_maneuver
-            and not self.obstacle_latched
-        ):
+        detection_enabled = bool(settings.get("obstacle_lane_change_enabled", True))
+        # In the left lane, front-obstacle detection is a safety override and
+        # must not depend on the lane model successfully finding a line.
+        can_check_front_obstacle = (
+            self.phase == self.LEFT_LANE
+            or (self.phase == self.RIGHT_LANE and allow_new_maneuver)
+        )
+        if detection_enabled and can_check_front_obstacle and not self.obstacle_latched:
             if front_distance is not None and front_distance <= trigger_cm:
                 self.obstacle_confirm_frames += 1
             else:
                 self.obstacle_confirm_frames = 0
+
             if self.obstacle_confirm_frames >= trigger_frames:
                 self.obstacle_latched = True
                 self.obstacle_confirm_frames = 0
-                self.phase = self.STEER_LEFT
-                self.phase_distance_m = 0.0
-                self.line_confirm_frames = 0
-                self.last_line_observation_id = None
-                pid_reset = True
+                if front_distance is not None:
+                    self.last_obstacle_distance_m = max(0.0, front_distance) / 100.0
+                    clearance_m = self._positive_setting(
+                        settings, "obstacle_clearance_after_pass_m", 5.0
+                    )
+                    self.left_lane_target_distance_m = (
+                        self.last_obstacle_distance_m + clearance_m
+                    )
+
+                if self.phase == self.RIGHT_LANE:
+                    self.phase = self.STEER_LEFT
+                    self.phase_distance_m = 0.0
+                    self.line_confirm_frames = 0
+                    self.last_line_observation_id = None
+                    self.return_reason = "DISTANCE"
+                    pid_reset = True
+                elif self.phase == self.LEFT_LANE:
+                    # A second obstacle in the left lane takes priority over
+                    # the old obstacle-distance + clearance target.
+                    self._begin_right_return("OBSTACLE_IN_LEFT_LANE")
+                    pid_reset = True
 
         steer_distance = self._positive_setting(
             settings, "obstacle_lane_change_steer_distance_m", 3.0
@@ -359,9 +393,12 @@ class AvisObstacleLaneChangeController:
         line_search_max_m = self._positive_setting(
             settings, "obstacle_lane_line_search_max_distance_m", 40.0
         )
-        return_distance_m = self._positive_setting(
-            settings, "obstacle_return_distance_m", 750.0
-        )
+
+        if self.phase == self.LEFT_LANE:
+            target_distance = self.left_lane_target_distance_m
+            if target_distance is not None and self.left_lane_distance_m >= target_distance:
+                self._begin_right_return("DISTANCE")
+                pid_reset = True
 
         # Count only new inference results, not repeated control-loop reads.
         if self.phase == self.ACQUIRE_LEFT_LINE and observation_id is not None:
@@ -385,7 +422,6 @@ class AvisObstacleLaneChangeController:
                 self.phase = self.ACQUIRE_LEFT_LINE
                 self.phase_distance_m = 0.0
                 self.line_confirm_frames = 0
-                # Ignore the old frame used to finish the steering pulse.
                 self.last_line_observation_id = observation_id
                 steering_override = 0.0
             else:
@@ -404,21 +440,11 @@ class AvisObstacleLaneChangeController:
                 self.phase = self.FAILED
                 safe_stop = True
 
-        elif self.phase == self.LEFT_LANE:
-            if self.left_lane_distance_m >= return_distance_m:
-                self.phase = self.STEER_RIGHT
-                self.phase_distance_m = 0.0
-                self.line_confirm_frames = 0
-                self.last_line_observation_id = None
-                steering_override = right_steer
-                pid_reset = True
-
         elif self.phase == self.STEER_RIGHT:
             if self.phase_distance_m >= steer_distance:
                 self.phase = self.ACQUIRE_RIGHT_LINE
                 self.phase_distance_m = 0.0
                 self.line_confirm_frames = 0
-                # Ignore the old frame used to finish the steering pulse.
                 self.last_line_observation_id = observation_id
                 steering_override = 0.0
             else:
@@ -430,8 +456,11 @@ class AvisObstacleLaneChangeController:
                 self.phase = self.RIGHT_LANE
                 self.phase_distance_m = 0.0
                 self.left_lane_distance_m = 0.0
+                self.left_lane_target_distance_m = None
+                self.last_obstacle_distance_m = None
                 self.line_confirm_frames = 0
                 self.last_line_observation_id = None
+                self.return_reason = "DISTANCE"
                 pid_reset = True
             elif self.phase_distance_m >= line_search_max_m:
                 self.phase = self.FAILED
@@ -1409,6 +1438,15 @@ def run_avis(args: argparse.Namespace) -> int:
                         "lane_change_target": lane_change_state.get("target_lane", "right"),
                         "lane_change_distance_m": round(
                             float(lane_change_state.get("left_lane_distance_m", 0.0)), 2
+                        ),
+                        "lane_change_target_distance_m": lane_change_state.get(
+                            "left_lane_target_distance_m"
+                        ),
+                        "lane_change_obstacle_distance_m": lane_change_state.get(
+                            "last_obstacle_distance_m"
+                        ),
+                        "lane_change_return_reason": lane_change_state.get(
+                            "return_reason", "DISTANCE"
                         ),
                         "lane_change_segment_distance_m": round(
                             float(lane_change_state.get("phase_distance_m", 0.0)), 2

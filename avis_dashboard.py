@@ -62,7 +62,7 @@ DEFAULT_AVIS_SETTINGS: dict[str, Any] = {
     "obstacle_lane_change_right_steer": 0.20,
     "obstacle_lane_line_confirm_frames": 3,
     "obstacle_lane_line_search_max_distance_m": 40.0,
-    "obstacle_return_distance_m": 750.0,
+    "obstacle_clearance_after_pass_m": 5.0,
 }
 
 
@@ -113,7 +113,7 @@ _NUMERIC_LIMITS: dict[str, tuple[float, float, bool]] = {
     "obstacle_lane_change_right_steer": (0.01, 1.0, False),
     "obstacle_lane_line_confirm_frames": (1.0, 20.0, True),
     "obstacle_lane_line_search_max_distance_m": (1.0, 500.0, False),
-    "obstacle_return_distance_m": (1.0, 100000.0, False),
+    "obstacle_clearance_after_pass_m": (0.1, 100.0, False),
 }
 
 
@@ -166,13 +166,6 @@ def validate_avis_settings(
             raise ValueError(f"{side.upper()} ROI right edge must be after its left edge.")
     if result["max_lane_angle_deg"] <= result["min_lane_angle_deg"]:
         raise ValueError("Maximum lane angle must exceed minimum lane angle.")
-    if (
-        result["obstacle_sensor_clear_threshold_cm"]
-        <= result["obstacle_front_threshold_cm"]
-    ):
-        raise ValueError(
-            "Sensor clear threshold must be greater than the front obstacle threshold."
-        )
     return result
 
 
@@ -212,6 +205,9 @@ class AvisDashboardState:
             "lane_change_side": "right",
             "lane_change_target": "right",
             "lane_change_distance_m": 0.0,
+            "lane_change_target_distance_m": None,
+            "lane_change_obstacle_distance_m": None,
+            "lane_change_return_reason": "DISTANCE",
             "lane_change_segment_distance_m": 0.0,
             "vision_error": None,
         }
@@ -232,6 +228,7 @@ class AvisDashboardState:
                     "roi_top_half_width_ratio",
                     "roi_bottom_half_width_ratio",
                     "lane_width_ratio",
+                    "obstacle_return_distance_m",
                 ):
                     saved.pop(legacy_key, None)
             self._settings = validate_avis_settings(self._settings, saved)
@@ -448,16 +445,16 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
         <div class="section-label">Obstacle avoidance / automatic lane change</div>
         <div class="fields">
           <div class="field full"><label for="obstacle_lane_change_enabled">Automatic obstacle lane change</label><select id="obstacle_lane_change_enabled" data-setting="obstacle_lane_change_enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
-          <div class="field"><label for="obstacle_front_threshold_cm">Front obstacle threshold (cm)</label><input id="obstacle_front_threshold_cm" data-setting="obstacle_front_threshold_cm" type="number" min="50" max="1499" step="10"></div>
+          <div class="field"><label for="obstacle_front_threshold_cm">Front obstacle threshold (cm)</label><input id="obstacle_front_threshold_cm" data-setting="obstacle_front_threshold_cm" type="number" min="50" max="1499" step="1"></div>
           <div class="field"><label for="obstacle_trigger_confirm_frames">Obstacle confirmation frames</label><input id="obstacle_trigger_confirm_frames" data-setting="obstacle_trigger_confirm_frames" type="number" min="1" max="30" step="1"></div>
-          <div class="field"><label for="obstacle_sensor_clear_threshold_cm">Sensor clear threshold (cm)</label><input id="obstacle_sensor_clear_threshold_cm" data-setting="obstacle_sensor_clear_threshold_cm" type="number" min="51" max="1500" step="10"></div>
+          <div class="field"><label for="obstacle_sensor_clear_threshold_cm">Sensor clear threshold (cm)</label><input id="obstacle_sensor_clear_threshold_cm" data-setting="obstacle_sensor_clear_threshold_cm" type="number" min="51" max="1500" step="1"></div>
           <div class="field"><label for="obstacle_sensor_clear_confirm_frames">Clear confirmation frames</label><input id="obstacle_sensor_clear_confirm_frames" data-setting="obstacle_sensor_clear_confirm_frames" type="number" min="1" max="30" step="1"></div>
           <div class="field"><label for="obstacle_lane_change_steer_distance_m">Initial steering distance (m)</label><input id="obstacle_lane_change_steer_distance_m" data-setting="obstacle_lane_change_steer_distance_m" type="number" min=".25" max="30" step=".25"></div>
           <div class="field"><label for="obstacle_lane_line_confirm_frames">Target ROI line confirm frames</label><input id="obstacle_lane_line_confirm_frames" data-setting="obstacle_lane_line_confirm_frames" type="number" min="1" max="20" step="1"></div>
           <div class="field"><label for="obstacle_lane_change_left_steer">Left steering pulse</label><input id="obstacle_lane_change_left_steer" data-setting="obstacle_lane_change_left_steer" type="number" min=".01" max="1" step=".01"></div>
           <div class="field"><label for="obstacle_lane_change_right_steer">Right steering pulse</label><input id="obstacle_lane_change_right_steer" data-setting="obstacle_lane_change_right_steer" type="number" min=".01" max="1" step=".01"></div>
           <div class="field"><label for="obstacle_lane_line_search_max_distance_m">Maximum straight line-search distance (m)</label><input id="obstacle_lane_line_search_max_distance_m" data-setting="obstacle_lane_line_search_max_distance_m" type="number" min="1" max="500" step="1"></div>
-          <div class="field"><label for="obstacle_return_distance_m">Distance in left lane before return (m)</label><input id="obstacle_return_distance_m" data-setting="obstacle_return_distance_m" type="number" min="1" max="100000" step="10"></div>
+          <div class="field"><label for="obstacle_clearance_after_pass_m">Extra distance after obstacle (m)</label><input id="obstacle_clearance_after_pass_m" data-setting="obstacle_clearance_after_pass_m" type="number" min=".1" max="100" step="any"></div>
         </div>
         <div class="hint">AVIS uses the middle distance sensor (cm). The default 700 cm trigger is 7 m. It briefly steers left, then goes straight until the LL ROI line is confirmed; after the configured left-lane distance it steers right, goes straight until the RL ROI line is confirmed, and hands steering back to lane following. If the target line is not found within the safety distance, the car stops.</div>
         <div class="section-label">Steering PID</div>
@@ -803,7 +800,12 @@ function collectSettings() {
     const key = input.dataset.setting;
     if (input.tagName === "SELECT" && key === "vision_backend") result[key] = input.value;
     else if (input.tagName === "SELECT" && (key === "yellow_enabled" || key === "obstacle_lane_change_enabled")) result[key] = input.value === "true";
-    else result[key] = input.valueAsNumber;
+    else {
+      const raw = input.value.trim();
+      if (raw === "") return;
+      const numeric = Number(raw);
+      if (Number.isFinite(numeric)) result[key] = numeric;
+    }
   });
   return result;
 }
@@ -935,7 +937,7 @@ async function refreshStatus() {
       " · Sensors (L / C / R): " + (Array.isArray(t.sensors_cm) ? t.sensors_cm.join(" / ") + " cm" : "--") +
       " · Lane-change: " + String(t.lane_change_phase || "RIGHT_LANE").replaceAll("_"," ") +
       " · Side: " + String(t.lane_change_side || "right").toUpperCase() +
-      (t.lane_change_side === "left" ? " · Left-lane distance: " + Number(t.lane_change_distance_m || 0).toFixed(1) + " / " + Number(data.settings.obstacle_return_distance_m || 750).toFixed(0) + " m" : "") +
+      (t.lane_change_side === "left" ? " · Left-lane distance: " + Number(t.lane_change_distance_m || 0).toFixed(1) + " / " + (t.lane_change_target_distance_m == null ? "--" : Number(t.lane_change_target_distance_m).toFixed(1)) + " m" : "") +
       (t.vision_error ? " · Vision: " + t.vision_error : "");
     if (data.mode !== currentMode) setModeButtons(data.mode);
     if (!$("settingsForm").dataset.dirty) fillSettings(data.settings);
