@@ -1899,7 +1899,7 @@ def _create_avis_vision_processor(
     from vision.city_vision_processing import VisionProcessor
 
     class AvisVisionProcessor(VisionProcessor):
-        """AVIS model adapter using raw lane pixels inside each configured ROI."""
+        """Prefer model lane pixels and fall back to classical Hough per empty ROI."""
 
         def detect(self, semantic_frame, rgb_frame=None):
             if self.adaptive_roi_controller is not None:
@@ -2106,10 +2106,6 @@ def _create_avis_vision_processor(
                     merged_mask[top:bottom, left:right] = 0
             merged_mask[fallback_mask > 0] = 255
             return merged_mask
-            print(
-                "[AVIS] Lane selection uses the raw lane_lines segmentation "
-                "inside each LL/RL ROI; drivable-area is debug-only."
-            )
 
         def _pick_sticky_lane(
             self,
