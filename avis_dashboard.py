@@ -209,6 +209,9 @@ class AvisDashboardState:
             "lane_change_obstacle_distance_m": None,
             "lane_change_return_reason": "DISTANCE",
             "lane_change_segment_distance_m": 0.0,
+            "frame_read_fps": 0.0,
+            "inference_fps": 0.0,
+            "control_loop_fps": 0.0,
             "vision_error": None,
         }
         self._images: dict[str, bytes] = {}
@@ -372,6 +375,11 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
 .roi-editor-wrap canvas{outline:0}
 @media(max-width:980px){.grid{grid-template-columns:1fr}.topline{align-items:start;flex-direction:column}.metrics{grid-template-columns:repeat(2,1fr)}.right-panel{position:static;max-height:none;overflow:visible}}
 @media(max-width:560px){header{padding:13px 14px}.brand h1{font-size:14px}.status{font-size:10px}.header-status{justify-content:flex-start}.views{grid-template-columns:1fr}.manual-grid,.fields{grid-template-columns:1fr}.panel{padding:13px}.metric strong{font-size:17px}.panel-tabs{position:static}}
+/* AVIS performance telemetry */
+.fps-metrics{grid-template-columns:repeat(3,minmax(0,1fr));margin-top:-6px}
+.fps-metrics .metric{padding:9px 11px}
+.fps-metrics .metric strong{font-size:18px}
+@media(max-width:560px){.fps-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 </head>
 <body>
@@ -406,6 +414,11 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
     <div class="metric"><span>Target speed</span><strong id="targetValue">0.0 <small>km/h</small></strong></div>
     <div class="metric"><span>Steering</span><strong id="steerValue">0.00</strong></div>
     <div class="metric"><span>Lane error</span><strong id="errorValue">-- <small>px</small></strong></div>
+  </div>
+  <div class="metrics fps-metrics" aria-label="Runtime performance">
+    <div class="metric"><span>Frame read</span><strong id="frameReadFpsValue">0.0 <small>FPS</small></strong></div>
+    <div class="metric"><span>Vision inference</span><strong id="inferenceFpsValue">0.0 <small>FPS</small></strong></div>
+    <div class="metric"><span>Control loop</span><strong id="controlLoopFpsValue">0.0 <small>FPS</small></strong></div>
   </div>
       <div class="panel">
         <div class="panel-head"><h3>Drive mode</h3><span class="tag" id="modeTag">AUTO</span></div>
@@ -929,6 +942,9 @@ async function refreshStatus() {
     $("targetValue").innerHTML = Number(t.target_speed_kmh || 0).toFixed(1) + " <small>km/h</small>";
     $("steerValue").textContent = Number(t.steering || 0).toFixed(2);
     $("errorValue").innerHTML = (t.lane_valid ? Number(t.lane_error_px || 0).toFixed(1) : "--") + " <small>px</small>";
+    $("frameReadFpsValue").innerHTML = Number(t.frame_read_fps || 0).toFixed(1) + " <small>FPS</small>";
+    $("inferenceFpsValue").innerHTML = Number(t.inference_fps || 0).toFixed(1) + " <small>FPS</small>";
+    $("controlLoopFpsValue").innerHTML = Number(t.control_loop_fps || 0).toFixed(1) + " <small>FPS</small>";
     $("runtimeStatus").textContent = t.status || "Running";
     $("runtimeDetails").textContent =
       "Drive mode: " + data.mode.toUpperCase() +

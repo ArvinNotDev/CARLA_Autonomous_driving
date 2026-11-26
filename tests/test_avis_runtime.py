@@ -8,6 +8,7 @@ from avis_runtime import (
     AVIS_PROFILE_FIELDS,
     AVIS_PROFILE_NAME,
     AvisEngineClient,
+    AvisFpsMonitor,
     AvisSteeringController,
     AvisObstacleLaneChangeController,
     apply_avis_profile,
@@ -28,6 +29,23 @@ from avis_dashboard import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_avis_fps_monitor_calculates_rolling_rate_and_expires_stale_samples():
+    meter = AvisFpsMonitor(window_seconds=2.0)
+    meter.record(10.0)
+    meter.record(10.1)
+    meter.record(10.2)
+    assert meter.fps(now=10.2) == pytest.approx(10.0)
+    assert meter.fps(now=13.0) == pytest.approx(0.0)
+
+
+def test_avis_fps_monitor_ignores_non_monotonic_timestamps():
+    meter = AvisFpsMonitor(window_seconds=2.0)
+    meter.record(5.0)
+    meter.record(4.0)
+    meter.record(5.1)
+    assert meter.fps(now=5.1) == pytest.approx(10.0)
 
 
 def test_avis_profile_is_a_stable_v2_subset_without_carla_only_settings():
@@ -659,6 +677,9 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     assert 'id="obstacle_front_threshold_cm" data-setting="obstacle_front_threshold_cm" type="number" min="50" max="1499" step="1"' in html
     assert 'id="obstacle_sensor_clear_threshold_cm" data-setting="obstacle_sensor_clear_threshold_cm" type="number" min="51" max="1500" step="1"' in html
     assert 'id="obstacle_lane_line_search_max_distance_m"' in html
+    assert 'id="frameReadFpsValue"' in html
+    assert 'id="inferenceFpsValue"' in html
+    assert 'id="controlLoopFpsValue"' in html
 
 
 def test_avis_dashboard_roi_settings_validate_each_rectangle():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import importlib.util
 import json
 import math
@@ -10,6 +11,40 @@ import time
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Optional
+
+
+class AvisFpsMonitor:
+    """Rolling-window FPS meter for AVIS frame, inference and control rates."""
+
+    def __init__(self, window_seconds: float = 2.0) -> None:
+        self.window_seconds = max(0.25, float(window_seconds))
+        self._timestamps: deque[float] = deque()
+
+    def _prune(self, now: float) -> None:
+        cutoff = now - self.window_seconds
+        while self._timestamps and self._timestamps[0] < cutoff:
+            self._timestamps.popleft()
+
+    def record(self, timestamp: float | None = None) -> None:
+        sample = time.perf_counter() if timestamp is None else float(timestamp)
+        if not math.isfinite(sample):
+            return
+        if self._timestamps and sample <= self._timestamps[-1]:
+            return
+        self._timestamps.append(sample)
+        self._prune(sample)
+
+    def fps(self, now: float | None = None) -> float:
+        current = time.perf_counter() if now is None else float(now)
+        if not math.isfinite(current):
+            return 0.0
+        self._prune(current)
+        if len(self._timestamps) < 2:
+            return 0.0
+        elapsed = self._timestamps[-1] - self._timestamps[0]
+        if elapsed <= 0.0:
+            return 0.0
+        return float((len(self._timestamps) - 1) / elapsed)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -1089,14 +1124,21 @@ def run_avis(args: argparse.Namespace) -> int:
         consecutive_connection_errors = 0
         last_control_time = time.perf_counter()
         next_tick = last_control_time
+        frame_read_fps = AvisFpsMonitor(window_seconds=2.0)
+        inference_fps = AvisFpsMonitor(window_seconds=2.0)
+        control_loop_fps = AvisFpsMonitor(window_seconds=2.0)
+        last_inference_fps_timestamp: float | None = None
 
         print("[AVIS] AVIS runtime is ready.")
         print("[AVIS] Use the web dashboard for auto/manual mode and live tuning.")
         print("[AVIS] Press Q or Esc in the local preview window to stop.")
 
         while True:
+            control_loop_fps.record()
             try:
                 frame, current_speed, sensors = client.read_data()
+                if isinstance(frame, np.ndarray) and frame.size > 0:
+                    frame_read_fps.record()
                 consecutive_connection_errors = 0
             except Exception as exc:
                 consecutive_connection_errors += 1
@@ -1193,6 +1235,11 @@ def run_avis(args: argparse.Namespace) -> int:
             )
             vision_error = None
             vision_data: dict[str, Any] = {}
+            fps_metrics = {
+                "frame_read_fps": frame_read_fps.fps(),
+                "inference_fps": inference_fps.fps(),
+                "control_loop_fps": control_loop_fps.fps(),
+            }
             if valid_frame:
                 frame_id += 1
                 frame_bgr = np.ascontiguousarray(frame[:, :, :3])
@@ -1211,8 +1258,17 @@ def run_avis(args: argparse.Namespace) -> int:
                 )
                 if vision_snapshot is not None and vision_snapshot.valid:
                     last_vision_result = vision_snapshot
+                    completed_at = float(vision_snapshot.completed_at)
+                    if completed_at != last_inference_fps_timestamp:
+                        inference_fps.record(completed_at)
+                        last_inference_fps_timestamp = completed_at
                 if last_vision_result is not None:
                     vision_data = last_vision_result.result or {}
+                fps_metrics = {
+                    "frame_read_fps": frame_read_fps.fps(),
+                    "inference_fps": inference_fps.fps(),
+                    "control_loop_fps": control_loop_fps.fps(),
+                }
 
                 drive_mode, manual_throttle, manual_steering, manual_active = (
                     dashboard_state.drive_state()
@@ -1387,6 +1443,20 @@ def run_avis(args: argparse.Namespace) -> int:
                         1,
                         cv2.LINE_AA,
                     )
+                cv2.putText(
+                    display,
+                    (
+                        f"FPS | Read: {fps_metrics['frame_read_fps']:.1f} | "
+                        f"Inference: {fps_metrics['inference_fps']:.1f} | "
+                        f"Control: {fps_metrics['control_loop_fps']:.1f}"
+                    ),
+                    (12, 124),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.48,
+                    (100, 235, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
 
                 now = time.perf_counter()
                 if now - last_dashboard_publish >= 0.10:
@@ -1451,6 +1521,7 @@ def run_avis(args: argparse.Namespace) -> int:
                         "lane_change_segment_distance_m": round(
                             float(lane_change_state.get("phase_distance_m", 0.0)), 2
                         ),
+                        **fps_metrics,
                         "vision_error": (
                             str(vision_error) if vision_error else None
                         ),
@@ -1484,6 +1555,7 @@ def run_avis(args: argparse.Namespace) -> int:
                             if isinstance(sensors, (list, tuple)) and len(sensors) >= 3
                             else None
                         ),
+                        **fps_metrics,
                         "vision_error": "No valid AVIS camera frame.",
                     }
                 )
