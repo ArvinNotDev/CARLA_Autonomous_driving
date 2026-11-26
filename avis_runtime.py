@@ -1342,6 +1342,7 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
             "safe_stop": safe_stop,
             "obstacle_latched": self.model_trigger_latched,
             "obstacle_trigger_sensor": "MODEL" if self.model_trigger_latched else self.last_obstacle_sensor,
+            "return_reason": self.return_reason,
             "obstacle_model_confirm_frames": self.model_confirm_frames,
             "obstacle_model_rearm_frames": self.model_rearm_frames,
             "obstacle_model_probability": self.model_obstacle_probability,
