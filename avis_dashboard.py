@@ -1448,8 +1448,6 @@ async function refreshStatus() {
       " · Obstacle model: " + String(t.obstacle_classifier?.obstacle_ahead?.label || "--") +
       " (" + (t.obstacle_model_probability == null ? "--" : (Number(t.obstacle_model_probability) * 100).toFixed(0) + "%") + ")" +
       " · Lane choice: " + String(t.obstacle_lane_prediction || "--") +
-      " · Pass: " + String(t.obstacle_pass_sensor_stage || "--").replaceAll("_"," ") +
-      (t.obstacle_return_delay_remaining_s > 0 ? " · Return delay: " + Number(t.obstacle_return_delay_remaining_s).toFixed(1) + " s" : "") +
       " · Sensor angle: " + (t.active_sensor_angle == null ? "--" : String(t.active_sensor_angle) + "°") +
       (t.obstacle_pass_sensor_timeout ? " · PASS CONFIRMATION TIMEOUT / SAFE STOP" : "") +
       (t.vision_error ? " · Vision: " + t.vision_error : "");
