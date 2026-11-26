@@ -84,6 +84,7 @@ DEFAULT_AVIS_SETTINGS: dict[str, Any] = {
     "obstacle_lane_line_search_max_distance_m": 40.0,
     "obstacle_clearance_after_pass_m": 5.0,
     "adaptive_roi_enabled": True,
+    "drivable_recovery_enabled": True,
     "adaptive_roi_max_expansion_ratio": 0.12,
     "adaptive_roi_edge_trigger_ratio": 0.22,
     "adaptive_roi_expand_step_ratio": 0.02,
@@ -201,7 +202,10 @@ def validate_avis_settings(
                 raise ValueError("vision_backend must be 'ultralytics' or 'classical'.")
             result[key] = value
             continue
-        if key in {"yellow_enabled", "obstacle_lane_change_enabled", "adaptive_roi_enabled"}:
+        if key in {
+            "yellow_enabled", "obstacle_lane_change_enabled",
+            "adaptive_roi_enabled", "drivable_recovery_enabled",
+        }:
             if not isinstance(value, bool):
                 raise ValueError(f"{key} must be a boolean.")
             result[key] = value
@@ -744,12 +748,12 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
       <div class="panel">
         <div class="panel-head"><h3>Perception monitor</h3><span class="tag">Live camera / masks</span></div>
         <div class="views">
-          <div class="view"><div class="view-title"><span>AVIS camera / ROI editor</span><small>Drag to move · handles to resize</small></div><div class="roi-editor-wrap"><img id="roiSource" class="roi-source" src="/stream/camera" alt="AVIS camera"><canvas id="roiCanvas"></canvas></div><div class="roi-toolbar"><button class="btn active" id="roiLeftButton" type="button">Left ROI</button><button class="btn" id="roiRightButton" type="button">Right ROI</button><button class="btn" id="resetRoiButton" type="button">Reset selected ROI</button><label class="hint"><input type="checkbox" id="showRois" checked> Show both ROIs</label><span class="message" id="roiCanvasMessage"></span></div><div class="roi-help">These LL / RL rectangles are applied directly to the model's lane_lines mask. Model mode no longer runs Hough candidate ranking or temporal line selection; Classical CV keeps its own image-processing pipeline.</div></div>
+          <div class="view"><div class="view-title"><span>AVIS camera / ROI editor</span><small>Drag to move · handles to resize</small></div><div class="roi-editor-wrap"><img id="roiSource" class="roi-source" src="/stream/camera" alt="AVIS camera"><canvas id="roiCanvas"></canvas></div><div class="roi-toolbar"><button class="btn active" id="roiLeftButton" type="button">Left ROI</button><button class="btn" id="roiRightButton" type="button">Right ROI</button><button class="btn" id="resetRoiButton" type="button">Reset selected ROI</button><label class="hint"><input type="checkbox" id="showRois" checked> Show both ROIs</label><span class="message" id="roiCanvasMessage"></span></div><div class="roi-help">These LL / RL rectangles are applied directly to the model's lane_lines mask. If a model ROI has too few lane pixels, AVIS runs the same HLS / Canny / Hough fallback used by Classical CV, only inside that ROI.</div></div>
           <div class="view"><div class="view-title"><span>Lane overlay</span><small>Detected boundaries</small></div><img src="/stream/combined" alt="Lane overlay"></div>
           <div class="view"><div class="view-title"><span>Lane-line mask</span><small>Red pixels = lane-line pixels used for tracking</small></div><img src="/stream/line-mask" alt="Lane-line mask"></div>
-          <div class="view" id="drivableAreaView"><div class="view-title"><span>Drivable Area mask</span><small>Green pixels = model output · debug only</small></div><img src="/stream/drivable-area" alt="Model drivable area mask"></div>
+          <div class="view" id="drivableAreaView"><div class="view-title"><span>Drivable Area mask</span><small>Green pixels = model road mask</small></div><img src="/stream/drivable-area" alt="Model drivable area mask"></div>
         </div>
-        <div class="hint" id="backendDescription">The semantic model's lane_lines pixels are read directly inside each ROI. Its drivable-area mask is displayed in green for inspection only and is not used for steering or vehicle control.</div>
+        <div class="hint" id="backendDescription">The semantic model's lane_lines pixels drive normal lane tracking. The green drivable-area mask is also available for optional, temporally filtered lane-centre correction.</div>
       </div>
     </section>
     <aside class="right-panel">
@@ -861,7 +865,12 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
           <div class="field full"><div class="hint">During both lane changes, AVIS uses the dedicated low lane-change speed and shorter steering pulses. It keeps retrying until the model confirms the destination lane; no distance sensors are used.</div></div>
         </div>
         <div class="section-label">Return to the right lane</div>
-        <div class="hint">After the model confirms the vehicle has entered the left lane, AVIS travels exactly 7 metres, then starts the right-lane change. The return uses the same model-confirmed steering pulse, pause, and gentler retry sequence as the initial move to the left. Right-side sensor readings and sensor timeouts do not control this return.</div>
+        <div class="hint">After the model confirms the vehicle has entered the left lane, AVIS travels exactly 4 metres, then starts the right-lane change. The return uses the same model-confirmed steering pulse, pause, and gentler retry sequence as the initial move to the left. Right-side sensor readings and sensor timeouts do not control this return.</div>
+        <div class="section-label">Drivable-area path correction</div>
+        <div class="fields">
+          <div class="field full"><label for="drivable_recovery_enabled">Use drivable-area lane correction</label><select id="drivable_recovery_enabled" data-setting="drivable_recovery_enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
+        </div>
+        <div class="hint">Uses the lower central DW ROI (x=10–90%, y=60–72%) to estimate the road centre. Isolated mask speckles and short flicker are filtered using row-wise outlier rejection, a five-inference median and a 1.5-second persistence gate. The left correction lasts up to 10 seconds and is rate-limited by the steering controller. This option requires the Ultralytics backend.</div>
         <div class="section-label">Adaptive lane ROI recovery</div>
         <div class="fields">
           <div class="field full"><label for="adaptive_roi_enabled">Adaptive ROI expansion</label><select id="adaptive_roi_enabled" data-setting="adaptive_roi_enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
@@ -1192,14 +1201,14 @@ function updateBackendVisibility(backend) {
   const classical = backend === "classical";
   $("classicalSettings").classList.toggle("hidden", !classical);
   $("backendDescription").textContent = classical
-    ? "Classical CV continues to process its own LL/RL crops. No model drivable-area output is available in this backend."
-    : "The model's lane_lines mask is read directly inside each ROI, without Hough candidate ranking or temporal line selection. Its drivable-area mask is displayed in green for inspection only and is not used for steering or vehicle control.";
+    ? "Classical CV continues to process its own LL/RL crops. Its backend does not provide a semantic drivable-area mask, so drivable-area path correction is unavailable."
+    : "Model lane_lines pixels drive normal tracking; an ROI with insufficient model pixels uses the classical HLS/Canny/Hough fallback. The semantic drivable-area mask can optionally provide temporally filtered lane correction.";
 }
 function fillSettings(settings) {
   settingInputs.forEach(input => {
     const key = input.dataset.setting;
     if (!(key in settings)) return;
-    if (input.tagName === "SELECT" && (key === "yellow_enabled" || key === "obstacle_lane_change_enabled" || key === "adaptive_roi_enabled")) {
+    if (input.tagName === "SELECT" && (key === "yellow_enabled" || key === "obstacle_lane_change_enabled" || key === "adaptive_roi_enabled" || key === "drivable_recovery_enabled")) {
       input.value = settings[key] ? "true" : "false";
     } else {
       input.value = settings[key];
@@ -1213,7 +1222,7 @@ function collectSettings() {
   settingInputs.forEach(input => {
     const key = input.dataset.setting;
     if (input.tagName === "SELECT" && key === "vision_backend") result[key] = input.value;
-    else if (input.tagName === "SELECT" && (key === "yellow_enabled" || key === "obstacle_lane_change_enabled" || key === "adaptive_roi_enabled")) result[key] = input.value === "true";
+    else if (input.tagName === "SELECT" && (key === "yellow_enabled" || key === "obstacle_lane_change_enabled" || key === "adaptive_roi_enabled" || key === "drivable_recovery_enabled")) result[key] = input.value === "true";
     else {
       const raw = input.value.trim();
       if (raw === "") return;

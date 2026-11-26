@@ -48,12 +48,360 @@ class AvisFpsMonitor:
         return float((len(self._timestamps) - 1) / elapsed)
 
 
+class AvisDrivableAreaRecoveryController:
+    """CARLA-style road-centre correction with temporal flicker rejection."""
+
+    ROI = (0.10, 0.60, 0.90, 0.72)  # left, top, right, bottom
+    HISTORY_FRAMES = 5
+    MIN_HISTORY_FRAMES = 3
+    MIN_VALID_ROW_RATIO = 0.30
+    MIN_ROW_PIXEL_RATIO = 0.015
+    MIN_ROAD_WIDTH_RATIO = 0.12
+    ERROR_THRESHOLD_AT_512_PX = 20.0
+    CONFIRMATION_SECONDS = 1.5
+    RECOVERY_WINDOW_SECONDS = 10.0
+    RECOVERY_STEER = 0.35
+    MAX_OBSERVATION_GAP_SECONDS = 0.75
+    INVALID_FRAMES_BEFORE_RESET = 3
+
+    def __init__(self) -> None:
+        self._errors: deque[float] = deque(maxlen=self.HISTORY_FRAMES)
+        self._last_observation_id: Any = None
+        self._last_observation_timestamp: float | None = None
+        self._confirmation_started_at: float | None = None
+        self._active_until: float | None = None
+        self._invalid_observation_frames = 0
+        self._last_measurement: dict[str, Any] | None = None
+        self._enabled = True
+        self._reason = "waiting_for_drivable_mask"
+        self._trigger_count = 0
+
+    def _clear_filter(
+        self,
+        reason: str,
+        *,
+        preserve_observation: bool = True,
+        clear_measurement: bool = False,
+    ) -> None:
+        last_id = self._last_observation_id
+        last_timestamp = self._last_observation_timestamp
+        self._errors.clear()
+        self._confirmation_started_at = None
+        self._active_until = None
+        self._invalid_observation_frames = 0
+        if clear_measurement:
+            self._last_measurement = None
+        if preserve_observation:
+            self._last_observation_id = last_id
+            self._last_observation_timestamp = last_timestamp
+        else:
+            self._last_observation_id = None
+            self._last_observation_timestamp = None
+        self._reason = str(reason)
+
+    def _remember_observation(
+        self,
+        observation_id: Any,
+        observation_timestamp: float | None,
+    ) -> None:
+        """Consume frames seen during disabled or lane-change-owned control."""
+        if observation_id is None or observation_timestamp is None:
+            return
+        try:
+            timestamp = float(observation_timestamp)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(timestamp):
+            return
+        if (
+            self._last_observation_timestamp is None
+            or timestamp > self._last_observation_timestamp
+        ):
+            self._last_observation_id = observation_id
+            self._last_observation_timestamp = timestamp
+
+    def reset(self, reason: str = "reset") -> None:
+        self._clear_filter(
+            reason,
+            preserve_observation=False,
+            clear_measurement=True,
+        )
+        self._enabled = True
+
+    @staticmethod
+    def measure_road_centre(drivable_mask: Any) -> dict[str, Any] | None:
+        """Estimate road centre from the lower DW ROI, rejecting sparse noise."""
+        if drivable_mask is None:
+            return None
+        mask = np.asarray(drivable_mask)
+        if mask.size == 0:
+            return None
+        if mask.ndim == 3:
+            mask = np.any(mask[:, :, :3] > 0, axis=2)
+        elif mask.ndim == 2:
+            mask = mask > 0
+        else:
+            return None
+
+        height, width = mask.shape
+        if height < 8 or width < 16:
+            return None
+
+        left_ratio, top_ratio, right_ratio, bottom_ratio = (
+            AvisDrivableAreaRecoveryController.ROI
+        )
+        left = max(0, min(width, int(left_ratio * width)))
+        right = max(0, min(width, int(right_ratio * width)))
+        top = max(0, min(height, int(top_ratio * height)))
+        bottom = max(0, min(height, int(bottom_ratio * height)))
+        roi = mask[top:bottom, left:right]
+        roi_height, roi_width = roi.shape[:2]
+        if roi_height < 4 or roi_width < 8:
+            return None
+
+        min_row_pixels = max(
+            4,
+            int(round(roi_width * AvisDrivableAreaRecoveryController.MIN_ROW_PIXEL_RATIO)),
+        )
+        min_road_width = max(
+            8,
+            int(round(width * AvisDrivableAreaRecoveryController.MIN_ROAD_WIDTH_RATIO)),
+        )
+        row_lefts: list[float] = []
+        row_rights: list[float] = []
+        row_spans: list[float] = []
+
+        for row in roi:
+            xs = np.flatnonzero(row)
+            if xs.size < min_row_pixels:
+                continue
+            # Percentile boundaries suppress isolated foreground speckles.
+            row_left = float(np.quantile(xs, 0.05))
+            row_right = float(np.quantile(xs, 0.95))
+            span = row_right - row_left + 1.0
+            if span < min_road_width:
+                continue
+            row_lefts.append(row_left + float(left))
+            row_rights.append(row_right + float(left))
+            row_spans.append(span)
+
+        minimum_valid_rows = max(
+            4,
+            int(math.ceil(
+                roi_height * AvisDrivableAreaRecoveryController.MIN_VALID_ROW_RATIO
+            )),
+        )
+        valid_rows = len(row_lefts)
+        if valid_rows < minimum_valid_rows:
+            return None
+
+        road_left = float(np.median(np.asarray(row_lefts, dtype=np.float32)))
+        road_right = float(np.median(np.asarray(row_rights, dtype=np.float32)))
+        if road_right <= road_left:
+            return None
+        centre_x = (road_left + road_right) / 2.0
+        image_centre_x = width / 2.0
+        return {
+            "error_px": float(image_centre_x - centre_x),
+            "center_x": float(centre_x),
+            "image_center_x": float(image_centre_x),
+            "left_x": float(road_left),
+            "right_x": float(road_right),
+            "road_width_px": float(np.median(np.asarray(row_spans, dtype=np.float32))),
+            "valid_rows": int(valid_rows),
+            "roi": (left, top, right, bottom),
+            "frame_width": int(width),
+        }
+
+    @staticmethod
+    def _median(values: deque[float]) -> float | None:
+        if not values:
+            return None
+        ordered = sorted(float(value) for value in values)
+        middle = len(ordered) // 2
+        if len(ordered) % 2:
+            return float(ordered[middle])
+        return float((ordered[middle - 1] + ordered[middle]) / 2.0)
+
+    def snapshot(self, now: float | None = None) -> dict[str, Any]:
+        current = time.perf_counter() if now is None else float(now)
+        if self._active_until is not None and current >= self._active_until:
+            self._active_until = None
+            self._confirmation_started_at = None
+            self._errors.clear()
+            self._reason = "recovery_window_complete"
+
+        active = (
+            self._enabled
+            and self._active_until is not None
+            and current < self._active_until
+        )
+        measurement = self._last_measurement or {}
+        frame_width = int(measurement.get("frame_width", 0))
+        threshold = (
+            self.ERROR_THRESHOLD_AT_512_PX * frame_width / 512.0
+            if frame_width > 0 else None
+        )
+        confirmation_elapsed = 0.0
+        if (
+            self._confirmation_started_at is not None
+            and self._last_observation_timestamp is not None
+        ):
+            confirmation_elapsed = max(
+                0.0,
+                self._last_observation_timestamp - self._confirmation_started_at,
+            )
+        remaining = (
+            max(0.0, self._active_until - current)
+            if active and self._active_until is not None else 0.0
+        )
+        return {
+            "enabled": bool(self._enabled),
+            "available": bool(measurement),
+            "active": bool(active),
+            "reason": self._reason,
+            "error_px": measurement.get("error_px"),
+            "filtered_error_px": self._median(self._errors),
+            "threshold_px": threshold,
+            "center_x": measurement.get("center_x"),
+            "left_x": measurement.get("left_x"),
+            "right_x": measurement.get("right_x"),
+            "road_width_px": measurement.get("road_width_px"),
+            "valid_rows": measurement.get("valid_rows", 0),
+            "roi": measurement.get("roi"),
+            "confirmation_elapsed_seconds": float(confirmation_elapsed),
+            "confirmation_required_seconds": self.CONFIRMATION_SECONDS,
+            "active_remaining_seconds": float(remaining),
+            "steering_override": -self.RECOVERY_STEER if active else None,
+            "trigger_count": int(self._trigger_count),
+            "history_frames": len(self._errors),
+        }
+
+    def update(
+        self,
+        drivable_mask: Any,
+        *,
+        observation_id: Any,
+        observation_timestamp: float | None,
+        enabled: bool,
+        allow_recovery: bool,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Consume only distinct completed inference frames."""
+        current = time.perf_counter() if now is None else float(now)
+        if not math.isfinite(current):
+            current = time.perf_counter()
+
+        if not enabled:
+            self._enabled = False
+            self._clear_filter(
+                "disabled",
+                preserve_observation=True,
+                clear_measurement=True,
+            )
+            self._remember_observation(observation_id, observation_timestamp)
+            return self.snapshot(current)
+
+        self._enabled = True
+        if not allow_recovery:
+            self._clear_filter(
+                "lane_change_or_non_lane_follow_control",
+                preserve_observation=True,
+                clear_measurement=True,
+            )
+            self._remember_observation(observation_id, observation_timestamp)
+            return self.snapshot(current)
+
+        if observation_id is None or observation_timestamp is None:
+            if (
+                self._last_observation_timestamp is not None
+                and current - self._last_observation_timestamp
+                > self.MAX_OBSERVATION_GAP_SECONDS
+            ):
+                self._clear_filter(
+                    "stale_drivable_area_inference",
+                    preserve_observation=True,
+                    clear_measurement=True,
+                )
+            elif self._active_until is None:
+                self._reason = "waiting_for_fresh_model_frame"
+            return self.snapshot(current)
+
+        try:
+            timestamp = float(observation_timestamp)
+        except (TypeError, ValueError):
+            self._reason = "invalid_observation_timestamp"
+            return self.snapshot(current)
+        if not math.isfinite(timestamp):
+            self._reason = "invalid_observation_timestamp"
+            return self.snapshot(current)
+        if observation_id == self._last_observation_id:
+            return self.snapshot(current)
+        if (
+            self._last_observation_timestamp is not None
+            and timestamp <= self._last_observation_timestamp
+        ):
+            return self.snapshot(current)
+
+        if (
+            self._last_observation_timestamp is not None
+            and timestamp - self._last_observation_timestamp
+            > self.MAX_OBSERVATION_GAP_SECONDS
+        ):
+            self._clear_filter(
+                "inference_gap_reset",
+                preserve_observation=True,
+                clear_measurement=True,
+            )
+
+        self._last_observation_id = observation_id
+        self._last_observation_timestamp = timestamp
+        measurement = self.measure_road_centre(drivable_mask)
+        if measurement is None:
+            self._invalid_observation_frames += 1
+            if self._invalid_observation_frames >= self.INVALID_FRAMES_BEFORE_RESET:
+                self._clear_filter(
+                    "drivable_mask_unavailable",
+                    preserve_observation=True,
+                    clear_measurement=True,
+                )
+            elif self._active_until is None:
+                self._reason = "isolated_mask_dropout_ignored"
+            return self.snapshot(current)
+
+        self._invalid_observation_frames = 0
+        self._last_measurement = measurement
+        self._errors.append(float(measurement["error_px"]))
+        filtered_error = self._median(self._errors)
+        frame_width = int(measurement["frame_width"])
+        threshold = self.ERROR_THRESHOLD_AT_512_PX * frame_width / 512.0
+
+        if self._active_until is not None and current < self._active_until:
+            self._reason = "recovery_active"
+        elif len(self._errors) < self.MIN_HISTORY_FRAMES:
+            self._reason = "stabilizing_drivable_mask"
+        elif filtered_error is not None and filtered_error > threshold:
+            if self._confirmation_started_at is None:
+                self._confirmation_started_at = timestamp
+            elapsed = timestamp - self._confirmation_started_at
+            self._reason = "error_confirmation_pending"
+            if elapsed >= self.CONFIRMATION_SECONDS:
+                self._active_until = current + self.RECOVERY_WINDOW_SECONDS
+                self._confirmation_started_at = None
+                self._trigger_count += 1
+                self._reason = "recovery_active"
+        else:
+            self._confirmation_started_at = None
+            self._reason = "error_below_threshold"
+
+        return self.snapshot(current)
+
+
 PROJECT_ROOT = Path(__file__).resolve().parent
 AVIS_PROFILE_NAME = "AVIS_StableV2"
 
 # AVIS copies its StableV2-compatible camera and lane-following settings.
-# Legacy drivable-area threshold/debug keys remain in the profile contract for
-# compatibility, but the AVIS model adapter does not extract or use that mask.
+# Its semantic drivable-area mask can drive optional, temporally filtered lane correction.
 # CARLA sensors, map navigation, junction, and LiDAR settings are excluded.
 AVIS_PROFILE_FIELDS = (
     "AUTO_MODE_DEFAULT",
@@ -249,6 +597,31 @@ class AvisSteeringController:
 
         self.last_steer = steer
         return float(steer)
+
+    def update_override(
+        self,
+        steering: float,
+        *,
+        tracking_error: float | None = None,
+    ) -> float:
+        """Apply an external steering target through the PID slew limiter."""
+        target = float(steering)
+        if not math.isfinite(target):
+            raise ValueError("Steering override must be finite.")
+        if tracking_error is not None:
+            error_value = float(tracking_error)
+            if math.isfinite(error_value):
+                self.prev_error = error_value
+        # Prevent integral wind-up while the drivable-area controller owns steer.
+        self.integral = 0.0
+        target = min(self.steer_limit, max(-self.steer_limit, target))
+        delta = target - self.last_steer
+        if delta > self.max_steer_step:
+            target = self.last_steer + self.max_steer_step
+        elif delta < -self.max_steer_step:
+            target = self.last_steer - self.max_steer_step
+        self.last_steer = target
+        return float(target)
 
 
 class AvisObstacleLaneChangeController:
@@ -1170,14 +1543,14 @@ class AvisCombinedVisionProcessor:
 
 
 class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
-    """Model-triggered lane changes with a fixed 7 m return distance."""
+    """Model-triggered lane changes with a fixed 4 m return distance."""
 
     WAIT_RETURN_DISTANCE = "WAIT_RETURN_DISTANCE"
     # Compatibility aliases for integrations that used the former phase names.
     WAIT_OBSTACLE_PASS = WAIT_RETURN_DISTANCE
     WAIT_PASS_CLEARANCE = WAIT_RETURN_DISTANCE
     RETURN_DELAY = WAIT_RETURN_DISTANCE
-    RETURN_AFTER_DISTANCE_M = 7.0
+    RETURN_AFTER_DISTANCE_M = 4.0
 
     def __init__(self) -> None:
         super().__init__()
@@ -1435,7 +1808,7 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
             self.phase_distance_m = 0.0
             self.left_lane_distance_m = 0.0
             self._reset_target_line_tracking()
-            self.return_distance_stage = "WAITING_FOR_7M"
+            self.return_distance_stage = "WAITING_FOR_4M"
             self.model_lane_confirm_frames = 0
             pid_reset = True
 
@@ -1477,15 +1850,15 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
             pid_reset = True
 
         # The return trigger is deliberately independent of all side sensors:
-        # count a fixed 7 m from the moment the model confirms the left lane.
+        # count a fixed 4 m from the moment the model confirms the left lane.
         return_distance_m = self.RETURN_AFTER_DISTANCE_M
         if (
             self.phase == self.WAIT_RETURN_DISTANCE
             and self.left_lane_distance_m >= return_distance_m
         ):
-            self._begin_right_return("FIXED_7M_AFTER_LEFT_LANE", None)
+            self._begin_right_return("FIXED_4M_AFTER_LEFT_LANE", None)
             self.left_lane_distance_m = 0.0
-            self.return_distance_stage = "7M_REACHED"
+            self.return_distance_stage = "4M_REACHED"
             self.model_lane_confirm_frames = 0
             pid_reset = True
 
@@ -2377,6 +2750,7 @@ def run_avis(args: argparse.Namespace) -> int:
             max_speed_kmh=float(settings["max_speed_kmh"]),
         )
         obstacle_lane_change = AvisModelObstacleLaneChangeController()
+        drivable_recovery_controller = AvisDrivableAreaRecoveryController()
 
         if not bool(conf.AUTO_MODE_DEFAULT):
             dashboard_state.set_mode("stopped")
@@ -2615,8 +2989,17 @@ def run_avis(args: argparse.Namespace) -> int:
                 if not isinstance(debug_data, dict):
                     debug_data = {}
                 lane_change_state = obstacle_lane_change.snapshot(sensors)
+                drivable_recovery_state = drivable_recovery_controller.snapshot()
 
                 if drive_mode == "manual":
+                    drivable_recovery_state = drivable_recovery_controller.update(
+                        None,
+                        observation_id=None,
+                        observation_timestamp=None,
+                        enabled=False,
+                        allow_recovery=False,
+                        now=time.perf_counter(),
+                    )
                     throttle = manual_throttle if manual_active else 0.0
                     steering = manual_steering if manual_active else 0.0
                     client.send_manual_control(throttle, steering)
@@ -2626,6 +3009,14 @@ def run_avis(args: argparse.Namespace) -> int:
                         else "MANUAL / INPUT TIMED OUT - ZERO THROTTLE"
                     )
                 elif drive_mode == "stopped":
+                    drivable_recovery_state = drivable_recovery_controller.update(
+                        None,
+                        observation_id=None,
+                        observation_timestamp=None,
+                        enabled=False,
+                        allow_recovery=False,
+                        now=time.perf_counter(),
+                    )
                     client.send_control(0.0, 0.0)
                     status = "STOPPED"
                 else:
@@ -2674,6 +3065,23 @@ def run_avis(args: argparse.Namespace) -> int:
                     # LL changes only while moving left, RL only while moving right.
                     adaptive_roi_controller.set_lane_change_direction(
                         _avis_roi_lock_direction(lane_change_state.get("phase"))
+                    )
+                    drivable_recovery_state = drivable_recovery_controller.update(
+                        debug_data.get("drivable_mask") if result_fresh else None,
+                        observation_id=(
+                            last_vision_result.request_id if result_fresh else None
+                        ),
+                        observation_timestamp=(
+                            last_vision_result.completed_at if result_fresh else None
+                        ),
+                        enabled=bool(
+                            current_settings.get("drivable_recovery_enabled", True)
+                        ),
+                        # Lane changes and return waits retain exclusive steering control.
+                        allow_recovery=(
+                            lane_change_state.get("phase") == "RIGHT_LANE"
+                        ),
+                        now=time.perf_counter(),
                     )
                     requested_sensor_angle = int(
                         lane_change_state.get(
@@ -2750,12 +3158,20 @@ def run_avis(args: argparse.Namespace) -> int:
                             throttle = 0.0
                         status = "VISION RESULT STALE / LOW-SPEED FORWARD"
                     elif not lane_valid:
-                        # Keep a gentle forward crawl while lane perception recovers.
-                        # Decay the last steering command instead of holding a sharp turn.
-                        recovery_steering = max(
-                            -0.25, min(0.25, recovery_steering * 0.85)
-                        )
-                        steering = recovery_steering
+                        # Keep the low-speed crawl; use drivable-area correction only
+                        # when its independent road-centre signal is still confirmed.
+                        if drivable_recovery_state.get("active"):
+                            steering = steering_controller.update_override(
+                                drivable_recovery_state["steering_override"]
+                            )
+                        else:
+                            decayed_steering = max(
+                                -0.25, min(0.25, recovery_steering * 0.85)
+                            )
+                            steering = steering_controller.update_override(
+                                decayed_steering
+                            )
+                        recovery_steering = steering
                         target_speed = minimum_speed
                         throttle, requested_brake = speed_controller.update(
                             current_speed, target_speed, dt=control_dt
@@ -2763,9 +3179,19 @@ def run_avis(args: argparse.Namespace) -> int:
                         coasting = requested_brake > 0.0
                         if coasting:
                             throttle = 0.0
-                        status = "LANE NOT DETECTED / LOW-SPEED FORWARD"
+                        status = (
+                            "DRIVABLE AREA RECOVERY / LEFT CORRECTION"
+                            if drivable_recovery_state.get("active")
+                            else "LANE NOT DETECTED / LOW-SPEED FORWARD"
+                        )
                     else:
-                        steering = steering_controller.update(lane_error)
+                        if drivable_recovery_state.get("active"):
+                            steering = steering_controller.update_override(
+                                drivable_recovery_state["steering_override"],
+                                tracking_error=lane_error,
+                            )
+                        else:
+                            steering = steering_controller.update(lane_error)
                         recovery_steering = steering
                         base_target_speed = select_avis_target_speed(
                             steering,
@@ -2782,10 +3208,12 @@ def run_avis(args: argparse.Namespace) -> int:
                         if lane_change_state["phase"] == "WAIT_RETURN_DISTANCE":
                             status = (
                                 "OBSTACLE AVOIDANCE / LEFT LANE · "
-                                f"RETURN IN {lane_change_state.get('return_distance_remaining_m', 10.0):.1f}m"
+                                f"RETURN IN {lane_change_state.get('return_distance_remaining_m', 4.0):.1f}m"
                             )
                         elif lane_change_state["phase"] == "LEFT_LANE":
                             status = "OBSTACLE AVOIDANCE / LEFT LANE"
+                        elif drivable_recovery_state.get("active"):
+                            status = "DRIVABLE AREA RECOVERY / LEFT CORRECTION"
                         else:
                             status = "AUTO / COAST" if coasting else "AUTO"
                     client.send_control(throttle, steering)
@@ -2955,13 +3383,14 @@ def run_avis(args: argparse.Namespace) -> int:
                         "lane_change_retry_steer": lane_change_state.get("lane_change_retry_steer"),
                         "lane_change_retry_pulse_distance_m": lane_change_state.get("lane_change_retry_pulse_distance_m"),
                         "return_distance_stage": lane_change_state.get("return_distance_stage", "IDLE"),
-                        "return_after_distance_m": lane_change_state.get("return_after_distance_m", 10.0),
+                        "return_after_distance_m": lane_change_state.get("return_after_distance_m", 4.0),
                         "return_distance_travelled_m": lane_change_state.get("return_distance_travelled_m", 0.0),
                         "return_distance_remaining_m": lane_change_state.get("return_distance_remaining_m", 0.0),
                         "active_sensor_angle": active_sensor_angle,
                         "adaptive_roi": vision_data.get("debug", {}).get(
                             "adaptive_roi", adaptive_roi_controller.snapshot()
                         ),
+                        "drivable_recovery": drivable_recovery_state,
                         **fps_metrics,
                         "vision_error": (
                             str(vision_error) if vision_error else None

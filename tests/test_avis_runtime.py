@@ -12,6 +12,7 @@ from avis_runtime import (
     AvisEngineClient,
     AvisFpsMonitor,
     AvisSteeringController,
+    AvisDrivableAreaRecoveryController,
     AvisObstacleLaneChangeController,
     AvisModelObstacleLaneChangeController,
     AvisObstacleLaneClassifier,
@@ -1473,6 +1474,9 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     state = AvisDashboardState(settings_path=tmp_path / "avis_settings.json")
     html = create_avis_dashboard_app(state).test_client().get("/").get_data(as_text=True)
     assert 'id="obstacle_lane_change_enabled"' in html
+    assert 'id="drivable_recovery_enabled" data-setting="drivable_recovery_enabled"' in html
+    assert "five-inference median" in html
+    assert "1.5-second persistence gate" in html
     assert 'id="obstacle_model_confidence_threshold"' in html
     assert 'id="obstacle_lane_confidence_threshold"' in html
     assert 'id="obstacle_pass_sensor_angle"' not in html
@@ -1480,7 +1484,7 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     assert 'id="obstacle_pass_sensor_clear_threshold_cm"' not in html
     assert 'id="obstacle_return_delay_seconds"' not in html
     assert 'id="obstacle_pass_clearance_distance_m"' not in html
-    assert "exactly 7 metres" in html
+    assert "exactly 4 metres" in html
     assert "Right-side sensor readings and sensor timeouts do not control this return." in html
     assert 'id="obstacle_lane_change_retry_steer"' in html
     assert 'id="obstacle_lane_change_retry_pulse_distance_m"' in html
@@ -1488,7 +1492,7 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     assert 'id="obstacle_clearance_after_pass_m"' not in html
     assert 'id="obstacle_return_distance_m"' not in html
     assert 'id="obstacle_front_threshold_cm"' not in html
-    assert "exactly 7 metres" in html
+    assert "exactly 4 metres" in html
     assert "Right-side sensor readings and sensor timeouts do not control this return." in html
     assert 'id="obstacle_lane_line_search_max_distance_m"' not in html
     assert "dedicated low lane-change speed" in html
@@ -1772,6 +1776,200 @@ def test_avis_model_extracts_lane_lines_and_optional_drivable_area_only(monkeypa
 
 
 @pytest.mark.parametrize("active_side", [None, "left", "right"])
+def _shifted_drivable_mask(center_x=130, *, height=192, width=320):
+    mask = np.zeros((height, width), dtype=np.uint8)
+    top = int(0.60 * height)
+    bottom = int(0.72 * height)
+    half_width = 65
+    left = max(0, int(center_x) - half_width)
+    right = min(width, int(center_x) + half_width)
+    mask[top:bottom, left:right] = 255
+    return mask
+
+
+def test_avis_drivable_area_measurement_rejects_isolated_edge_speckles():
+    mask = _shifted_drivable_mask(center_x=130)
+    mask[116, 0] = 255
+    mask[117, 319] = 255
+    mask[118, 1] = 255
+
+    measured = AvisDrivableAreaRecoveryController.measure_road_centre(mask)
+
+    assert measured is not None
+    assert measured["center_x"] == pytest.approx(130.0, abs=1.0)
+    assert measured["error_px"] == pytest.approx(30.0, abs=1.0)
+    assert measured["valid_rows"] >= 7
+
+
+def test_avis_drivable_area_uses_a_five_inference_median_to_reject_flicker():
+    recovery = AvisDrivableAreaRecoveryController()
+    shifted = _shifted_drivable_mask(center_x=130)
+    centred = _shifted_drivable_mask(center_x=160)
+
+    masks = (shifted, centred, centred, centred, centred)
+    for observation_id, mask in enumerate(masks, start=1):
+        state = recovery.update(
+            mask,
+            observation_id=observation_id,
+            observation_timestamp=10.0 + (observation_id - 1) * 0.2,
+            enabled=True,
+            allow_recovery=True,
+            now=10.0 + (observation_id - 1) * 0.2,
+        )
+
+    assert state["active"] is False
+    assert state["filtered_error_px"] == pytest.approx(0.0, abs=1.0)
+    assert state["reason"] == "error_below_threshold"
+
+
+def test_avis_drivable_area_requires_sustained_error_and_ignores_one_frame_dropout():
+    recovery = AvisDrivableAreaRecoveryController()
+    mask = _shifted_drivable_mask(center_x=130)
+
+    for observation_id, timestamp in ((1, 10.0), (2, 10.2), (3, 10.4)):
+        state = recovery.update(
+            mask,
+            observation_id=observation_id,
+            observation_timestamp=timestamp,
+            enabled=True,
+            allow_recovery=True,
+            now=timestamp,
+        )
+    assert state["active"] is False
+
+    dropout = recovery.update(
+        None,
+        observation_id=4,
+        observation_timestamp=10.5,
+        enabled=True,
+        allow_recovery=True,
+        now=10.5,
+    )
+    assert dropout["active"] is False
+    assert dropout["reason"] == "isolated_mask_dropout_ignored"
+
+    for observation_id, timestamp in ((5, 11.0), (6, 11.5), (7, 11.9)):
+        active = recovery.update(
+            mask,
+            observation_id=observation_id,
+            observation_timestamp=timestamp,
+            enabled=True,
+            allow_recovery=True,
+            now=timestamp,
+        )
+    assert active["active"] is True
+    assert active["steering_override"] == pytest.approx(-0.35)
+    assert active["active_remaining_seconds"] == pytest.approx(10.0)
+    assert active["trigger_count"] == 1
+
+
+def test_avis_drivable_area_does_not_retrigger_duplicate_control_ticks():
+    recovery = AvisDrivableAreaRecoveryController()
+    mask = _shifted_drivable_mask(center_x=130)
+    state = None
+    for observation_id, timestamp in (
+        (1, 2.0), (2, 2.2), (3, 2.4), (4, 2.9), (5, 3.4), (6, 3.9)
+    ):
+        state = recovery.update(
+            mask,
+            observation_id=observation_id,
+            observation_timestamp=timestamp,
+            enabled=True,
+            allow_recovery=True,
+            now=timestamp,
+        )
+    assert state is not None and state["active"] is True
+
+    duplicate = recovery.update(
+        np.zeros_like(mask),
+        observation_id=6,
+        observation_timestamp=3.9,
+        enabled=True,
+        allow_recovery=True,
+        now=4.5,
+    )
+    assert duplicate["active"] is True
+    assert duplicate["trigger_count"] == 1
+
+
+def test_avis_drivable_area_only_corrects_when_road_centre_is_left_of_image_centre():
+    recovery = AvisDrivableAreaRecoveryController()
+    road_on_right = _shifted_drivable_mask(center_x=185)
+
+    state = None
+    for observation_id, timestamp in enumerate(
+        (1.0, 1.5, 2.0, 2.5, 3.0, 3.5), start=1
+    ):
+        state = recovery.update(
+            road_on_right,
+            observation_id=observation_id,
+            observation_timestamp=timestamp,
+            enabled=True,
+            allow_recovery=True,
+            now=timestamp,
+        )
+
+    assert state is not None
+    assert state["active"] is False
+    assert state["reason"] == "error_below_threshold"
+
+
+def test_avis_drivable_area_recovery_resets_when_disabled_or_lane_change_owns_control():
+    recovery = AvisDrivableAreaRecoveryController()
+    mask = _shifted_drivable_mask(center_x=130)
+    state = None
+    for observation_id, timestamp in enumerate(
+        (1.0, 1.2, 1.4, 2.0, 2.4, 2.9, 3.0), start=1
+    ):
+        state = recovery.update(
+            mask,
+            observation_id=observation_id,
+            observation_timestamp=timestamp,
+            enabled=True,
+            allow_recovery=True,
+            now=timestamp,
+        )
+    assert state is not None and state["active"] is True
+
+    disabled = recovery.update(
+        mask,
+        observation_id=8,
+        observation_timestamp=3.2,
+        enabled=False,
+        allow_recovery=True,
+        now=3.2,
+    )
+    assert disabled["active"] is False
+    assert disabled["reason"] == "disabled"
+
+    suspended = recovery.update(
+        mask,
+        observation_id=9,
+        observation_timestamp=3.4,
+        enabled=True,
+        allow_recovery=False,
+        now=3.4,
+    )
+    assert suspended["active"] is False
+    assert suspended["reason"] == "lane_change_or_non_lane_follow_control"
+
+
+def test_avis_steering_override_uses_existing_rate_limit_and_tracks_error():
+    controller = AvisSteeringController(max_steer_step=0.10)
+    controller.last_steer = 0.20
+
+    first = controller.update_override(-0.35, tracking_error=12.0)
+    second = controller.update_override(-0.35, tracking_error=13.0)
+    third = controller.update_override(-0.35, tracking_error=14.0)
+
+    assert first == pytest.approx(0.10)
+    assert second == pytest.approx(0.0)
+    assert third == pytest.approx(-0.10)
+    assert controller.last_steer == pytest.approx(-0.10)
+    assert controller.prev_error == pytest.approx(14.0)
+    assert controller.integral == pytest.approx(0.0)
+
+
 def test_avis_model_lane_center_uses_midpoint_regardless_of_sticky_side(
     monkeypatch, active_side
 ):
@@ -2017,6 +2215,7 @@ def test_avis_named_profiles_save_load_import_export_and_persist(tmp_path):
             "vision_backend": "classical",
             "min_speed_kmh": 7.5,
             "adaptive_roi_max_expansion_ratio": 0.18,
+            "drivable_recovery_enabled": False,
         }
     )
     saved = state.save_profile("Night Track")
@@ -2028,6 +2227,7 @@ def test_avis_named_profiles_save_load_import_export_and_persist(tmp_path):
     assert loaded["vision_backend"] == "classical"
     assert loaded["min_speed_kmh"] == pytest.approx(7.5)
     assert loaded["adaptive_roi_max_expansion_ratio"] == pytest.approx(0.18)
+    assert loaded["drivable_recovery_enabled"] is False
 
     exported = state.export_profile("Night Track")
     restored = AvisDashboardState(
@@ -2037,6 +2237,7 @@ def test_avis_named_profiles_save_load_import_export_and_persist(tmp_path):
     imported = restored.import_profile(exported)
     assert imported["settings"]["min_speed_kmh"] == pytest.approx(7.5)
     assert restored.load_profile("Night Track")["vision_backend"] == "classical"
+    assert restored.load_profile("Night Track")["drivable_recovery_enabled"] is False
 
     reloaded = AvisDashboardState(
         settings_path=tmp_path / "reloaded_settings.json",
@@ -2404,8 +2605,8 @@ def test_model_lane_output_drives_gentle_retries_in_both_directions():
         observation_id=5, frame_width=320, now=10.4,
     )
     assert left_confirmed["phase"] == controller.WAIT_RETURN_DISTANCE
-    assert left_confirmed["return_distance_stage"] == "WAITING_FOR_7M"
-    assert left_confirmed["return_distance_remaining_m"] == pytest.approx(7.0)
+    assert left_confirmed["return_distance_stage"] == "WAITING_FOR_4M"
+    assert left_confirmed["return_distance_remaining_m"] == pytest.approx(4.0)
 
     def wait_tick(sensors, observation_id, speed, dt, lane_left=0.90):
         return controller.update(
@@ -2423,20 +2624,21 @@ def test_model_lane_output_drives_gentle_retries_in_both_directions():
     wait_25 = wait_tick([0, 0, 0], 6, 36.0, 0.25)
     assert wait_25["phase"] == controller.WAIT_RETURN_DISTANCE
     assert wait_25["return_distance_travelled_m"] == pytest.approx(2.5)
-    assert wait_25["return_distance_remaining_m"] == pytest.approx(4.5)
+    assert wait_25["return_distance_remaining_m"] == pytest.approx(1.5)
 
-    wait_50 = wait_tick([None, None, None], 7, 36.0, 0.25)
-    assert wait_50["phase"] == controller.WAIT_RETURN_DISTANCE
-    assert wait_50["return_distance_travelled_m"] == pytest.approx(5.0)
+    wait_35 = wait_tick([None, None, None], 7, 36.0, 0.1)
+    assert wait_35["phase"] == controller.WAIT_RETURN_DISTANCE
+    assert wait_35["return_distance_travelled_m"] == pytest.approx(3.5)
+    assert wait_35["return_distance_remaining_m"] == pytest.approx(0.5)
 
-    wait_699 = wait_tick([1500, 1500, 1500], 8, 28.656, 0.25)
-    assert wait_699["phase"] == controller.WAIT_RETURN_DISTANCE
-    assert wait_699["return_distance_travelled_m"] == pytest.approx(6.99)
-    assert wait_699["return_distance_remaining_m"] == pytest.approx(0.01)
+    wait_399 = wait_tick([1500, 1500, 1500], 8, 36.0, 0.049)
+    assert wait_399["phase"] == controller.WAIT_RETURN_DISTANCE
+    assert wait_399["return_distance_travelled_m"] == pytest.approx(3.99)
+    assert wait_399["return_distance_remaining_m"] == pytest.approx(0.01)
 
-    return_started = wait_tick([0, 0, 0], 9, 0.144, 0.25, lane_left=0.10)
+    return_started = wait_tick([0, 0, 0], 9, 36.0, 0.001, lane_left=0.10)
     assert return_started["phase"] == controller.STEER_RIGHT
-    assert return_started["return_reason"] == "FIXED_7M_AFTER_LEFT_LANE"
+    assert return_started["return_reason"] == "FIXED_4M_AFTER_LEFT_LANE"
     assert return_started["steering_override"] == pytest.approx(0.30)
     assert return_started["lane_change_attempt_number"] == 1
 
@@ -2460,20 +2662,20 @@ def test_model_lane_output_drives_gentle_retries_in_both_directions():
     assert right_confirmed["return_reason"] == "RIGHT_LANE_CONFIRMED_BY_MODEL"
 
 
-def test_fixed_seven_meter_return_ignores_right_sensor_and_has_no_sensor_timeout():
+def test_fixed_four_meter_return_ignores_right_sensor_and_has_no_sensor_timeout():
     controller = AvisModelObstacleLaneChangeController()
     settings = dict(DEFAULT_AVIS_SETTINGS)
     settings["obstacle_pass_sensor_timeout_seconds"] = 0.1
     settings["obstacle_lane_line_search_max_distance_m"] = 40.0
     controller.phase = controller.WAIT_RETURN_DISTANCE
     controller.left_lane_distance_m = 0.0
-    controller.return_distance_stage = "WAITING_FOR_7M"
+    controller.return_distance_stage = "WAITING_FOR_4M"
 
     for observation_id in range(1, 3):
         state = controller.update(
             sensors=[0, 0, 0],
             speed_kmh=36.0,
-            dt=0.25,
+            dt=0.1,
             left_x=None,
             right_x=None,
             settings=settings,
@@ -2488,7 +2690,7 @@ def test_fixed_seven_meter_return_ignores_right_sensor_and_has_no_sensor_timeout
     just_before_return = controller.update(
         sensors=[0, 0, 0],
         speed_kmh=36.0,
-        dt=0.1,
+        dt=0.19,
         left_x=None,
         right_x=None,
         settings=settings,
@@ -2498,11 +2700,11 @@ def test_fixed_seven_meter_return_ignores_right_sensor_and_has_no_sensor_timeout
         now=3000.0,
     )
     assert just_before_return["phase"] == controller.WAIT_RETURN_DISTANCE
-    assert just_before_return["return_distance_travelled_m"] == pytest.approx(6.0)
+    assert just_before_return["return_distance_travelled_m"] == pytest.approx(3.9)
 
     state = controller.update(
         sensors=[0, 0, 0],
-        speed_kmh=36.0,
+        speed_kmh=3.6,
         dt=0.1,
         left_x=None,
         right_x=None,
