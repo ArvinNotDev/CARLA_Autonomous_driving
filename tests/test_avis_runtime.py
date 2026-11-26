@@ -12,6 +12,7 @@ from avis_runtime import (
     AvisFpsMonitor,
     AvisSteeringController,
     AvisObstacleLaneChangeController,
+    AvisModelObstacleLaneChangeController,
     apply_avis_profile,
     load_avis_profile,
     normalize_avis_controls,
@@ -66,7 +67,7 @@ def test_avis_profile_is_a_stable_v2_subset_without_carla_only_settings():
     assert avis["MAX_STEER_STEP"] == stable["MAX_STEER_STEP"]
     assert avis["CONTROL_LOOP_HZ"] == stable["CONTROL_LOOP_HZ"]
     assert stable["MODEL_PATH"] == "models_and_datasets/lane_and_drivable-area_model.pt"
-    assert avis["MODEL_PATH"] == "models_and_datasets/lane_and_drivable-area_model_Avis.pt"
+    assert avis["MODEL_PATH"] == "models_and_datasets/Avis_models/lane_and_drivable-area_model_Avis.pt"
     assert (ROOT / avis["MODEL_PATH"]).is_file()
     assert avis["MIN_SPEED_KMH"] == stable["MIN_SPEED_KMH"]
     assert avis["MAX_SPEED_KMH"] == stable["MAX_SPEED_KMH"]
@@ -96,7 +97,7 @@ def test_apply_avis_profile_only_applies_supported_keys():
     apply_avis_profile(
         {
             "KP": 0.02,
-            "MODEL_PATH": "models_and_datasets/lane_and_drivable-area_model_Avis.pt",
+            "MODEL_PATH": "models_and_datasets/Avis_models/lane_and_drivable-area_model_Avis.pt",
             "LIDAR_ENABLED": False,
         },
         config,
@@ -1462,13 +1463,18 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     state = AvisDashboardState(settings_path=tmp_path / "avis_settings.json")
     html = create_avis_dashboard_app(state).test_client().get("/").get_data(as_text=True)
     assert 'id="obstacle_lane_change_enabled"' in html
-    assert 'id="obstacle_front_threshold_cm"' in html
+    assert 'id="obstacle_model_confidence_threshold"' in html
+    assert 'id="obstacle_lane_confidence_threshold"' in html
+    assert 'id="obstacle_pass_sensor_angle"' in html
+    assert 'id="obstacle_pass_sensor_presence_threshold_cm"' in html
+    assert 'id="obstacle_pass_sensor_clear_threshold_cm"' in html
+    assert 'id="obstacle_return_delay_seconds"' in html
     assert 'id="obstacle_slowdown_start_cm"' not in html
     assert 'id="obstacle_clearance_after_pass_m"' in html
     assert 'id="obstacle_return_distance_m"' not in html
     assert 'id="obstacle_front_threshold_cm" data-setting="obstacle_front_threshold_cm" type="number" min="50" max="1499" step="1"' in html
-    assert "all three distance sensors" in html
-    assert 'id="obstacle_sensor_clear_threshold_cm" data-setting="obstacle_sensor_clear_threshold_cm" type="number" min="51" max="1500" step="1"' in html
+    assert "right-side sensor" in html
+    assert 'id="obstacle_pass_sensor_angle" data-setting="obstacle_pass_sensor_angle" type="number" min="10" max="90" step="1"' in html
     assert 'id="obstacle_lane_line_search_max_distance_m"' in html
     assert 'id="settingsForm" novalidate' in html
     assert 'id="obstacle_lane_change_steer_distance_m" data-setting="obstacle_lane_change_steer_distance_m" type="number" min=".1" max="100" step="any"' in html
@@ -1956,3 +1962,134 @@ def test_avis_github_profile_paths_encode_spaces_once():
     assert sync._url("avis_profiles/پروفایل.json").endswith(
         "/avis_profiles/%D9%BE%D8%B1%D9%88%D9%81%D8%A7%DB%8C%D9%84.json?ref=main"
     )
+
+
+
+def _model_obstacle_prediction(
+    obstacle_yes=0.95,
+    lane_left=0.90,
+):
+    return {
+        "valid": True,
+        "obstacle_ahead": {
+            "label": "yes" if obstacle_yes >= 0.5 else "no",
+            "confidence": max(obstacle_yes, 1.0 - obstacle_yes),
+            "probabilities": {"no": 1.0 - obstacle_yes, "yes": obstacle_yes},
+        },
+        "lane": {
+            "label": "left" if lane_left >= 0.5 else "right",
+            "confidence": max(lane_left, 1.0 - lane_left),
+            "probabilities": {"right": 1.0 - lane_left, "left": lane_left},
+        },
+    }
+
+
+def test_model_based_obstacle_trigger_requires_yes_and_left_lane_consensus():
+    controller = AvisModelObstacleLaneChangeController()
+    settings = dict(DEFAULT_AVIS_SETTINGS)
+    settings["obstacle_model_confirm_frames"] = 2
+    prediction = _model_obstacle_prediction()
+
+    first = controller.update(
+        sensors=[1500, 1500, 1500],
+        speed_kmh=8.0, dt=0.1,
+        left_x=100, right_x=220, settings=settings,
+        classifier_output=prediction,
+        observation_id=1, frame_width=320, now=10.0,
+    )
+    assert first["phase"] == controller.RIGHT_LANE
+    assert first["obstacle_model_confirm_frames"] == 1
+
+    second = controller.update(
+        sensors=[1500, 1500, 1500],
+        speed_kmh=8.0, dt=0.1,
+        left_x=100, right_x=220, settings=settings,
+        classifier_output=prediction,
+        observation_id=2, frame_width=320, now=10.1,
+    )
+    assert second["phase"] == controller.STEER_LEFT
+    assert second["obstacle_trigger_sensor"] == "MODEL"
+    assert second["steering_override"] < 0
+
+
+def test_model_based_obstacle_trigger_rejects_right_lane_prediction():
+    controller = AvisModelObstacleLaneChangeController()
+    settings = dict(DEFAULT_AVIS_SETTINGS)
+    settings["obstacle_model_confirm_frames"] = 1
+    prediction = _model_obstacle_prediction(lane_left=0.10)
+
+    state = controller.update(
+        sensors=[100, 100, 100],
+        speed_kmh=8.0, dt=0.1,
+        left_x=100, right_x=220, settings=settings,
+        classifier_output=prediction,
+        observation_id=1, frame_width=320, now=10.0,
+    )
+    assert state["phase"] == controller.RIGHT_LANE
+    assert state["obstacle_model_confirm_frames"] == 0
+
+
+def test_right_sensor_must_see_then_clear_obstacle_before_return_delay_starts():
+    controller = AvisModelObstacleLaneChangeController()
+    settings = dict(DEFAULT_AVIS_SETTINGS)
+    settings.update({
+        "obstacle_pass_sensor_presence_frames": 2,
+        "obstacle_pass_sensor_clear_frames": 3,
+        "obstacle_return_delay_seconds": 2.0,
+        "obstacle_pass_sensor_timeout_seconds": 30.0,
+    })
+    controller.phase = controller.WAIT_OBSTACLE_PASS
+    controller.pass_sensor_started_at = 100.0
+
+    def tick(sensor_cm, observation_id, now):
+        return controller.update(
+            sensors=[1500, 1500, sensor_cm],
+            speed_kmh=8.0, dt=0.1,
+            left_x=100, right_x=220, settings=settings,
+            classifier_output=None,
+            observation_id=observation_id,
+            frame_width=320,
+            now=now,
+        )
+
+    first_seen = tick(200, 1, 100.0)
+    assert first_seen["phase"] == controller.WAIT_OBSTACLE_PASS
+    assert first_seen["pass_sensor_stage"] == "WAITING_FOR_OBSTACLE"
+
+    confirmed_seen = tick(200, 2, 100.1)
+    assert confirmed_seen["pass_sensor_stage"] == "OBSTACLE_SEEN_ON_RIGHT"
+
+    tick(800, 3, 100.2)
+    tick(800, 4, 100.3)
+    cleared = tick(800, 5, 100.4)
+    assert cleared["phase"] == controller.RETURN_DELAY
+    assert cleared["pass_sensor_stage"] == "OBSTACLE_CLEARED"
+    assert cleared["return_delay_remaining_s"] == pytest.approx(2.0)
+
+    waiting = tick(800, 6, 102.3)
+    assert waiting["phase"] == controller.RETURN_DELAY
+    assert waiting["return_delay_remaining_s"] == pytest.approx(0.1)
+
+    returned = tick(800, 7, 102.5)
+    assert returned["phase"] == controller.STEER_RIGHT
+    assert returned["return_reason"] == "RIGHT_SENSOR_CONFIRMED_PASS"
+    assert returned["sensor_angle_override"] == settings["sensor_angle"]
+
+
+def test_pass_sensor_timeout_fails_safe_without_blind_return():
+    controller = AvisModelObstacleLaneChangeController()
+    settings = dict(DEFAULT_AVIS_SETTINGS)
+    settings["obstacle_pass_sensor_timeout_seconds"] = 5.0
+    controller.phase = controller.WAIT_OBSTACLE_PASS
+    controller.pass_sensor_started_at = 100.0
+
+    state = controller.update(
+        sensors=[1500, 1500, 1500],
+        speed_kmh=8.0, dt=0.1,
+        left_x=100, right_x=220, settings=settings,
+        classifier_output=None,
+        observation_id=1, frame_width=320, now=106.0,
+    )
+    assert state["phase"] == controller.FAILED
+    assert state["safe_stop"] is True
+    assert state["pass_sensor_timeout"] is True
