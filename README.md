@@ -165,18 +165,21 @@ On every application launch, choose **Use saved installation** or **Choose anoth
 The AVIS runtime is an independent backend. It does not initialize or import the
 CARLA Python API, and it does not alter the normal `python main.py` startup path.
 It has its own Flask dashboard, AVIS-only settings file, manual controls, and
-vision pipeline. The Ultralytics backend uses the dedicated
-`models_and_datasets/lane_and_drivable-area_model_Avis.pt` checkpoint for AVIS
-lane perception, while retaining AVIS PID/speed defaults. The normal CARLA
-runtime continues to use the StableV2 checkpoint. The Classical CV backend does not run a
-segmentation model to obtain lane pixels: it independently crops the configured
-left-lane (LL) and right-lane (RL) rectangles, then runs HLS white/yellow
-thresholding, Gaussian blur, Canny, morphology, and HoughLinesP strictly inside
-each crop. Both backends supply only their selected lane-line mask to lane
-tracking: the model backend extracts only the `lane_lines` class, and AVIS does
-not calculate, consume, or display drivable-area or vehicle masks. The classical
-backend likewise detects lane boundaries only; it does not estimate a road
-corridor. The binary selected-line mask is rendered in red in the debug view.
+vision pipeline. The Ultralytics lane-line backend uses the AVIS-specific
+`models_and_datasets/Avis_models/lane_and_drivable-area_model_Avis.pt` checkpoint.
+Both lane-line backends are paired with the RoadForge multi-task classifier at
+`models_and_datasets/Avis_models/obstacle_and_lane_Avis_model.onnx`. The classifier
+has an `obstacle_ahead` head (no / yes) and a `lane` head (right / left); it is
+the source of obstacle detection and the left-lane pass decision. The lane-line
+model remains responsible for tracking the physical lane markings used by the
+steering controller. The normal CARLA runtime continues to use its StableV2
+checkpoint. The Classical CV backend does not run a segmentation model to obtain
+lane pixels: it independently crops the configured left-lane (LL) and right-lane
+(RL) rectangles, then runs HLS white/yellow thresholding, Gaussian blur, Canny,
+morphology, and HoughLinesP strictly inside each crop. The Ultralytics lane model
+extracts only the `lane_lines` class; neither lane backend calculates, consumes,
+or displays drivable-area masks. The binary selected-line mask is rendered in
+red in the debug view.
 
 Use the Python API revision compatible with AVIS 1.2.4 (the vendor's
 `FIRA-ACL` branch). Clone it beside the project:
@@ -263,31 +266,31 @@ python main.py --avis --avis-host 127.0.0.1 --avis-port 25001
 The AVIS settings profile is `AVIS_StableV2`. It copies the StableV2 lane
 perception, PID, inference cadence, and speed settings while omitting CARLA-only
 camera placement, map navigation, junction, trajectory, and LiDAR settings.
-The AVIS API supplies RGB frames, speed feedback, and three distance readings
-in centimetres ([left, middle/front, right]). The default obstacle trigger is
-950 cm, and any one of the three sensors reaching that threshold can initiate
-the existing lane-change manoeuvre. No separate speed reduction is applied
-from 1500 cm. It applies a short steering pulse,
-then checks the pre-manoeuvre marking in the target ROI between pulses.
-The last seven distinct inference frames are used to establish the old line's
-position; that marking is followed and ignored until it leaves the ROI. Losing
-the old marking alone never stops correction: repeated 0.20 pulses continue
-while the destination line is missing or unconfirmed, with a fresh ROI result
-checked between pulses. Steering stops only after a spatially distinct target
-line remains consistent across the configured confirmation frames. Leftward
-changes use LL and
-rightward returns use RL. Steering uses an initial configured pulse (0.30 by
-default), followed by repeated 0.20 pulses of 0.30 m with short 0.15 m
-straight-check intervals. A fresh inference result is required between pulses;
-steering stops as soon as the old line clears or the destination marking is
-confirmed. The inner edges stay locked (LL-right and RL-left), so adaptive ROI
-recovery can only expand outward. Once the left-lane line is reacquired, the
-return distance is calculated from the last measured triggering-sensor distance
-plus a configurable clearance (5 m by default), rather than a fixed travel
-distance. A newly detected obstacle in the left lane overrides that target and
-starts an immediate return to the right. The AVIS web dashboard exposes the
-sensor threshold, confirmation, steering-pulse, line-search, and clearance
-settings.
+The AVIS API supplies camera frames, speed feedback, and three distance readings
+in centimetres ([left, middle/front, right]). The multi-task ONNX classifier is
+run alongside lane-line perception. An avoidance manoeuvre starts only after
+`obstacle_ahead=yes` and `lane=left` both exceed their configured confidence
+thresholds for the required number of distinct inference frames. A right-lane
+classifier decision does not authorize a pass. The trigger is therefore based
+on the trained model, not the legacy front/side sensor distance threshold.
+
+The nonblocking manoeuvre retains the AVIS steering-pulse and temporal ROI
+tracking approach used for the CARLA lane-change workflow: from the right lane,
+AVIS applies left steering pulses, checks the LL target ROI between pulses, and
+continues only until the left-lane marking is consistently reacquired. After
+that transition it changes the AVIS sensor-array angle to the separately
+configured pass-confirmation angle and monitors only the right-side sensor
+(index 2). The right sensor must first report an obstacle within the configured
+presence distance, then report a clear distance for the configured number of
+frames. Only after this seen-then-clear sequence is confirmed does the return
+delay timer start. When the delay expires, AVIS uses right steering pulses and
+RL tracking to reacquire the original right lane, then restores the normal
+sensor angle. The model must report obstacle=no for the configured re-arm
+frames before a new pass can start. If the right sensor does not confirm the
+pass before its timeout, the controller enters a safe stop instead of making a
+blind return. The Settings page exposes classifier confidence/confirmation,
+side-sensor angle and thresholds, pass-clear confirmation, return delay,
+timeout, steering-pulse, and target-line settings.
 
 AVIS accepts engine power and steering commands but does not expose a separate
 brake control in this API revision. When the speed controller requests braking,
