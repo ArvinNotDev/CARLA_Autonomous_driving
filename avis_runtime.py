@@ -343,6 +343,10 @@ class AvisObstacleLaneChangeController:
             "target_line_old_cleared": self.line_old_cleared,
             "target_line_candidate_x": self.line_candidate_x,
             "line_confirm_frames": self.line_confirm_frames,
+            "target_line_confirmed": (
+                self.line_old_cleared
+                and self.line_confirm_frames > 0
+            ),
             "active": self.phase in {
                 self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
                 self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
@@ -702,6 +706,10 @@ class AvisObstacleLaneChangeController:
 
         steering_override: float | None = None
         safe_stop = False
+        target_line_confirmed = (
+            self.line_old_cleared
+            and self.line_confirm_frames >= line_frames_required
+        )
 
         if self.phase == self.STEER_LEFT:
             pulse_distance = (
@@ -709,9 +717,9 @@ class AvisObstacleLaneChangeController:
                 if self.steering_pulse_index == 0
                 else self.FOLLOWUP_PULSE_DISTANCE_M
             )
-            if self.line_old_cleared or self.phase_distance_m >= pulse_distance:
-                # Release steering after each pulse so the target ROI is
-                # checked before another corrective input can be sent.
+            # Losing the old line is not proof that the destination line has
+            # been found. Keep applying correction until a new line is stable.
+            if target_line_confirmed or self.phase_distance_m >= pulse_distance:
                 self.phase = self.ACQUIRE_LEFT_LINE
                 self.phase_distance_m = 0.0
                 steering_override = 0.0
@@ -725,10 +733,7 @@ class AvisObstacleLaneChangeController:
 
         elif self.phase == self.ACQUIRE_LEFT_LINE:
             steering_override = 0.0
-            if (
-                self.line_old_cleared
-                and self.line_confirm_frames >= line_frames_required
-            ):
+            if target_line_confirmed:
                 self.phase = self.LEFT_LANE
                 self.phase_distance_m = 0.0
                 self.left_lane_distance_m = 0.0
@@ -738,12 +743,14 @@ class AvisObstacleLaneChangeController:
                 self.phase_distance_m >= self.LINE_CHECK_INTERVAL_M
                 and new_line_observation
             ):
-                # A fresh inference result has been checked and the old line is
-                # still not the destination marking: schedule another small pulse.
+                # Check the newest ROI result first; if no confirmed destination
+                # marking exists, start the next 0.20 correction immediately.
                 self.phase = self.STEER_LEFT
                 self.phase_distance_m = 0.0
                 self.steering_pulse_index += 1
-                steering_override = 0.0
+                steering_override = -min(
+                    self.FOLLOWUP_STEER_MAGNITUDE, left_steer
+                )
 
         elif self.phase == self.STEER_RIGHT:
             pulse_distance = (
@@ -751,7 +758,7 @@ class AvisObstacleLaneChangeController:
                 if self.steering_pulse_index == 0
                 else self.FOLLOWUP_PULSE_DISTANCE_M
             )
-            if self.line_old_cleared or self.phase_distance_m >= pulse_distance:
+            if target_line_confirmed or self.phase_distance_m >= pulse_distance:
                 self.phase = self.ACQUIRE_RIGHT_LINE
                 self.phase_distance_m = 0.0
                 steering_override = 0.0
@@ -765,10 +772,7 @@ class AvisObstacleLaneChangeController:
 
         elif self.phase == self.ACQUIRE_RIGHT_LINE:
             steering_override = 0.0
-            if (
-                self.line_old_cleared
-                and self.line_confirm_frames >= line_frames_required
-            ):
+            if target_line_confirmed:
                 self.phase = self.RIGHT_LANE
                 self.phase_distance_m = 0.0
                 self.left_lane_distance_m = 0.0
@@ -784,7 +788,9 @@ class AvisObstacleLaneChangeController:
                 self.phase = self.STEER_RIGHT
                 self.phase_distance_m = 0.0
                 self.steering_pulse_index += 1
-                steering_override = 0.0
+                steering_override = min(
+                    self.FOLLOWUP_STEER_MAGNITUDE, right_steer
+                )
         
         elif self.phase == self.FAILED:
             safe_stop = True
@@ -806,6 +812,7 @@ class AvisObstacleLaneChangeController:
             "pid_reset": pid_reset,
             "obstacle_latched": self.obstacle_latched,
             "line_confirm_frames": self.line_confirm_frames,
+            "target_line_confirmed": target_line_confirmed,
             "search_limit_reached": search_limit_reached,
         })
         return result

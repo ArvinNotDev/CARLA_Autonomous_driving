@@ -263,12 +263,14 @@ in centimetres ([left, middle/front, right]). The default obstacle trigger is
 950 cm, and any one of the three sensors reaching that threshold can initiate
 the existing lane-change manoeuvre. No separate speed reduction is applied
 from 1500 cm. It applies a short steering pulse,
-then continues straight while tracking the pre-manoeuvre marking in the target
-ROI. The last seven distinct inference frames are used to establish the old
-line's position; that marking is followed and ignored until it leaves the ROI
-(or a spatially distinct replacement is consistently detected). A new target
-line must then remain consistent across the configured confirmation frames
-before the lane change is considered complete. Leftward changes use LL and
+then checks the pre-manoeuvre marking in the target ROI between pulses.
+The last seven distinct inference frames are used to establish the old line's
+position; that marking is followed and ignored until it leaves the ROI. Losing
+the old marking alone never stops correction: repeated 0.20 pulses continue
+while the destination line is missing or unconfirmed, with a fresh ROI result
+checked between pulses. Steering stops only after a spatially distinct target
+line remains consistent across the configured confirmation frames. Leftward
+changes use LL and
 rightward returns use RL. Steering uses an initial configured pulse (0.30 by
 default), followed by repeated 0.20 pulses of 0.30 m with short 0.15 m
 straight-check intervals. A fresh inference result is required between pulses;

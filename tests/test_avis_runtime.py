@@ -688,23 +688,102 @@ def test_lane_change_repeats_short_steering_pulses_and_checks_target_roi_between
     assert state["phase"] == expected_check_phase
     assert state["steering_override"] == pytest.approx(0.0)
 
-    # A further checked interval schedules another 0.20 pulse.
+    # A further checked interval starts the next pulse immediately.
     update_frame(11, old_x, speed=3.6)
     state = update_frame(12, old_x, speed=3.6)
     assert state["steering_pulse_number"] == 3
-    assert state["steering_override"] == pytest.approx(0.0)
+    assert state["phase"] == expected_steer_phase
+    assert state["steering_override"] == pytest.approx(steering_sign * 0.20)
+
+    # Even after the old marking disappears, short corrections must continue.
     state = update_frame(13, None, speed=3.6)
+    assert state["phase"] == expected_steer_phase
     assert state["steering_override"] == pytest.approx(steering_sign * 0.20)
     state = update_frame(14, None, speed=3.6)
+    assert state["phase"] == expected_steer_phase
+    assert state["target_line_old_cleared"] is True
+    assert state["target_line_confirmed"] is False
+    assert state["steering_override"] == pytest.approx(steering_sign * 0.20)
+    state = update_frame(15, None, speed=3.6)
     assert state["phase"] == expected_check_phase
     assert state["steering_override"] == pytest.approx(0.0)
 
-    # After the old line leaves the ROI, a spatially new line is confirmed.
-    state = update_frame(15, new_x, speed=3.6)
-    assert state["phase"] == expected_check_phase
+    # Only a spatially new line confirmed across the configured frames stops pulses.
     state = update_frame(16, new_x, speed=3.6)
+    assert state["phase"] == expected_check_phase
+    state = update_frame(17, new_x, speed=3.6)
     assert state["phase"] == expected_phase
     assert state["steering_pulse_number"] == 0
+
+
+
+@pytest.mark.parametrize(
+    ("target_side", "old_x", "sign"),
+    [("left", 100.0, -1.0), ("right", 220.0, 1.0)],
+)
+def test_lane_change_keeps_pulsing_after_old_line_is_lost_until_new_line_is_confirmed(
+    target_side, old_x, sign
+):
+    controller = AvisObstacleLaneChangeController()
+    settings = _obstacle_lane_change_test_settings(
+        obstacle_trigger_confirm_frames=1,
+        obstacle_lane_change_steer_distance_m=0.20,
+        obstacle_lane_line_confirm_frames=3,
+    )
+    if target_side == "right":
+        controller.phase = AvisObstacleLaneChangeController.LEFT_LANE
+        controller.left_lane_target_distance_m = 1000.0
+
+    def update_frame(observation_id, line_x, speed=3.6, trigger=False):
+        return controller.update(
+            sensors=[1500, 600 if trigger else 1500, 1500],
+            speed_kmh=speed,
+            dt=0.1,
+            left_x=line_x if target_side == "left" else 100.0,
+            right_x=line_x if target_side == "right" else 220.0,
+            settings=settings,
+            observation_id=observation_id,
+            frame_width=320,
+        )
+
+    update_frame(1, old_x, speed=0.0)
+    update_frame(2, old_x, speed=0.0)
+    state = update_frame(3, old_x, trigger=True, speed=0.0)
+    assert state["steering_override"] == pytest.approx(sign * 0.30)
+
+    # End the first pulse and enter the target-ROI check interval.
+    for observation_id in (4, 5):
+        state = update_frame(observation_id, old_x)
+    assert state["phase"] in {
+        AvisObstacleLaneChangeController.ACQUIRE_LEFT_LINE,
+        AvisObstacleLaneChangeController.ACQUIRE_RIGHT_LINE,
+    }
+
+    # Let the old line disappear. It is not enough to stop the correction.
+    state = update_frame(6, None, speed=3.6)
+    state = update_frame(7, None, speed=3.6)
+    assert state["target_line_old_cleared"] is True
+    assert state["target_line_confirmed"] is False
+    assert state["steering_override"] == pytest.approx(sign * 0.20)
+
+    # The next pulse must remain active while the target marking is missing.
+    for observation_id in (8, 9):
+        state = update_frame(observation_id, None, speed=3.6)
+        assert state["phase"] in {
+            AvisObstacleLaneChangeController.STEER_LEFT,
+            AvisObstacleLaneChangeController.STEER_RIGHT,
+        }
+        assert state["steering_override"] == pytest.approx(sign * 0.20)
+
+    # A destination marking must be stable for all required fresh frames.
+    for observation_id in (10, 11, 12):
+        state = update_frame(observation_id, old_x + (30.0 * sign * -1), speed=3.6)
+    assert state["phase"] in {
+        AvisObstacleLaneChangeController.ACQUIRE_LEFT_LINE,
+        AvisObstacleLaneChangeController.ACQUIRE_RIGHT_LINE,
+        AvisObstacleLaneChangeController.LEFT_LANE,
+        AvisObstacleLaneChangeController.RIGHT_LANE,
+    }
 
 
 def test_avis_obstacle_lane_change_default_trigger_is_950_cm():
