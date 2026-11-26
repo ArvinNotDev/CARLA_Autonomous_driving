@@ -181,6 +181,28 @@ extracts only the `lane_lines` class; neither lane backend calculates, consumes,
 or displays drivable-area masks. The binary selected-line mask is rendered in
 red in the debug view.
 
+#### Windows CUDA / cuDNN compatibility
+
+AVIS initializes the PyTorch lane model before creating its ONNX Runtime
+classifier session, and asks ONNX Runtime to preload the shared CUDA/cuDNN
+DLLs. If the Windows environment has mixed ONNX Runtime packages or a GPU
+wheel built for a different CUDA runtime, run the repair script from the
+project root in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\repair_avis_cuda_cu126.ps1
+```
+
+That script is specifically for the project's PyTorch `2.12.x+cu126`
+environment. It verifies that PyTorch imports in a clean process, removes
+both CPU and GPU ONNX Runtime distributions (they share the same Python
+package namespace), then installs `onnxruntime-gpu==1.20.1`, whose Windows
+wheel uses CUDA 12.x and cuDNN 9. If the script fails at the initial
+`import torch`, repair the PyTorch/CUDA installation and install the current
+Microsoft Visual C++ Redistributable (x64) before retrying. Do not install
+this CUDA 12.6-specific ONNX Runtime version into a different PyTorch CUDA
+environment.
+
 Use the Python API revision compatible with AVIS 1.2.4 (the vendor's
 `FIRA-ACL` branch). Clone it beside the project:
 
