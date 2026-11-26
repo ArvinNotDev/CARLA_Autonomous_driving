@@ -260,6 +260,17 @@ class AvisDashboardState:
             "front_sensor_cm": None,
             "sensor_distances_cm": None,
             "obstacle_trigger_sensor": None,
+            "obstacle_classifier": None,
+            "obstacle_model_confirm_frames": 0,
+            "obstacle_model_probability": None,
+            "obstacle_lane_probability": None,
+            "obstacle_lane_prediction": None,
+            "obstacle_pass_sensor_stage": "WAITING_FOR_OBSTACLE",
+            "obstacle_pass_right_sensor_cm": None,
+            "obstacle_pass_clear_frames": 0,
+            "obstacle_return_delay_remaining_s": 0.0,
+            "obstacle_pass_sensor_timeout": False,
+            "active_sensor_angle": None,
             "lane_change_phase": "RIGHT_LANE",
             "lane_change_side": "right",
             "lane_change_target": "right",
@@ -728,10 +739,10 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
         </div>
         <div class="hint" id="githubProfilesMessage">Publishing uses GitHub CLI authentication on this PC (gh auth login), or GITHUB_TOKEN / GH_TOKEN. No token is stored in the dashboard or project files.</div>
         <div class="divider"></div>
-        <div class="section-label">Vision engine</div>
+        <div class="section-label">Lane-line perception backend</div>
         <div class="fields">
-          <div class="field full"><label for="vision_backend">Vision backend</label><select id="vision_backend" data-setting="vision_backend"><option value="ultralytics">Ultralytics semantic model</option><option value="classical">Classical CV · HLS / Canny / Hough</option></select></div>
-          <div class="field"><label for="sensor_angle">Sensor angle (degrees)</label><input id="sensor_angle" data-setting="sensor_angle" type="number" min="10" max="90" step="1"></div>
+          <div class="field full"><label for="vision_backend">Lane-line backend</label><select id="vision_backend" data-setting="vision_backend"><option value="ultralytics">Ultralytics lane-line model</option><option value="classical">Classical CV · HLS / Canny / Hough</option></select></div>
+          <div class="field"><label for="sensor_angle">Normal sensor angle (degrees)</label><input id="sensor_angle" data-setting="sensor_angle" type="number" min="10" max="90" step="1"></div>
           <div class="field"><label for="control_loop_hz">Control frequency (Hz)</label><input id="control_loop_hz" data-setting="control_loop_hz" type="number" min="10" max="60" step="1"></div>
           <div class="field"><label for="inference_interval_ms">Inference interval (ms)</label><input id="inference_interval_ms" data-setting="inference_interval_ms" type="number" min="10" max="500" step="1"></div>
         </div>
@@ -1272,7 +1283,14 @@ async function refreshStatus() {
       " · Sensors (L / C / R): " + (Array.isArray(t.sensors_cm) ? t.sensors_cm.join(" / ") + " cm" : "--") +
       " · Lane-change: " + String(t.lane_change_phase || "RIGHT_LANE").replaceAll("_"," ") +
       " · Side: " + String(t.lane_change_side || "right").toUpperCase() +
-      (t.lane_change_side === "left" ? " · Left-lane distance: " + Number(t.lane_change_distance_m || 0).toFixed(1) + " / " + (t.lane_change_target_distance_m == null ? "--" : Number(t.lane_change_target_distance_m).toFixed(1)) + " m" : "") +
+      " · Obstacle model: " + String(t.obstacle_classifier?.obstacle_ahead?.label || "--") +
+      " (" + (t.obstacle_model_probability == null ? "--" : (Number(t.obstacle_model_probability) * 100).toFixed(0) + "%") + ")" +
+      " · Lane choice: " + String(t.obstacle_lane_prediction || "--") +
+      " · Right sensor: " + (t.obstacle_pass_right_sensor_cm == null ? "--" : Number(t.obstacle_pass_right_sensor_cm).toFixed(0) + " cm") +
+      " · Pass: " + String(t.obstacle_pass_sensor_stage || "--").replaceAll("_"," ") +
+      (t.obstacle_return_delay_remaining_s > 0 ? " · Return delay: " + Number(t.obstacle_return_delay_remaining_s).toFixed(1) + " s" : "") +
+      " · Sensor angle: " + (t.active_sensor_angle == null ? "--" : String(t.active_sensor_angle) + "°") +
+      (t.obstacle_pass_sensor_timeout ? " · PASS CONFIRMATION TIMEOUT / SAFE STOP" : "") +
       (t.vision_error ? " · Vision: " + t.vision_error : "");
     if (data.mode !== currentMode) setModeButtons(data.mode);
     if (!$("settingsForm").dataset.dirty) fillSettings(data.settings);
