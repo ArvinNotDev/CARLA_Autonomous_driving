@@ -1474,7 +1474,8 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     assert 'id="obstacle_front_threshold_cm"' not in html
     assert "exactly 10 metres" in html
     assert "Right-side sensor readings and sensor timeouts do not control this return." in html
-    assert 'id="obstacle_lane_line_search_max_distance_m"' in html
+    assert 'id="obstacle_lane_line_search_max_distance_m"' not in html
+    assert "There is no distance-based FAILED timeout" in html
     assert 'id="settingsForm" novalidate' in html
     assert 'id="obstacle_lane_change_steer_distance_m" data-setting="obstacle_lane_change_steer_distance_m" type="number" min=".1" max="100" step="any"' in html
     assert 'id="obstacle_lane_change_left_steer" data-setting="obstacle_lane_change_left_steer" type="number" min=".001" max="1" step="any"' in html
@@ -2288,6 +2289,62 @@ def test_fixed_ten_meter_return_ignores_right_sensor_and_has_no_sensor_timeout()
     assert state["steering_override"] == pytest.approx(
         settings["obstacle_lane_change_right_steer"]
     )
+
+
+
+def test_model_lane_changes_retry_past_search_distance_without_sensors_or_failed():
+    settings = dict(DEFAULT_AVIS_SETTINGS)
+    settings.update({
+        "obstacle_lane_line_confirm_frames": 2,
+        "obstacle_lane_change_steer_distance_m": 0.10,
+        "obstacle_lane_change_retry_pulse_distance_m": 0.05,
+        "obstacle_lane_change_retry_steer": 0.20,
+        # This legacy UI/config value must no longer stop model-controlled turns.
+        "obstacle_lane_line_search_max_distance_m": 0.10,
+    })
+
+    for target_side in ("left", "right"):
+        controller = AvisModelObstacleLaneChangeController()
+        controller.phase = (
+            controller.STEER_LEFT if target_side == "left"
+            else controller.STEER_RIGHT
+        )
+        controller._start_target_line_tracking(target_side)
+
+        previous_lane = "right" if target_side == "left" else "left"
+        lane_left_probability = 0.10 if previous_lane == "right" else 0.90
+        expected_sign = -1.0 if target_side == "left" else 1.0
+
+        for observation_id in range(1, 9):
+            state = controller.update(
+                sensors=None,
+                speed_kmh=36.0,
+                dt=0.001 if observation_id == 1 else 0.25,
+                left_x=None,
+                right_x=None,
+                settings=settings,
+                classifier_output=_model_obstacle_prediction(
+                    obstacle_yes=0.05,
+                    lane_left=lane_left_probability,
+                ),
+                observation_id=observation_id,
+                frame_width=320,
+                now=1000.0 + observation_id,
+            )
+            assert state["phase"] in {
+                controller.STEER_LEFT, controller.ACQUIRE_LEFT_LINE,
+                controller.STEER_RIGHT, controller.ACQUIRE_RIGHT_LINE,
+            }
+            assert state["failed"] is False
+            assert state["safe_stop"] is False
+            assert state["search_limit_reached"] is False
+            assert state["steering_override"] * expected_sign > 0.0
+            assert state["sensor_distances_cm"] == [None, None, None]
+
+        assert controller.line_search_distance_m > settings[
+            "obstacle_lane_line_search_max_distance_m"
+        ]
+        assert state["lane_change_attempt_number"] >= 7
 
 
 def test_avis_onnx_classifier_uses_roadforge_task_metadata_and_training_preprocess(

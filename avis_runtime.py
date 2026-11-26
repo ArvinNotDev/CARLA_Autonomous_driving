@@ -1390,7 +1390,10 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
         if pass_wait_active:
             self.phase = self.LEFT_LANE
         result = super().update(
-            sensors=sensors,
+            # The model-confirmed lane-change path is independent of AVIS
+            # distance sensors; never let sensor readings affect this state
+            # machine or its telemetry.
+            sensors=None,
             speed_kmh=speed_kmh,
             dt=dt,
             left_x=None,
@@ -1425,26 +1428,20 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
         # A confident prediction that still says the old lane triggers the
         # next correction only after the previous pulse has finished. Retry
         # pulses use the same smaller magnitude and shorter distance each time.
-        retry_left = (
-            self.phase == self.ACQUIRE_LEFT_LINE
+        # One shared retry path guarantees identical behaviour in both
+        # directions: after the steering pulse, wait for a fresh model result;
+        # if it still reports the previous lane, issue the next gentler pulse.
+        retry_phase = {
+            self.ACQUIRE_LEFT_LINE: self.STEER_LEFT,
+            self.ACQUIRE_RIGHT_LINE: self.STEER_RIGHT,
+        }.get(self.phase)
+        if (
+            retry_phase is not None
             and observation_is_new
             and valid_output
             and model_reports_other_lane
-        )
-        if retry_left:
-            self.phase = self.STEER_LEFT
-            self.phase_distance_m = 0.0
-            self.steering_pulse_index += 1
-            self.model_lane_confirm_frames = 0
-
-        retry_right = (
-            self.phase == self.ACQUIRE_RIGHT_LINE
-            and observation_is_new
-            and valid_output
-            and model_reports_other_lane
-        )
-        if retry_right:
-            self.phase = self.STEER_RIGHT
+        ):
+            self.phase = retry_phase
             self.phase_distance_m = 0.0
             self.steering_pulse_index += 1
             self.model_lane_confirm_frames = 0
@@ -1479,20 +1476,10 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
             pid_reset = True
 
         sensor_angle_override = int(settings.get("sensor_angle", 40))
-        search_limit = self._nonnegative_setting(
-            settings, "obstacle_lane_line_search_max_distance_m", 40.0
-        )
-        search_limit_reached = bool(result.get("search_limit_reached"))
-        if (
-            self.phase in {
-                self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
-                self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
-            }
-            and search_limit > 0.0
-            and self.line_search_distance_m >= search_limit
-        ):
-            self.phase = self.FAILED
-            self.return_reason = "MODEL_LANE_CHANGE_SEARCH_TIMEOUT"
+        # Model-based lane changes have no distance-based FAILED timeout.
+        # Keep retrying with the configured smaller pulse until the classifier
+        # confirms the destination lane, regardless of accumulated distance.
+        search_limit_reached = False
 
         safe_stop = self.phase == self.FAILED
         if safe_stop:
