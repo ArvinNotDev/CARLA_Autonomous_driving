@@ -2597,7 +2597,10 @@ def run_avis(args: argparse.Namespace) -> int:
                             float(current_settings.get("obstacle_lane_change_speed_kmh", 4.5)),
                         )
                         throttle, requested_brake = speed_controller.update(
-                            current_speed, target_speed, dt=control_dt
+                            current_speed,
+                            target_speed,
+                            dt=control_dt,
+                            minimum_speed_override_kmh=target_speed,
                         )
                         coasting = requested_brake > 0.0
                         if coasting:

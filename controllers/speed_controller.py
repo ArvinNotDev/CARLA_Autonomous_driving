@@ -80,15 +80,28 @@ class SpeedPIDController:
         self._previous_speed_mps = None
         self._last_update_at = None
 
-    def normalize_target_speed(self, target_speed_kmh: float) -> float:
+    def normalize_target_speed(
+        self,
+        target_speed_kmh: float,
+        *,
+        minimum_speed_override_kmh: float | None = None,
+    ) -> float:
         target = float(target_speed_kmh)
         if not math.isfinite(target):
             raise ValueError("Target speed must be finite.")
-        # Zero is an intentional stop command. Every positive request is a
-        # moving request and therefore respects the configured minimum speed.
+        minimum = self.min_speed_kmh
+        if minimum_speed_override_kmh is not None:
+            minimum_override = float(minimum_speed_override_kmh)
+            if not math.isfinite(minimum_override) or minimum_override <= 0.0:
+                raise ValueError("Minimum-speed override must be finite and positive.")
+            # Overrides may lower the normal floor for a manoeuvre, but never
+            # raise it above the globally configured minimum.
+            minimum = min(minimum, minimum_override)
+        # Zero is an intentional stop command. Every positive request uses
+        # either the normal minimum or the one-update lower manoeuvre floor.
         if target <= 0.0:
             return 0.0
-        return min(self.max_speed_kmh, max(self.min_speed_kmh, target))
+        return min(self.max_speed_kmh, max(minimum, target))
 
     def update(
         self,
@@ -96,12 +109,16 @@ class SpeedPIDController:
         target_speed_kmh: float,
         *,
         dt: float | None = None,
+        minimum_speed_override_kmh: float | None = None,
     ) -> tuple[float, float]:
-        """Return (throttle, brake) while respecting the active speed target."""
+        """Return throttle/brake while respecting the active target and optional lower floor."""
         current = max(0.0, float(current_speed_kmh))
         if not math.isfinite(current):
             current = 0.0
-        target = self.normalize_target_speed(target_speed_kmh)
+        target = self.normalize_target_speed(
+            target_speed_kmh,
+            minimum_speed_override_kmh=minimum_speed_override_kmh,
+        )
 
         now = time.perf_counter()
         if dt is None:
