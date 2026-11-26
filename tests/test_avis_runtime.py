@@ -703,8 +703,8 @@ def test_avis_dashboard_lane_change_settings_are_persistent_and_validated(tmp_pa
 
     with pytest.raises(ValueError, match="slowdown start must be greater"):
         state.update_settings({
-            "obstacle_slowdown_start_cm": 900,
-            "obstacle_front_threshold_cm": 950,
+            "obstacle_slowdown_start_cm": 1499,
+            "obstacle_front_threshold_cm": 1499,
         }, persist=False)
 
     # The front threshold may exceed the configured clear threshold; runtime
@@ -759,7 +759,7 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     assert 'id="obstacle_slowdown_start_cm"' in html
     assert 'id="obstacle_clearance_after_pass_m"' in html
     assert 'id="obstacle_return_distance_m"' not in html
-    assert 'id="obstacle_slowdown_start_cm" data-setting="obstacle_slowdown_start_cm" type="number" min="1500" max="6000" step="1"' in html
+    assert 'id="obstacle_slowdown_start_cm" data-setting="obstacle_slowdown_start_cm" type="number" min="951" max="6000" step="1"' in html
     assert 'id="obstacle_front_threshold_cm" data-setting="obstacle_front_threshold_cm" type="number" min="50" max="1499" step="1"' in html
     assert 'id="obstacle_sensor_clear_threshold_cm" data-setting="obstacle_sensor_clear_threshold_cm" type="number" min="51" max="1500" step="1"' in html
     assert 'id="obstacle_lane_line_search_max_distance_m"' in html
