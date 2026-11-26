@@ -703,17 +703,31 @@ def test_avis_obstacle_lane_change_returns_right_after_configured_distance():
             left_x=None, right_x=220, settings=settings,
             observation_id=observation_id,
         )
+    # The old LL marking can reappear after a short detection gap. It must
+    # still be ignored rather than being mistaken for the destination-lane line.
     for observation_id in (5, 6):
         state = controller.update(
             sensors=[1500, 600, 1500], speed_kmh=0.0, dt=0.0,
             left_x=100, right_x=None, settings=settings,
             observation_id=observation_id,
         )
+    assert state["phase"] == "ACQUIRE_LEFT_LINE"
+    assert state["line_confirm_frames"] == 0
+    assert state["target_line_old_cleared"] is False
+
+    # A spatially distinct LL marking, stable across two inference frames,
+    # confirms entry into the new lane.
+    for observation_id in (7, 8):
+        state = controller.update(
+            sensors=[1500, 600, 1500], speed_kmh=0.0, dt=0.0,
+            left_x=110, right_x=None, settings=settings,
+            observation_id=observation_id,
+        )
     assert state["phase"] == "LEFT_LANE"
 
     # The first obstacle was detected at 6m; with 5m extra clearance,
     # the controller should return after 11m in the left lane (not a fixed 750m).
-    for observation_id in range(7, 18):
+    for observation_id in range(9, 20):
         state = controller.update(
             sensors=[1500, 1500, 1500], speed_kmh=36.0, dt=0.1,
             left_x=100, right_x=220, settings=settings,
