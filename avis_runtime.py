@@ -713,7 +713,11 @@ class AvisObstacleLaneChangeController:
             pulse_distance = (
                 steer_distance
                 if self.steering_pulse_index == 0
-                else self.FOLLOWUP_PULSE_DISTANCE_M
+                else self._positive_setting(
+                    settings,
+                    "obstacle_lane_change_retry_pulse_distance_m",
+                    self.FOLLOWUP_PULSE_DISTANCE_M,
+                )
             )
             # Losing the old line is not proof that the destination line has
             # been found. Keep applying correction until a new line is stable.
@@ -725,7 +729,13 @@ class AvisObstacleLaneChangeController:
                 pulse_steer = (
                     left_steer
                     if self.steering_pulse_index == 0
-                    else min(self.FOLLOWUP_STEER_MAGNITUDE, left_steer)
+                    else min(
+                        self._positive_setting(
+                            settings, "obstacle_lane_change_retry_steer",
+                            self.FOLLOWUP_STEER_MAGNITUDE,
+                        ),
+                        left_steer,
+                    )
                 )
                 steering_override = -pulse_steer
 
@@ -754,7 +764,11 @@ class AvisObstacleLaneChangeController:
             pulse_distance = (
                 steer_distance
                 if self.steering_pulse_index == 0
-                else self.FOLLOWUP_PULSE_DISTANCE_M
+                else self._positive_setting(
+                    settings,
+                    "obstacle_lane_change_retry_pulse_distance_m",
+                    self.FOLLOWUP_PULSE_DISTANCE_M,
+                )
             )
             if target_line_confirmed or self.phase_distance_m >= pulse_distance:
                 self.phase = self.ACQUIRE_RIGHT_LINE
@@ -764,7 +778,13 @@ class AvisObstacleLaneChangeController:
                 pulse_steer = (
                     right_steer
                     if self.steering_pulse_index == 0
-                    else min(self.FOLLOWUP_STEER_MAGNITUDE, right_steer)
+                    else min(
+                        self._positive_setting(
+                            settings, "obstacle_lane_change_retry_steer",
+                            self.FOLLOWUP_STEER_MAGNITUDE,
+                        ),
+                        right_steer,
+                    )
                 )
                 steering_override = pulse_steer
 
@@ -1136,7 +1156,11 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
         self.model_obstacle_probability: float | None = None
         self.model_lane_probability: float | None = None
         self.model_lane_label: str | None = None
-        self.pass_sensor_stage = "WAITING_FOR_OBSTACLE"
+        self.model_lane_confidence: float | None = None
+        self.model_lane_confirm_frames = 0
+        self.last_lane_target_observation_id = None
+        self.pass_sensor_stage = "WAITING_FOR_INITIAL_CLEAR"
+        self.pass_sensor_initial_clear_frames = 0
         self.pass_sensor_seen_frames = 0
         self.pass_sensor_clear_frames = 0
         self.pass_sensor_started_at: float | None = None
@@ -1177,6 +1201,14 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
             observation_id is not None
             and observation_id != self.last_model_observation_id
         )
+        valid_output = False
+        model_requests_pass = False
+        model_reports_clear = False
+        model_reports_other_lane = False
+        target_lane = (
+            "left" if self.phase in {self.STEER_LEFT, self.ACQUIRE_LEFT_LINE}
+            else "right"
+        )
         if observation_is_new:
             self.last_model_observation_id = observation_id
             obstacle = (classifier_output or {}).get("obstacle_ahead", {})
@@ -1186,16 +1218,33 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
             try:
                 obstacle_probability = float(obstacle_probs.get("yes", 0.0))
                 no_probability = float(obstacle_probs.get("no", 0.0))
-                lane_probability = float(lane_probs.get("left", 0.0))
-                right_probability = float(lane_probs.get("right", 0.0))
+                lane_left_probability = float(lane_probs.get("left", 0.0))
+                lane_right_probability = float(lane_probs.get("right", 0.0))
             except (TypeError, ValueError):
-                obstacle_probability = no_probability = lane_probability = right_probability = 0.0
-            valid_output = bool((classifier_output or {}).get("valid")) and all(
-                math.isfinite(value)
-                for value in (
+                obstacle_probability = no_probability = 0.0
+                lane_left_probability = lane_right_probability = 0.0
+
+            obstacle_confidence = (
+                float(obstacle.get("confidence", max(obstacle_probability, no_probability)))
+                if isinstance(obstacle, dict) else 0.0
+            )
+            lane_confidence = (
+                float(lane.get("confidence", max(lane_left_probability, lane_right_probability)))
+                if isinstance(lane, dict) else 0.0
+            )
+            valid_output = (
+                bool((classifier_output or {}).get("valid"))
+                and all(math.isfinite(value) for value in (
                     obstacle_probability, no_probability,
-                    lane_probability, right_probability,
-                )
+                    lane_left_probability, lane_right_probability,
+                    obstacle_confidence, lane_confidence,
+                ))
+                and 0.0 <= obstacle_probability <= 1.0
+                and 0.0 <= no_probability <= 1.0
+                and 0.0 <= lane_left_probability <= 1.0
+                and 0.0 <= lane_right_probability <= 1.0
+                and 0.0 <= obstacle_confidence <= 1.0
+                and 0.0 <= lane_confidence <= 1.0
             )
             obstacle_threshold = self._nonnegative_setting(
                 settings, "obstacle_model_confidence_threshold", 0.65
@@ -1204,11 +1253,16 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
                 settings, "obstacle_lane_confidence_threshold", 0.65
             )
             self.model_obstacle_probability = obstacle_probability if valid_output else None
-            self.model_lane_probability = lane_probability if valid_output else None
-            self.model_lane_label = (
-                str(lane.get("label", "")).lower()
-                if valid_output and isinstance(lane, dict) else None
+            self.model_lane_probability = lane_left_probability if valid_output else None
+            lane_label = (
+                str(lane.get("label", "")).strip().lower()
+                if valid_output and isinstance(lane, dict) else ""
             )
+            if valid_output and lane_label not in {"left", "right"}:
+                lane_label = "left" if lane_left_probability > lane_right_probability else "right"
+            self.model_lane_label = lane_label if valid_output else None
+            self.model_lane_confidence = lane_confidence if valid_output else None
+
             obstacle_confirm_frames = max(
                 1, int(self._nonnegative_setting(
                     settings, "obstacle_model_confirm_frames", 3
@@ -1219,17 +1273,38 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
                     settings, "obstacle_model_rearm_frames", 3
                 ))
             )
-            model_requests_left_pass = (
+            model_requests_pass = (
                 valid_output
                 and obstacle_probability >= obstacle_threshold
-                and no_probability < obstacle_probability
-                and lane_probability >= lane_threshold
-                and lane_probability > right_probability
+                and obstacle_probability > no_probability
             )
             model_reports_clear = (
-                valid_output
-                and no_probability >= obstacle_probability
+                valid_output and no_probability >= obstacle_probability
             )
+
+            # The classifier's lane head reports the vehicle's current lane.
+            # A lane switch is complete only after distinct, confident model
+            # inferences agree with the requested destination lane.
+            changing_lane = self.phase in {
+                self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
+                self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
+            }
+            if changing_lane:
+                destination = (
+                    "left" if self.phase in {self.STEER_LEFT, self.ACQUIRE_LEFT_LINE}
+                    else "right"
+                )
+                if lane_label == destination and lane_confidence >= lane_threshold:
+                    self.model_lane_confirm_frames += 1
+                else:
+                    self.model_lane_confirm_frames = 0
+                model_reports_other_lane = (
+                    lane_label in {"left", "right"}
+                    and lane_label != destination
+                    and lane_confidence >= lane_threshold
+                )
+            else:
+                self.model_lane_confirm_frames = 0
 
             if (
                 self.phase == self.RIGHT_LANE
@@ -1249,26 +1324,27 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
                 and self.phase == self.RIGHT_LANE
                 and not self.model_trigger_latched
             ):
-                if model_requests_left_pass:
+                if model_requests_pass:
                     self.model_confirm_frames += 1
                 else:
                     self.model_confirm_frames = 0
                 if self.model_confirm_frames >= obstacle_confirm_frames:
                     self.model_trigger_latched = True
                     self.model_confirm_frames = 0
-                    self._start_target_line_tracking("left", observation_id)
+                    self._start_target_line_tracking("left", None)
                     self.phase = self.STEER_LEFT
                     self.phase_distance_m = 0.0
                     self.left_lane_distance_m = 0.0
                     self.left_lane_target_distance_m = None
                     self.last_obstacle_sensor = "MODEL"
                     self.return_reason = "MODEL_OBSTACLE_AHEAD"
-            elif not model_requests_left_pass:
+                    self.model_lane_confirm_frames = 0
+            elif self.phase == self.RIGHT_LANE and not model_requests_pass:
                 self.model_confirm_frames = 0
 
-        # Disable the legacy three-sensor trigger and distance-based return.
-        # The inherited controller still supplies its pulsed steering and
-        # stable target-line acquisition for both lane changes.
+        # The model head, not the lane-line geometry tracker, now owns lane
+        # acquisition. Keep the inherited movement-distance/pulse machinery,
+        # but never feed it line observations that could falsely confirm a lane.
         base_settings = dict(settings)
         base_settings["obstacle_lane_change_enabled"] = False
         base_settings["obstacle_front_threshold_cm"] = 0.0
@@ -1276,7 +1352,7 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
         base_settings["obstacle_clearance_after_pass_m"] = 0.0
         original_phase = self.phase
         pass_wait_active = original_phase in {
-            self.WAIT_OBSTACLE_PASS, self.RETURN_DELAY
+            self.WAIT_OBSTACLE_PASS, self.RETURN_DELAY, self.WAIT_PASS_CLEARANCE
         }
         if pass_wait_active:
             self.phase = self.LEFT_LANE
@@ -1284,28 +1360,88 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
             sensors=sensors,
             speed_kmh=speed_kmh,
             dt=dt,
-            left_x=left_x,
-            right_x=right_x,
+            left_x=None,
+            right_x=None,
             settings=base_settings,
             allow_new_maneuver=False,
-            observation_id=observation_id,
+            observation_id=None,
             frame_width=frame_width,
         )
         if pass_wait_active and self.phase == self.LEFT_LANE:
             self.phase = original_phase
 
         pid_reset = bool(result.get("pid_reset"))
-        if original_phase in {self.STEER_LEFT, self.ACQUIRE_LEFT_LINE} and self.phase == self.LEFT_LANE:
-            # The left lane is confirmed by the same temporal ROI tracker used
-            # by the CARLA lane-change manager's completion checks.
+        lane_frames_required = max(
+            1, int(self._nonnegative_setting(
+                settings, "obstacle_lane_line_confirm_frames", 3
+            ))
+        )
+        retry_steer = min(
+            1.0,
+            self._nonnegative_setting(settings, "obstacle_lane_change_retry_steer", 0.20),
+        )
+
+        # Confirm the left lane from the classifier's lane output.
+        if (
+            self.phase in {self.STEER_LEFT, self.ACQUIRE_LEFT_LINE}
+            and self.model_lane_confirm_frames >= lane_frames_required
+        ):
             self.phase = self.WAIT_OBSTACLE_PASS
-            self.pass_sensor_stage = "WAITING_FOR_OBSTACLE"
+            self.phase_distance_m = 0.0
+            self.left_lane_distance_m = 0.0
+            self._reset_target_line_tracking()
+            self.pass_sensor_stage = "WAITING_FOR_INITIAL_CLEAR"
+            self.pass_sensor_initial_clear_frames = 0
             self.pass_sensor_seen_frames = 0
             self.pass_sensor_clear_frames = 0
             self.pass_sensor_started_at = current_time
             self.pass_sensor_cleared_at = None
             self.pass_sensor_timeout = False
+            self.model_lane_confirm_frames = 0
+            pid_reset = True
+
+        # A confident prediction that still says the old lane triggers the
+        # next correction only after the previous pulse has finished. Retry
+        # pulses use the same smaller magnitude and shorter distance each time.
+        retry_left = (
+            self.phase == self.ACQUIRE_LEFT_LINE
+            and observation_is_new
+            and valid_output
+            and model_reports_other_lane
+        )
+        if retry_left:
+            self.phase = self.STEER_LEFT
+            self.phase_distance_m = 0.0
+            self.steering_pulse_index += 1
+            self.model_lane_confirm_frames = 0
+
+        retry_right = (
+            self.phase == self.ACQUIRE_RIGHT_LINE
+            and observation_is_new
+            and valid_output
+            and model_reports_other_lane
+        )
+        if retry_right:
+            self.phase = self.STEER_RIGHT
+            self.phase_distance_m = 0.0
+            self.steering_pulse_index += 1
+            self.model_lane_confirm_frames = 0
+
+        # Confirm the right lane with the exact same model-driven retry loop.
+        if (
+            self.phase in {self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE}
+            and self.model_lane_confirm_frames >= lane_frames_required
+        ):
+            self.phase = self.RIGHT_LANE
+            self.phase_distance_m = 0.0
+            self.left_lane_distance_m = 0.0
             self.left_lane_target_distance_m = None
+            self.last_obstacle_distance_m = None
+            self._reset_target_line_tracking()
+            self.model_lane_confirm_frames = 0
+            self.pass_sensor_stage = "PATTERN_CONFIRMED_3M"
+            self.return_reason = "RIGHT_LANE_CONFIRMED_BY_MODEL"
+            pid_reset = True
 
         right_sensor_cm = self.sensor_distances_cm(sensors)[2]
         presence_threshold = self._nonnegative_setting(
@@ -1324,30 +1460,43 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
                 settings, "obstacle_pass_sensor_clear_frames", 3
             ))
         )
-        return_delay = self._nonnegative_setting(
-            settings, "obstacle_return_delay_seconds", 2.0
-        )
         pass_timeout = self._nonnegative_setting(
             settings, "obstacle_pass_sensor_timeout_seconds", 30.0
         )
+        pass_clearance_distance_m = self._nonnegative_setting(
+            settings, "obstacle_pass_clearance_distance_m", 3.0
+        )
 
         if self.phase == self.WAIT_OBSTACLE_PASS:
-            if right_sensor_cm is not None and right_sensor_cm <= presence_threshold:
-                self.pass_sensor_seen_frames += 1
-                if self.pass_sensor_seen_frames >= presence_frames_required:
-                    self.pass_sensor_stage = "OBSTACLE_SEEN_ON_RIGHT"
-            else:
-                self.pass_sensor_seen_frames = 0
+            # Required sensor sequence: clear first, then obstacle present,
+            # then clear again. A sensor already seeing something at the
+            # moment the left lane is acquired cannot skip the initial clear.
+            if self.pass_sensor_stage == "WAITING_FOR_INITIAL_CLEAR":
+                if right_sensor_cm is not None and right_sensor_cm >= clear_threshold:
+                    self.pass_sensor_initial_clear_frames += 1
+                    if self.pass_sensor_initial_clear_frames >= clear_frames_required:
+                        self.pass_sensor_stage = "WAITING_FOR_OBSTACLE"
+                else:
+                    self.pass_sensor_initial_clear_frames = 0
 
-            if self.pass_sensor_stage == "OBSTACLE_SEEN_ON_RIGHT":
+            elif self.pass_sensor_stage == "WAITING_FOR_OBSTACLE":
+                if right_sensor_cm is not None and right_sensor_cm <= presence_threshold:
+                    self.pass_sensor_seen_frames += 1
+                    if self.pass_sensor_seen_frames >= presence_frames_required:
+                        self.pass_sensor_stage = "OBSTACLE_SEEN_ON_RIGHT"
+                else:
+                    self.pass_sensor_seen_frames = 0
+
+            elif self.pass_sensor_stage == "OBSTACLE_SEEN_ON_RIGHT":
                 if right_sensor_cm is not None and right_sensor_cm >= clear_threshold:
                     self.pass_sensor_clear_frames += 1
+                    if self.pass_sensor_clear_frames >= clear_frames_required:
+                        self.pass_sensor_cleared_at = current_time
+                        self.pass_sensor_stage = "OBSTACLE_CLEARED"
+                        self.phase = self.WAIT_PASS_CLEARANCE
+                        self.left_lane_distance_m = 0.0
                 else:
                     self.pass_sensor_clear_frames = 0
-                if self.pass_sensor_clear_frames >= clear_frames_required:
-                    self.pass_sensor_cleared_at = current_time
-                    self.pass_sensor_stage = "OBSTACLE_CLEARED"
-                    self.phase = self.RETURN_DELAY
 
             if (
                 self.phase == self.WAIT_OBSTACLE_PASS
@@ -1356,24 +1505,21 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
             ):
                 self.phase = self.FAILED
                 self.pass_sensor_timeout = True
-                self.return_reason = "RIGHT_SENSOR_PASS_CONFIRMATION_TIMEOUT"
+                self.return_reason = "RIGHT_SENSOR_SEQUENCE_TIMEOUT"
 
         if (
-            self.phase == self.RETURN_DELAY
-            and self.pass_sensor_cleared_at is not None
-            and current_time - self.pass_sensor_cleared_at >= return_delay
+            self.phase == self.WAIT_PASS_CLEARANCE
+            and self.left_lane_distance_m >= pass_clearance_distance_m
         ):
-            self._begin_right_return("RIGHT_SENSOR_CONFIRMED_PASS", observation_id)
-            # The inherited CARLA-style helper resets its default reason to
-            # DISTANCE; preserve the sensor-confirmed reason for AVIS telemetry.
-            self.return_reason = "RIGHT_SENSOR_CONFIRMED_PASS"
+            self._begin_right_return("RIGHT_SENSOR_SEQUENCE_CONFIRMED_AFTER_3M", None)
+            self.pass_sensor_stage = "PATTERN_CONFIRMED_3M"
+            self.model_lane_confirm_frames = 0
+            self.return_reason = "RIGHT_SENSOR_SEQUENCE_CONFIRMED_AFTER_3M"
             pid_reset = True
 
-        # The side-angle is selected only after the car has acquired the left
-        # lane; restore the normal sensor spread before steering back right.
         sensor_angle_override = (
             int(settings.get("obstacle_pass_sensor_angle", settings.get("sensor_angle", 40)))
-            if self.phase in {self.WAIT_OBSTACLE_PASS, self.RETURN_DELAY}
+            if self.phase in {self.WAIT_OBSTACLE_PASS, self.WAIT_PASS_CLEARANCE, self.RETURN_DELAY}
             else int(settings.get("sensor_angle", 40))
         )
         search_limit = self._nonnegative_setting(
@@ -1385,33 +1531,59 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
                 self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
                 self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
             }
-            and search_limit > 0
+            and search_limit > 0.0
             and self.line_search_distance_m >= search_limit
         ):
             self.phase = self.FAILED
-            self.return_reason = "TARGET_LANE_LINE_SEARCH_TIMEOUT"
+            self.return_reason = "MODEL_LANE_CHANGE_SEARCH_TIMEOUT"
 
         safe_stop = self.phase == self.FAILED
         if safe_stop:
-            result["steering_override"] = 0.0
+            steering_override = 0.0
+        elif self.phase == self.STEER_LEFT:
+            configured = self._nonnegative_setting(
+                settings, "obstacle_lane_change_left_steer", 0.30
+            )
+            steering_override = -min(1.0, configured if self.steering_pulse_index == 0 else retry_steer)
+        elif self.phase == self.STEER_RIGHT:
+            configured = self._nonnegative_setting(
+                settings, "obstacle_lane_change_right_steer", 0.30
+            )
+            steering_override = min(1.0, configured if self.steering_pulse_index == 0 else retry_steer)
+        elif self.phase in {self.ACQUIRE_LEFT_LINE, self.ACQUIRE_RIGHT_LINE}:
+            steering_override = 0.0
+        else:
+            steering_override = None
+
+        active_phases = {
+            self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
+            self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
+        }
+        attempt_number = (
+            self.steering_pulse_index + 1 if self.phase in active_phases else 0
+        )
+        clearance_remaining = max(
+            0.0, pass_clearance_distance_m - self.left_lane_distance_m
+        ) if self.phase == self.WAIT_PASS_CLEARANCE else 0.0
         result.update({
             "phase": self.phase,
             "lane_side": (
-                "left"
-                if self.phase in {
+                "left" if self.phase in {
                     self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
-                    self.LEFT_LANE, self.WAIT_OBSTACLE_PASS, self.RETURN_DELAY,
-                }
-                else "right"
+                    self.LEFT_LANE, self.WAIT_OBSTACLE_PASS,
+                    self.WAIT_PASS_CLEARANCE, self.RETURN_DELAY,
+                } else "right"
             ),
-            "target_lane": "right" if self.phase in {
-                self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
-            } else "left" if self.phase in {
+            "target_lane": "left" if self.phase in {
                 self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
-                self.LEFT_LANE, self.WAIT_OBSTACLE_PASS, self.RETURN_DELAY,
+                self.LEFT_LANE, self.WAIT_OBSTACLE_PASS,
+                self.WAIT_PASS_CLEARANCE, self.RETURN_DELAY,
             } else "right",
             "pid_reset": pid_reset,
             "safe_stop": safe_stop,
+            "steering_override": steering_override,
+            "active": self.phase in active_phases,
+            "failed": safe_stop,
             "obstacle_latched": self.model_trigger_latched,
             "obstacle_trigger_sensor": "MODEL" if self.model_trigger_latched else self.last_obstacle_sensor,
             "return_reason": self.return_reason,
@@ -1420,19 +1592,32 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
             "obstacle_model_probability": self.model_obstacle_probability,
             "obstacle_lane_probability": self.model_lane_probability,
             "obstacle_lane_prediction": self.model_lane_label,
+            "obstacle_lane_confidence": self.model_lane_confidence,
+            "model_lane_confirm_frames": self.model_lane_confirm_frames,
+            "lane_change_attempt_number": attempt_number,
+            "lane_change_retry_steer": retry_steer,
+            "lane_change_retry_pulse_distance_m": self._nonnegative_setting(
+                settings, "obstacle_lane_change_retry_pulse_distance_m",
+                self.FOLLOWUP_PULSE_DISTANCE_M,
+            ),
             "pass_sensor_stage": self.pass_sensor_stage,
             "pass_sensor_right_cm": right_sensor_cm,
+            "pass_sensor_initial_clear_frames": self.pass_sensor_initial_clear_frames,
             "pass_sensor_seen_frames": self.pass_sensor_seen_frames,
             "pass_sensor_clear_frames": self.pass_sensor_clear_frames,
             "pass_sensor_cleared_at": self.pass_sensor_cleared_at,
-            "return_delay_remaining_s": (
-                max(0.0, return_delay - (current_time - self.pass_sensor_cleared_at))
-                if self.phase == self.RETURN_DELAY and self.pass_sensor_cleared_at is not None
-                else 0.0
+            "pass_clearance_distance_m": pass_clearance_distance_m,
+            "pass_clearance_travelled_m": (
+                self.left_lane_distance_m
+                if self.phase == self.WAIT_PASS_CLEARANCE else 0.0
             ),
+            "pass_clearance_remaining_m": clearance_remaining,
+            "return_delay_remaining_s": 0.0,
             "pass_sensor_timeout": self.pass_sensor_timeout,
             "sensor_angle_override": sensor_angle_override,
             "search_limit_reached": search_limit_reached,
+            "line_confirm_frames": 0,
+            "target_line_confirmed": False,
         })
         return result
 
