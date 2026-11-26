@@ -1621,8 +1621,7 @@ def test_avis_dashboard_roi_editor_is_available_for_both_vision_backends(tmp_pat
     assert 'data-panel="roi"' in html
     assert 'id="drivableAreaView"' in html
     assert 'src="/stream/drivable-area"' in html
-    assert "displayed in green for inspection only" in html
-    assert "not used for steering or vehicle control" in html
+    assert "optional, temporally filtered lane-centre correction" in html
     assert client.get("/stream/drivable-mask").status_code == 404
     state.publish_images({"drivable-area": b"test-jpeg"})
     assert state.image_snapshot("drivable-area")[0] == b"test-jpeg"
@@ -1775,7 +1774,6 @@ def test_avis_model_extracts_lane_lines_and_optional_drivable_area_only(monkeypa
     assert vehicles_mask is None
 
 
-@pytest.mark.parametrize("active_side", [None, "left", "right"])
 def _shifted_drivable_mask(center_x=130, *, height=192, width=320):
     mask = np.zeros((height, width), dtype=np.uint8)
     top = int(0.60 * height)
@@ -1970,6 +1968,7 @@ def test_avis_steering_override_uses_existing_rate_limit_and_tracks_error():
     assert controller.integral == pytest.approx(0.0)
 
 
+@pytest.mark.parametrize("active_side", [None, "left", "right"])
 def test_avis_model_lane_center_uses_midpoint_regardless_of_sticky_side(
     monkeypatch, active_side
 ):
