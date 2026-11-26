@@ -1170,14 +1170,14 @@ class AvisCombinedVisionProcessor:
 
 
 class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
-    """Model-triggered lane changes with a fixed 10 m return distance."""
+    """Model-triggered lane changes with a fixed 7 m return distance."""
 
     WAIT_RETURN_DISTANCE = "WAIT_RETURN_DISTANCE"
     # Compatibility aliases for integrations that used the former phase names.
     WAIT_OBSTACLE_PASS = WAIT_RETURN_DISTANCE
     WAIT_PASS_CLEARANCE = WAIT_RETURN_DISTANCE
     RETURN_DELAY = WAIT_RETURN_DISTANCE
-    RETURN_AFTER_DISTANCE_M = 10.0
+    RETURN_AFTER_DISTANCE_M = 7.0
 
     def __init__(self) -> None:
         super().__init__()
@@ -1435,7 +1435,7 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
             self.phase_distance_m = 0.0
             self.left_lane_distance_m = 0.0
             self._reset_target_line_tracking()
-            self.return_distance_stage = "WAITING_FOR_10M"
+            self.return_distance_stage = "WAITING_FOR_7M"
             self.model_lane_confirm_frames = 0
             pid_reset = True
 
@@ -1477,15 +1477,15 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
             pid_reset = True
 
         # The return trigger is deliberately independent of all side sensors:
-        # count a fixed 10 m from the moment the model confirms the left lane.
+        # count a fixed 7 m from the moment the model confirms the left lane.
         return_distance_m = self.RETURN_AFTER_DISTANCE_M
         if (
             self.phase == self.WAIT_RETURN_DISTANCE
             and self.left_lane_distance_m >= return_distance_m
         ):
-            self._begin_right_return("FIXED_10M_AFTER_LEFT_LANE", None)
+            self._begin_right_return("FIXED_7M_AFTER_LEFT_LANE", None)
             self.left_lane_distance_m = 0.0
-            self.return_distance_stage = "10M_REACHED"
+            self.return_distance_stage = "7M_REACHED"
             self.model_lane_confirm_frames = 0
             pid_reset = True
 
@@ -1913,6 +1913,10 @@ def _create_avis_vision_processor(
             frame = rgb_frame if rgb_frame is not None else semantic_frame
             result = super().detect(semantic_frame, rgb_frame=rgb_frame)
 
+            debug = result.get("debug") if isinstance(result, dict) else None
+            if isinstance(debug, dict):
+                debug["hough_fallback_sides"] = list(self._last_hough_fallback_sides)
+
             # Adaptive ROI observes the same direct model-derived lane positions
             # that feed steering. Drivable-area is deliberately not consulted.
             if (
@@ -2005,12 +2009,103 @@ def _create_avis_vision_processor(
                 if drivable_class_id is not None
                 else None
             )
+            lane_mask = self._merge_missing_roi_hough_lines(
+                camera_frame,
+                lane_mask,
+            )
             return drivable_mask, lane_mask, None
 
         def __init__(self, mode: str):
             super().__init__(mode)
+            from avis_classical_vision import AvisClassicalVisionProcessor
+
             self.adaptive_roi_controller = adaptive_roi_controller
+            self._hough_fallback_processor = AvisClassicalVisionProcessor(settings)
+            self._last_hough_fallback_sides: tuple[str, ...] = ()
             self.last_lane_half_width: float | None = None
+            print(
+                "[AVIS] Lane selection uses model lane pixels first and "
+                "the classical Hough fallback for empty LL/RL ROIs."
+            )
+
+        def update_hough_fallback_settings(self, new_settings: dict[str, Any]) -> None:
+            """Keep fallback thresholds in sync with live AVIS dashboard settings."""
+            self._hough_fallback_processor.update_settings(new_settings)
+
+        def _merge_missing_roi_hough_lines(self, camera_frame, lane_mask):
+            import numpy as np
+            import config_city as avis_conf
+
+            frame = np.asarray(camera_frame)
+            model_mask = np.asarray(lane_mask)
+            if model_mask.ndim != 2 or frame.ndim < 2:
+                self._last_hough_fallback_sides = ()
+                return lane_mask
+
+            height, width = frame.shape[:2]
+            roi_settings = {
+                setting_key: float(getattr(avis_conf, config_key))
+                for setting_key, config_key in AVIS_ROI_CONFIG_KEYS.items()
+            }
+            fallback_settings = self._hough_fallback_processor.settings_snapshot()
+            minimum_pixels = max(
+                1,
+                int(getattr(
+                    self,
+                    "min_side_pixels",
+                    fallback_settings["min_side_pixels"],
+                )),
+            )
+            missing_sides: list[str] = []
+            model_bounds: dict[str, tuple[int, int, int, int]] = {}
+
+            # Match VisionProcessor.detect()'s integer ROI coordinates and line
+            # validity threshold; its boundary extractor rejects fewer pixels.
+            for side, prefix in (("left", "ll"), ("right", "rl")):
+                top = int(roi_settings[f"{prefix}_top_roi"] * height)
+                bottom = int(roi_settings[f"{prefix}_bottom_roi"] * height)
+                left = int(roi_settings[f"{prefix}_left_roi"] * width)
+                right = int(roi_settings[f"{prefix}_right_roi"] * width)
+                top = max(0, min(height, top))
+                bottom = max(0, min(height, bottom))
+                left = max(0, min(width, left))
+                right = max(0, min(width, right))
+                model_bounds[side] = (top, bottom, left, right)
+
+                if bottom <= top or right <= left:
+                    missing_sides.append(side)
+                    continue
+                model_roi = model_mask[top:bottom, left:right]
+                if int(np.count_nonzero(model_roi)) < minimum_pixels:
+                    missing_sides.append(side)
+
+            self._last_hough_fallback_sides = tuple(missing_sides)
+            if not missing_sides:
+                return lane_mask
+
+            # Reuse the exact HLS/Canny/HoughLinesP and temporal selector pipeline
+            # from classical-only mode, and run it only on model-missing ROIs.
+            fallback = self._hough_fallback_processor.detect_roi_fallbacks(
+                frame,
+                missing_sides,
+                roi_settings=roi_settings,
+            )
+            fallback_mask = np.asarray(fallback["lane_mask"])
+            if fallback_mask.shape != model_mask.shape:
+                raise RuntimeError(
+                    "AVIS Hough fallback mask does not match the camera frame: "
+                    f"{fallback_mask.shape!r} vs {model_mask.shape!r}."
+                )
+
+            merged_mask = np.ascontiguousarray(model_mask, dtype=np.uint8).copy()
+            for side in missing_sides:
+                top, bottom, left, right = model_bounds[side]
+                if bottom > top and right > left:
+                    # Replace insufficient model pixels instead of mixing
+                    # segmentation noise with the Hough-selected line.
+                    merged_mask[top:bottom, left:right] = 0
+            merged_mask[fallback_mask > 0] = 255
+            return merged_mask
             print(
                 "[AVIS] Lane selection uses the raw lane_lines segmentation "
                 "inside each LL/RL ROI; drivable-area is debug-only."
@@ -2409,6 +2504,7 @@ def run_avis(args: argparse.Namespace) -> int:
                         vision_processor.lane_center_alpha = float(
                             current_settings["center_smoothing"]
                         )
+                        vision_processor.update_hough_fallback_settings(current_settings)
 
                     if any(
                         settings.get(key) != current_settings.get(key)

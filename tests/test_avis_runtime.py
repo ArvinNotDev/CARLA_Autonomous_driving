@@ -1480,7 +1480,7 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     assert 'id="obstacle_pass_sensor_clear_threshold_cm"' not in html
     assert 'id="obstacle_return_delay_seconds"' not in html
     assert 'id="obstacle_pass_clearance_distance_m"' not in html
-    assert "exactly 10 metres" in html
+    assert "exactly 7 metres" in html
     assert "Right-side sensor readings and sensor timeouts do not control this return." in html
     assert 'id="obstacle_lane_change_retry_steer"' in html
     assert 'id="obstacle_lane_change_retry_pulse_distance_m"' in html
@@ -1488,7 +1488,7 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     assert 'id="obstacle_clearance_after_pass_m"' not in html
     assert 'id="obstacle_return_distance_m"' not in html
     assert 'id="obstacle_front_threshold_cm"' not in html
-    assert "exactly 10 metres" in html
+    assert "exactly 7 metres" in html
     assert "Right-side sensor readings and sensor timeouts do not control this return." in html
     assert 'id="obstacle_lane_line_search_max_distance_m"' not in html
     assert "dedicated low lane-change speed" in html
@@ -1650,6 +1650,86 @@ def test_avis_client_sends_reverse_speed_only_for_manual_controls():
     assert fake_car.speed_commands == [-30, 0]
     assert fake_car.steering_commands == [-20, 0]
 
+
+
+@pytest.mark.parametrize("missing_side", ["left", "right"])
+def test_avis_model_uses_hough_only_for_roi_without_enough_model_lane_pixels(
+    monkeypatch, missing_side
+):
+    import config_city as avis_conf
+    import vision.city_vision_processing as shared_vision
+
+    class FakeVisionProcessor:
+        def __init__(self, mode):
+            self.mode = mode
+
+    monkeypatch.setattr(shared_vision, "VisionProcessor", FakeVisionProcessor)
+    for name, value in {
+        "LL_TOP_ROI": 0.0,
+        "LL_BOTTOM_ROI": 1.0,
+        "LL_LEFT_ROI": 0.0,
+        "LL_RIGHT_ROI": 0.5,
+        "RL_TOP_ROI": 0.0,
+        "RL_BOTTOM_ROI": 1.0,
+        "RL_LEFT_ROI": 0.5,
+        "RL_RIGHT_ROI": 1.0,
+    }.items():
+        monkeypatch.setattr(avis_conf, name, value, raising=False)
+
+    settings = dict(DEFAULT_AVIS_SETTINGS)
+    settings["min_side_pixels"] = 4
+    processor = _create_avis_vision_processor("ultralytics", settings)
+    processor.min_side_pixels = 4
+    processor.lane_class_id = 2
+    processor.drivable_class_id = None
+
+    semantic_map = np.zeros((12, 20), dtype=np.uint8)
+    present_side = "right" if missing_side == "left" else "left"
+    if present_side == "left":
+        semantic_map[2:8, 4] = 2
+    else:
+        semantic_map[2:8, 15] = 2
+    if missing_side == "left":
+        semantic_map[2, 2] = 2
+        fallback_x = 3
+    else:
+        semantic_map[2, 17] = 2
+        fallback_x = 16
+
+    processor._predict_ultralytics = lambda _frame: [
+        SimpleNamespace(semantic_mask=SimpleNamespace(data=semantic_map))
+    ]
+    frame = np.zeros((12, 20, 3), dtype=np.uint8)
+    fallback_mask = np.zeros((12, 20), dtype=np.uint8)
+    fallback_mask[3:9, fallback_x] = 255
+    calls = []
+
+    def fake_hough_fallback(camera_frame, sides, *, roi_settings):
+        assert camera_frame.shape == frame.shape
+        calls.append(tuple(sides))
+        return {"lane_mask": fallback_mask}
+
+    monkeypatch.setattr(
+        processor._hough_fallback_processor,
+        "detect_roi_fallbacks",
+        fake_hough_fallback,
+    )
+
+    drivable_mask, merged_mask, vehicles_mask = (
+        processor._extract_masks_from_ultralytics(frame)
+    )
+
+    assert drivable_mask is None
+    assert vehicles_mask is None
+    assert calls == [(missing_side,)]
+    assert processor._last_hough_fallback_sides == (missing_side,)
+    assert np.count_nonzero(merged_mask[:, fallback_x]) == 6
+    if missing_side == "left":
+        assert merged_mask[2, 2] == 0
+        assert np.count_nonzero(merged_mask[:, 15]) == 6
+    else:
+        assert merged_mask[2, 17] == 0
+        assert np.count_nonzero(merged_mask[:, 4]) == 6
 
 
 def test_avis_model_extracts_lane_lines_and_optional_drivable_area_only(monkeypatch):
@@ -2106,6 +2186,44 @@ def test_adaptive_roi_freezes_left_roi_during_right_change():
 
 
 
+def test_classical_roi_fallback_uses_houghlinesp_only_for_requested_roi(monkeypatch):
+    import avis_lane_line_selection as selector_module
+
+    settings = dict(DEFAULT_AVIS_SETTINGS)
+    settings.update({
+        "ll_top_roi": 0.0,
+        "ll_bottom_roi": 1.0,
+        "ll_left_roi": 0.0,
+        "ll_right_roi": 0.5,
+        "rl_top_roi": 0.0,
+        "rl_bottom_roi": 1.0,
+        "rl_left_roi": 0.5,
+        "rl_right_roi": 1.0,
+    })
+    processor = AvisClassicalVisionProcessor(settings)
+    frame = np.zeros((120, 200, 3), dtype=np.uint8)
+    hough_calls = []
+
+    def fake_hough(binary, *, rho, theta, threshold, minLineLength, maxLineGap):
+        hough_calls.append((binary.shape, threshold, minLineLength, maxLineGap))
+        return np.asarray([[[20, 10, 20, 110]]], dtype=np.int32)
+
+    monkeypatch.setattr(selector_module.cv2, "HoughLinesP", fake_hough)
+    result = processor.detect_roi_fallbacks(
+        frame,
+        ["left"],
+        roi_settings=settings,
+    )
+
+    assert len(hough_calls) == 1
+    assert hough_calls[0][0] == (120, 100)
+    assert hough_calls[0][1] == settings["hough_threshold"]
+    assert result["left_x"] == pytest.approx(20.0)
+    assert result["right_x"] is None
+    assert np.count_nonzero(result["lane_mask"]) > 0
+    assert np.count_nonzero(result["lane_mask"][:, 100:]) == 0
+
+
 def test_avis_classical_vision_runs_hough_inside_temporarily_expanded_roi(monkeypatch):
     settings = dict(DEFAULT_AVIS_SETTINGS)
     adaptive = AvisAdaptiveROIController(settings)
@@ -2286,8 +2404,8 @@ def test_model_lane_output_drives_gentle_retries_in_both_directions():
         observation_id=5, frame_width=320, now=10.4,
     )
     assert left_confirmed["phase"] == controller.WAIT_RETURN_DISTANCE
-    assert left_confirmed["return_distance_stage"] == "WAITING_FOR_10M"
-    assert left_confirmed["return_distance_remaining_m"] == pytest.approx(10.0)
+    assert left_confirmed["return_distance_stage"] == "WAITING_FOR_7M"
+    assert left_confirmed["return_distance_remaining_m"] == pytest.approx(7.0)
 
     def wait_tick(sensors, observation_id, speed, dt, lane_left=0.90):
         return controller.update(
@@ -2305,23 +2423,20 @@ def test_model_lane_output_drives_gentle_retries_in_both_directions():
     wait_25 = wait_tick([0, 0, 0], 6, 36.0, 0.25)
     assert wait_25["phase"] == controller.WAIT_RETURN_DISTANCE
     assert wait_25["return_distance_travelled_m"] == pytest.approx(2.5)
-    assert wait_25["return_distance_remaining_m"] == pytest.approx(7.5)
+    assert wait_25["return_distance_remaining_m"] == pytest.approx(4.5)
 
     wait_50 = wait_tick([None, None, None], 7, 36.0, 0.25)
     assert wait_50["phase"] == controller.WAIT_RETURN_DISTANCE
     assert wait_50["return_distance_travelled_m"] == pytest.approx(5.0)
 
-    wait_75 = wait_tick([1500, 1500, 1500], 8, 36.0, 0.25)
-    assert wait_75["phase"] == controller.WAIT_RETURN_DISTANCE
-    assert wait_75["return_distance_remaining_m"] == pytest.approx(2.5)
+    wait_699 = wait_tick([1500, 1500, 1500], 8, 28.656, 0.25)
+    assert wait_699["phase"] == controller.WAIT_RETURN_DISTANCE
+    assert wait_699["return_distance_travelled_m"] == pytest.approx(6.99)
+    assert wait_699["return_distance_remaining_m"] == pytest.approx(0.01)
 
-    wait_999 = wait_tick([0, 0, 0], 9, 35.856, 0.25)
-    assert wait_999["phase"] == controller.WAIT_RETURN_DISTANCE
-    assert wait_999["return_distance_travelled_m"] == pytest.approx(9.99)
-
-    return_started = wait_tick([0, 0, 0], 10, 0.144, 0.25, lane_left=0.10)
+    return_started = wait_tick([0, 0, 0], 9, 0.144, 0.25, lane_left=0.10)
     assert return_started["phase"] == controller.STEER_RIGHT
-    assert return_started["return_reason"] == "FIXED_10M_AFTER_LEFT_LANE"
+    assert return_started["return_reason"] == "FIXED_7M_AFTER_LEFT_LANE"
     assert return_started["steering_override"] == pytest.approx(0.30)
     assert return_started["lane_change_attempt_number"] == 1
 
@@ -2345,16 +2460,16 @@ def test_model_lane_output_drives_gentle_retries_in_both_directions():
     assert right_confirmed["return_reason"] == "RIGHT_LANE_CONFIRMED_BY_MODEL"
 
 
-def test_fixed_ten_meter_return_ignores_right_sensor_and_has_no_sensor_timeout():
+def test_fixed_seven_meter_return_ignores_right_sensor_and_has_no_sensor_timeout():
     controller = AvisModelObstacleLaneChangeController()
     settings = dict(DEFAULT_AVIS_SETTINGS)
     settings["obstacle_pass_sensor_timeout_seconds"] = 0.1
     settings["obstacle_lane_line_search_max_distance_m"] = 40.0
     controller.phase = controller.WAIT_RETURN_DISTANCE
     controller.left_lane_distance_m = 0.0
-    controller.return_distance_stage = "WAITING_FOR_10M"
+    controller.return_distance_stage = "WAITING_FOR_7M"
 
-    for observation_id in range(1, 4):
+    for observation_id in range(1, 3):
         state = controller.update(
             sensors=[0, 0, 0],
             speed_kmh=36.0,
@@ -2370,10 +2485,25 @@ def test_fixed_ten_meter_return_ignores_right_sensor_and_has_no_sensor_timeout()
         assert state["phase"] == controller.WAIT_RETURN_DISTANCE
         assert state["safe_stop"] is False
 
+    just_before_return = controller.update(
+        sensors=[0, 0, 0],
+        speed_kmh=36.0,
+        dt=0.1,
+        left_x=None,
+        right_x=None,
+        settings=settings,
+        classifier_output=None,
+        observation_id=3,
+        frame_width=320,
+        now=3000.0,
+    )
+    assert just_before_return["phase"] == controller.WAIT_RETURN_DISTANCE
+    assert just_before_return["return_distance_travelled_m"] == pytest.approx(6.0)
+
     state = controller.update(
         sensors=[0, 0, 0],
         speed_kmh=36.0,
-        dt=0.25,
+        dt=0.1,
         left_x=None,
         right_x=None,
         settings=settings,

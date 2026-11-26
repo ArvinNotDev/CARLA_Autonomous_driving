@@ -861,7 +861,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
           <div class="field full"><div class="hint">During both lane changes, AVIS uses the dedicated low lane-change speed and shorter steering pulses. It keeps retrying until the model confirms the destination lane; no distance sensors are used.</div></div>
         </div>
         <div class="section-label">Return to the right lane</div>
-        <div class="hint">After the model confirms the vehicle has entered the left lane, AVIS travels exactly 10 metres, then starts the right-lane change. The return uses the same model-confirmed steering pulse, pause, and gentler retry sequence as the initial move to the left. Right-side sensor readings and sensor timeouts do not control this return.</div>
+        <div class="hint">After the model confirms the vehicle has entered the left lane, AVIS travels exactly 7 metres, then starts the right-lane change. The return uses the same model-confirmed steering pulse, pause, and gentler retry sequence as the initial move to the left. Right-side sensor readings and sensor timeouts do not control this return.</div>
         <div class="section-label">Adaptive lane ROI recovery</div>
         <div class="fields">
           <div class="field full"><label for="adaptive_roi_enabled">Adaptive ROI expansion</label><select id="adaptive_roi_enabled" data-setting="adaptive_roi_enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>

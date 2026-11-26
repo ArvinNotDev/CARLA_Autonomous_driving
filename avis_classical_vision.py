@@ -386,6 +386,92 @@ class AvisClassicalVisionProcessor:
             cv2.LINE_AA,
         )
 
+    def detect_roi_fallbacks(
+        self,
+        frame: np.ndarray,
+        sides: list[str] | tuple[str, ...],
+        *,
+        roi_settings: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Run the standalone Hough pipeline only inside the requested ROIs."""
+        if not isinstance(frame, np.ndarray) or frame.size == 0:
+            raise ValueError("AVIS Hough fallback requires a non-empty BGR frame.")
+        if frame.ndim != 3 or frame.shape[2] < 3 or frame.dtype != np.uint8:
+            raise ValueError(
+                f"Expected a uint8 BGR image with three channels; received {frame.shape!r}."
+            )
+
+        requested_sides = tuple(dict.fromkeys(
+            str(side).strip().lower() for side in sides
+        ))
+        invalid_sides = sorted(set(requested_sides) - {"left", "right"})
+        if invalid_sides:
+            raise ValueError(
+                f"Unsupported Hough fallback ROI side(s): {', '.join(invalid_sides)}."
+            )
+
+        frame = np.ascontiguousarray(frame[:, :, :3])
+        height, width = frame.shape[:2]
+        settings = self.settings_snapshot()
+        if isinstance(roi_settings, dict):
+            for key in self.ROI_KEYS:
+                if key in roi_settings:
+                    settings[key] = roi_settings[key]
+
+        line_mask = np.zeros((height, width), dtype=np.uint8)
+        threshold_mask = np.zeros((height, width), dtype=np.uint8)
+        bounds_by_side: dict[str, tuple[int, int, int, int]] = {}
+        selections: dict[str, Any] = {}
+        minimum_pixels = max(1, int(settings["min_side_pixels"]))
+        coordinates: dict[str, int | None] = {"left_x": None, "right_x": None}
+        angles: dict[str, float | None] = {
+            "left_line_angle_deg": None,
+            "right_line_angle_deg": None,
+        }
+
+        for side in requested_sides:
+            prefix = "ll" if side == "left" else "rl"
+            top, bottom, left, right = self._roi_bounds(
+                (height, width), settings, prefix
+            )
+            bounds_by_side[side] = (top, bottom, left, right)
+            selected_top, selected_bottom, selection = self._hough_roi_mask(
+                frame,
+                prefix,
+                settings,
+                line_mask,
+                threshold_mask,
+            )
+            selections[side] = selection
+            if selected_bottom <= selected_top or right <= left:
+                continue
+
+            coordinates[f"{side}_x"] = self._boundary_from_roi(
+                line_mask,
+                selected_top,
+                selected_bottom,
+                left,
+                right,
+                minimum_pixels,
+            )
+            angles[f"{side}_line_angle_deg"] = self._line_angle_from_roi(
+                line_mask,
+                selected_top,
+                selected_bottom,
+                left,
+                right,
+                minimum_pixels,
+            )
+
+        return {
+            "lane_mask": line_mask,
+            "threshold_mask": threshold_mask,
+            "roi_bounds": bounds_by_side,
+            "selections": selections,
+            **coordinates,
+            **angles,
+        }
+
     def detect(
         self,
         semantic_frame: np.ndarray | None,
