@@ -688,7 +688,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
 .panel-content.active{display:grid}
 .panel-content>.panel,.panel-content>form.panel{margin:0}
 .metrics{margin:0 0 2px}
-.views .view:first-child{grid-column:1/-1}
+.views .view:first-child,.views .view:last-child{grid-column:1/-1}
 .roi-editor-wrap{background:#030812}
 .roi-editor-wrap canvas{outline:0}
 @media(max-width:980px){.grid{grid-template-columns:1fr}.topline{align-items:start;flex-direction:column}.metrics{grid-template-columns:repeat(2,1fr)}.right-panel{position:static;max-height:none;overflow:visible}}
@@ -729,7 +729,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
         <div class="views">
           <div class="view"><div class="view-title"><span>AVIS camera / ROI editor</span><small>Drag to move · handles to resize</small></div><div class="roi-editor-wrap"><img id="roiSource" class="roi-source" src="/stream/camera" alt="AVIS camera"><canvas id="roiCanvas"></canvas></div><div class="roi-toolbar"><button class="btn active" id="roiLeftButton" type="button">Left ROI</button><button class="btn" id="roiRightButton" type="button">Right ROI</button><button class="btn" id="resetRoiButton" type="button">Reset selected ROI</button><label class="hint"><input type="checkbox" id="showRois" checked> Show both ROIs</label><span class="message" id="roiCanvasMessage"></span></div><div class="roi-help">These LL / RL rectangles are applied directly to the model's lane_lines mask. Model mode no longer runs Hough candidate ranking or temporal line selection; Classical CV keeps its own image-processing pipeline.</div></div>
           <div class="view"><div class="view-title"><span>Lane overlay</span><small>Detected boundaries</small></div><img src="/stream/combined" alt="Lane overlay"></div>
-          <div class="view"><div class="view-title"><span>Selected lane mask</span><small>Red pixels = raw model lane-line mask</small></div><img src="/stream/line-mask" alt="Selected lane mask"></div>
+          <div class="view"><div class="view-title"><span>Lane-line mask</span><small>Red pixels = lane-line pixels used for tracking</small></div><img src="/stream/line-mask" alt="Lane-line mask"></div>
           <div class="view" id="drivableAreaView"><div class="view-title"><span>Drivable Area mask</span><small>Green pixels = model output · debug only</small></div><img src="/stream/drivable-area" alt="Model drivable area mask"></div>
         </div>
         <div class="hint" id="backendDescription">The semantic model's lane_lines pixels are read directly inside each ROI. Its drivable-area mask is displayed in green for inspection only and is not used for steering or vehicle control.</div>
