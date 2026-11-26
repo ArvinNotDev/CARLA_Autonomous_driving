@@ -71,6 +71,10 @@ def test_avis_profile_is_a_stable_v2_subset_without_carla_only_settings():
     assert stable["MODEL_PATH"] == "models_and_datasets/lane_and_drivable-area_model.pt"
     assert avis["MODEL_PATH"] == "models_and_datasets/Avis_models/lane_and_drivable-area_model_Avis.pt"
     assert (ROOT / avis["MODEL_PATH"]).is_file()
+    assert AvisObstacleLaneClassifier.DEFAULT_PATH == (
+        ROOT / "models_and_datasets" / "Avis_models" / "obstacle_and_lane_Avis_model.onnx"
+    )
+    assert AvisObstacleLaneClassifier.DEFAULT_PATH.is_file()
     assert avis["MIN_SPEED_KMH"] == stable["MIN_SPEED_KMH"]
     assert avis["MAX_SPEED_KMH"] == stable["MAX_SPEED_KMH"]
     assert "LIDAR_ENABLED" not in avis
