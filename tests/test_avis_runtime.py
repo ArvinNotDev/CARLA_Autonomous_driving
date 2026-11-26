@@ -20,6 +20,7 @@ from avis_runtime import (
     normalize_avis_controls,
     normalize_avis_manual_controls,
     select_avis_target_speed,
+    select_avis_lane_change_speed,
     _create_avis_vision_processor,
 )
 
@@ -34,6 +35,13 @@ from avis_dashboard import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_avis_lane_change_speed_uses_lower_configured_target_than_normal_minimum():
+    assert select_avis_lane_change_speed(8.0, 4.5) == pytest.approx(4.5)
+    assert select_avis_lane_change_speed(3.0, 4.5) == pytest.approx(3.0)
+    with pytest.raises(ValueError):
+        select_avis_lane_change_speed(0.0, 4.5)
 
 
 def test_avis_fps_monitor_calculates_rolling_rate_and_expires_stale_samples():
@@ -1402,6 +1410,7 @@ def test_avis_dashboard_accepts_decimal_obstacle_tuning_without_step_restriction
     updated = validate_avis_settings(
         DEFAULT_AVIS_SETTINGS,
         {
+            "obstacle_lane_change_speed_kmh": 4.2,
             "obstacle_lane_change_steer_distance_m": 1.37,
             "obstacle_lane_change_left_steer": 0.237,
             "obstacle_lane_change_right_steer": 0.193,
@@ -1410,6 +1419,7 @@ def test_avis_dashboard_accepts_decimal_obstacle_tuning_without_step_restriction
             "obstacle_sensor_clear_threshold_cm": 500,
         },
     )
+    assert updated["obstacle_lane_change_speed_kmh"] == pytest.approx(4.2)
     assert updated["obstacle_lane_change_steer_distance_m"] == pytest.approx(1.37)
     assert updated["obstacle_lane_change_left_steer"] == pytest.approx(0.237)
     assert updated["obstacle_lane_change_right_steer"] == pytest.approx(0.193)
@@ -1424,6 +1434,8 @@ def test_avis_dashboard_migrates_legacy_fixed_lane_return_distance(tmp_path):
             "obstacle_slowdown_start_cm": 1600,
             "obstacle_front_threshold_cm": 850,
             "obstacle_clearance_after_pass_m": 7.0,
+            "obstacle_lane_change_steer_distance_m": 3.0,
+            "obstacle_lane_change_retry_pulse_distance_m": 0.30,
         }),
         encoding="utf-8",
     )
@@ -1433,6 +1445,9 @@ def test_avis_dashboard_migrates_legacy_fixed_lane_return_distance(tmp_path):
     assert settings["obstacle_clearance_after_pass_m"] == pytest.approx(7.0)
     assert "obstacle_return_distance_m" not in settings
     assert "obstacle_slowdown_start_cm" not in settings
+    assert settings["obstacle_lane_change_steer_distance_m"] == pytest.approx(1.0)
+    assert settings["obstacle_lane_change_retry_pulse_distance_m"] == pytest.approx(0.15)
+    assert settings["obstacle_lane_change_speed_kmh"] == pytest.approx(4.5)
 
 
 def test_avis_import_profile_migrates_removed_obstacle_slowdown_setting(tmp_path):
@@ -1477,6 +1492,7 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     assert 'id="obstacle_lane_line_search_max_distance_m"' not in html
     assert "There is no distance-based FAILED timeout" in html
     assert 'id="settingsForm" novalidate' in html
+    assert 'id="obstacle_lane_change_speed_kmh" data-setting="obstacle_lane_change_speed_kmh" type="number" min="1" max="20" step=".5"' in html
     assert 'id="obstacle_lane_change_steer_distance_m" data-setting="obstacle_lane_change_steer_distance_m" type="number" min=".1" max="100" step="any"' in html
     assert 'id="obstacle_lane_change_left_steer" data-setting="obstacle_lane_change_left_steer" type="number" min=".001" max="1" step="any"' in html
     assert 'id="obstacle_lane_change_retry_steer" data-setting="obstacle_lane_change_retry_steer" type="number" min=".001" max="1" step="any"' in html
@@ -2297,6 +2313,7 @@ def test_model_lane_changes_retry_past_search_distance_without_sensors_or_failed
     settings.update({
         "obstacle_lane_line_confirm_frames": 2,
         "obstacle_lane_change_steer_distance_m": 0.10,
+        "obstacle_lane_change_speed_kmh": 4.5,
         "obstacle_lane_change_retry_pulse_distance_m": 0.05,
         "obstacle_lane_change_retry_steer": 0.20,
         # This legacy UI/config value must no longer stop model-controlled turns.

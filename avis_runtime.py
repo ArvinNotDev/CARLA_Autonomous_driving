@@ -165,6 +165,20 @@ def select_avis_target_speed(
     return maximum - ((maximum - minimum) * turn_factor)
 
 
+def select_avis_lane_change_speed(
+    minimum_kmh: float,
+    configured_kmh: float,
+) -> float:
+    """Use a dedicated low speed while executing a model-guided lane change."""
+    minimum = float(minimum_kmh)
+    configured = float(configured_kmh)
+    if not all(math.isfinite(value) for value in (minimum, configured)):
+        raise ValueError("Lane-change speed settings must be finite.")
+    if minimum <= 0.0 or configured <= 0.0:
+        raise ValueError("Lane-change speeds must be positive.")
+    return min(minimum, configured)
+
+
 
 class AvisSteeringController:
     """StableV2 steering PID/rate-limit logic without CARLA-specific types."""
@@ -250,7 +264,7 @@ class AvisObstacleLaneChangeController:
 
     FOLLOWUP_STEER_MAGNITUDE = 0.20
     FOLLOWUP_PULSE_DISTANCE_M = 0.30
-    LINE_CHECK_INTERVAL_M = 0.15
+    LINE_CHECK_INTERVAL_M = 0.05
 
     def __init__(self) -> None:
         self.phase = self.RIGHT_LANE
@@ -2578,7 +2592,10 @@ def run_avis(args: argparse.Namespace) -> int:
                         # at the configured minimum moving speed.
                         steering = float(steering_override)
                         recovery_steering = steering
-                        target_speed = minimum_speed
+                        target_speed = select_avis_lane_change_speed(
+                            minimum_speed,
+                            float(current_settings.get("obstacle_lane_change_speed_kmh", 4.5)),
+                        )
                         throttle, requested_brake = speed_controller.update(
                             current_speed, target_speed, dt=control_dt
                         )

@@ -74,11 +74,12 @@ DEFAULT_AVIS_SETTINGS: dict[str, Any] = {
     "obstacle_trigger_confirm_frames": 3,
     "obstacle_sensor_clear_threshold_cm": 900,
     "obstacle_sensor_clear_confirm_frames": 5,
-    "obstacle_lane_change_steer_distance_m": 3.0,
+    "obstacle_lane_change_speed_kmh": 4.5,
+    "obstacle_lane_change_steer_distance_m": 1.0,
     "obstacle_lane_change_left_steer": 0.30,
     "obstacle_lane_change_right_steer": 0.30,
     "obstacle_lane_change_retry_steer": 0.20,
-    "obstacle_lane_change_retry_pulse_distance_m": 0.30,
+    "obstacle_lane_change_retry_pulse_distance_m": 0.15,
     "obstacle_lane_line_confirm_frames": 3,
     "obstacle_lane_line_search_max_distance_m": 40.0,
     "obstacle_clearance_after_pass_m": 5.0,
@@ -133,11 +134,12 @@ _NUMERIC_LIMITS: dict[str, tuple[float, float, bool]] = {
     "obstacle_trigger_confirm_frames": (1.0, 30.0, True),
     "obstacle_sensor_clear_threshold_cm": (51.0, 1500.0, True),
     "obstacle_sensor_clear_confirm_frames": (1.0, 30.0, True),
+    "obstacle_lane_change_speed_kmh": (1.0, 20.0, False),
     "obstacle_lane_change_steer_distance_m": (0.1, 100.0, False),
     "obstacle_lane_change_left_steer": (0.001, 1.0, False),
     "obstacle_lane_change_right_steer": (0.001, 1.0, False),
     "obstacle_lane_change_retry_steer": (0.001, 1.0, False),
-    "obstacle_lane_change_retry_pulse_distance_m": (0.05, 10.0, False),
+    "obstacle_lane_change_retry_pulse_distance_m": (0.02, 5.0, False),
     "obstacle_lane_line_confirm_frames": (1.0, 60.0, True),
     "obstacle_lane_line_search_max_distance_m": (0.1, 1000.0, False),
     "obstacle_clearance_after_pass_m": (0.0, 1000.0, False),
@@ -159,6 +161,25 @@ _NUMERIC_LIMITS: dict[str, tuple[float, float, bool]] = {
     "adaptive_roi_recovery_frames": (1.0, 60.0, True),
     "adaptive_roi_restore_step_ratio": (0.001, 0.05, False),
 }
+
+
+
+def _migrate_legacy_lane_change_tuning(settings: dict[str, Any]) -> dict[str, Any]:
+    """Move saved default lane-change tuning to the more precise AVIS defaults."""
+    migrated = dict(settings)
+    for key, old_default, new_default in (
+        ("obstacle_lane_change_steer_distance_m", 3.0, 1.0),
+        ("obstacle_lane_change_retry_pulse_distance_m", 0.30, 0.15),
+    ):
+        if key not in migrated:
+            continue
+        try:
+            value = float(migrated[key])
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value) and math.isclose(value, old_default, abs_tol=1e-9):
+            migrated[key] = new_default
+    return migrated
 
 
 def validate_avis_settings(
@@ -324,6 +345,7 @@ class AvisDashboardState:
                     "obstacle_slowdown_start_cm",
                 ):
                     saved.pop(legacy_key, None)
+            saved = _migrate_legacy_lane_change_tuning(saved)
             self._settings = validate_avis_settings(self._settings, saved)
         except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
             print(f"[AVIS WEB] Ignoring invalid settings file: {exc}")
@@ -380,6 +402,7 @@ class AvisDashboardState:
                             name = self._normalize_profile_name(entry.get("name"))
                             saved_settings = dict(entry["settings"])
                             saved_settings.pop("obstacle_slowdown_start_cm", None)
+                            saved_settings = _migrate_legacy_lane_change_tuning(saved_settings)
                             settings = validate_avis_settings(
                                 dict(DEFAULT_AVIS_SETTINGS), saved_settings
                             )
@@ -467,6 +490,7 @@ class AvisDashboardState:
             raise ValueError("The imported profile does not contain a settings object.")
         compatible_settings = dict(settings)
         compatible_settings.pop("obstacle_slowdown_start_cm", None)
+        compatible_settings = _migrate_legacy_lane_change_tuning(compatible_settings)
         validated = validate_avis_settings(
             dict(DEFAULT_AVIS_SETTINGS), compatible_settings
         )
@@ -827,13 +851,14 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
           <div class="field"><label for="obstacle_lane_confidence_threshold">Lane prediction confidence</label><input id="obstacle_lane_confidence_threshold" data-setting="obstacle_lane_confidence_threshold" type="number" min=".5" max=".99" step=".01"></div>
           <div class="field"><label for="obstacle_model_confirm_frames">Model trigger confirmation frames</label><input id="obstacle_model_confirm_frames" data-setting="obstacle_model_confirm_frames" type="number" min="1" max="30" step="1"></div>
           <div class="field"><label for="obstacle_model_rearm_frames">Clear frames before next trigger</label><input id="obstacle_model_rearm_frames" data-setting="obstacle_model_rearm_frames" type="number" min="1" max="30" step="1"></div>
+          <div class="field"><label for="obstacle_lane_change_speed_kmh">Lane-change speed (km/h)</label><input id="obstacle_lane_change_speed_kmh" data-setting="obstacle_lane_change_speed_kmh" type="number" min="1" max="20" step=".5"></div>
           <div class="field"><label for="obstacle_lane_change_steer_distance_m">Initial steering distance (m)</label><input id="obstacle_lane_change_steer_distance_m" data-setting="obstacle_lane_change_steer_distance_m" type="number" min=".1" max="100" step="any"></div>
           <div class="field"><label for="obstacle_lane_line_confirm_frames">Model lane confirmation frames</label><input id="obstacle_lane_line_confirm_frames" data-setting="obstacle_lane_line_confirm_frames" type="number" min="1" max="20" step="1"></div>
           <div class="field"><label for="obstacle_lane_change_left_steer">First left steering attempt</label><input id="obstacle_lane_change_left_steer" data-setting="obstacle_lane_change_left_steer" type="number" min=".001" max="1" step="any"></div>
           <div class="field"><label for="obstacle_lane_change_right_steer">First right steering attempt</label><input id="obstacle_lane_change_right_steer" data-setting="obstacle_lane_change_right_steer" type="number" min=".001" max="1" step="any"></div>
           <div class="field"><label for="obstacle_lane_change_retry_steer">Gentle retry steering</label><input id="obstacle_lane_change_retry_steer" data-setting="obstacle_lane_change_retry_steer" type="number" min=".001" max="1" step="any"></div>
           <div class="field"><label for="obstacle_lane_change_retry_pulse_distance_m">Gentle retry distance (m)</label><input id="obstacle_lane_change_retry_pulse_distance_m" data-setting="obstacle_lane_change_retry_pulse_distance_m" type="number" min=".05" max="10" step=".05"></div>
-          <div class="field full"><div class="hint">Both lane changes keep repeating the gentler steering pulse until the model confirms the destination lane. There is no distance-based FAILED timeout, and AVIS distance sensors are not used by this manoeuvre.</div></div>
+          <div class="field full"><div class="hint">During both lane changes, AVIS uses the dedicated low lane-change speed and shorter steering pulses. It keeps retrying until the model confirms the destination lane; no distance sensors are used.</div></div>
         </div>
         <div class="section-label">Return to the right lane</div>
         <div class="hint">After the model confirms the vehicle has entered the left lane, AVIS travels exactly 10 metres, then starts the right-lane change. The return uses the same model-confirmed steering pulse, pause, and gentler retry sequence as the initial move to the left. Right-side sensor readings and sensor timeouts do not control this return.</div>
