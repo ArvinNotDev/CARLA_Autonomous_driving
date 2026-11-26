@@ -264,7 +264,7 @@ class AvisObstacleLaneChangeController:
 
     FOLLOWUP_STEER_MAGNITUDE = 0.20
     FOLLOWUP_PULSE_DISTANCE_M = 0.30
-    LINE_CHECK_INTERVAL_M = 0.05
+    LINE_CHECK_INTERVAL_M = 0.15
 
     def __init__(self) -> None:
         self.phase = self.RIGHT_LANE
