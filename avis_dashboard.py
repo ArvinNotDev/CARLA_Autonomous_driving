@@ -6,7 +6,9 @@ import os
 import re
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 from typing import Any
 
 from flask import Flask, Response, jsonify, request
@@ -193,6 +195,7 @@ class AvisDashboardState:
         manual_timeout_seconds: float = 0.45,
         profile_path: Path | str | None = None,
         github_sync: AvisGitHubProfileSync | None = None,
+        capture_directory: Path | str | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self.settings_path = Path(settings_path)
@@ -202,6 +205,12 @@ class AvisDashboardState:
             else self.settings_path.with_name("avis_profiles.json")
         )
         self.github_sync = github_sync or AvisGitHubProfileSync()
+        self.capture_directory = (
+            Path(capture_directory).expanduser()
+            if capture_directory is not None
+            else Path.home() / "Documents" / "AVIS_RoadForge_Captures"
+        )
+        self.capture_session_id = uuid4().hex
         self.manual_timeout_seconds = max(0.15, float(manual_timeout_seconds))
         self._settings = dict(DEFAULT_AVIS_SETTINGS)
         if initial_settings:
@@ -503,6 +512,48 @@ class AvisDashboardState:
         with self._lock:
             return self._images.get(name), self._image_versions.get(name, 0)
 
+    def capture_roadforge_frame(self) -> dict[str, Any]:
+        """Persist the latest front-camera JPEG and its AVIS session telemetry."""
+        with self._lock:
+            payload = self._images.get("camera")
+            version = self._image_versions.get("camera", 0)
+            telemetry = dict(self._telemetry)
+            mode = self._mode
+            session_id = self.capture_session_id
+        if not payload:
+            raise RuntimeError("No front-camera frame is available yet. Wait for the live camera stream.")
+
+        now = datetime.now().astimezone()
+        filename = f"avis_{now.strftime('%Y%m%d_%H%M%S_%f')}_{uuid4().hex[:8]}.jpg"
+        images_dir = self.capture_directory / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        image_path = images_dir / filename
+        image_path.write_bytes(payload)
+        entry = {
+            "image": f"images/{filename}",
+            "filename": filename,
+            "captured_at": now.isoformat(timespec="milliseconds"),
+            "session_id": session_id,
+            "camera_view": "front_rgb",
+            "camera_version": int(version),
+            "mode": mode,
+            "telemetry": telemetry,
+        }
+        manifest_path = self.capture_directory / "manifest.jsonl"
+        with self._lock:
+            with manifest_path.open("a", encoding="utf-8") as manifest:
+                manifest.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+                manifest.flush()
+        return {
+            "captured": True,
+            "filename": filename,
+            "image": entry["image"],
+            "path": str(image_path.resolve()),
+            "manifest": str(manifest_path.resolve()),
+            "session_id": session_id,
+            "camera_version": int(version),
+        }
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             mode = self._mode
@@ -617,6 +668,8 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
           <div class="control"><label for="steeringInput">Steering <output id="steeringOutput">0%</output></label><input id="steeringInput" type="range" min="-100" max="100" value="0" step="1"></div>
         </div>
         <div class="keyhelp">Manual mode: W = forward, S = reverse, A / D = steer, Space = zero throttle and steering. The dashboard sends a short heartbeat; loss of heartbeat releases throttle.</div>
+        <div class="actions"><button class="btn save" id="roadforgeCaptureButton" type="button">Capture frame for RoadForge</button><span class="message" id="roadforgeCaptureMessage" aria-live="polite"></span></div>
+        <div class="hint">Saves the latest front-camera frame and AVIS telemetry to Documents/AVIS_RoadForge_Captures. This does not pause or modify vehicle control.</div>
       </div>
       <div class="panel">
         <div class="panel-head"><h3>Runtime telemetry</h3><span class="tag" id="runtimeStatus">Starting</span></div>
@@ -1350,6 +1403,27 @@ $("loadGitHubProfileButton").addEventListener("click", async () => {
   } catch (error) { $("githubProfilesMessage").textContent = error.message; }
 });
 
+const roadforgeCaptureButton = $("roadforgeCaptureButton");
+if (roadforgeCaptureButton) {
+  roadforgeCaptureButton.addEventListener("click", async () => {
+    const message = $("roadforgeCaptureMessage");
+    roadforgeCaptureButton.disabled = true;
+    message.textContent = "Saving latest camera frame…";
+    message.style.color = "#68dfa7";
+    try {
+      const response = await fetch("/api/roadforge/capture", {method: "POST"});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not capture the AVIS frame.");
+      message.textContent = "Captured " + data.filename + " · session " + data.session_id.slice(0, 8);
+    } catch (error) {
+      message.textContent = error.message;
+      message.style.color = "#ff8a9d";
+    } finally {
+      roadforgeCaptureButton.disabled = false;
+    }
+  });
+}
+
 refreshLocalProfiles().catch(error => {
   $("profilesMessage").textContent = error.message;
 });
@@ -1510,6 +1584,18 @@ def create_avis_dashboard_app(state: AvisDashboardState) -> Flask:
     def stop():
         state.set_mode("stopped")
         return jsonify({"mode": "stopped"})
+
+    @app.post("/api/roadforge/capture")
+    def capture_for_roadforge():
+        if request.remote_addr not in {"127.0.0.1", "::1", "localhost"}:
+            return jsonify({"error": "AVIS frame capture is restricted to the local dashboard."}), 403
+        try:
+            result = state.capture_roadforge_frame()
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+        except OSError as exc:
+            return jsonify({"error": f"Could not write the capture: {exc}"}), 500
+        return jsonify(result)
 
     @app.get("/stream/<view_name>")
     def stream(view_name: str):
