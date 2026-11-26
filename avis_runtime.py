@@ -585,11 +585,73 @@ def _create_avis_vision_processor(
 
         def __init__(self, mode: str):
             super().__init__(mode)
+            self.last_lane_half_width: float | None = None
             if getattr(self, "vehicles_class_id", None) is None:
                 print(
                     "[AVIS] Model has no 'vehicles' class; "
                     "continuing without vehicle masks."
                 )
+
+        def _pick_sticky_lane(
+            self,
+            left_x,
+            right_x,
+            frame_center,
+            lane_offset_px,
+        ):
+            """Use AVIS midpoint centring for model and classical lane masks."""
+            if left_x is not None and right_x is not None and right_x > left_x:
+                self.last_lane_half_width = (right_x - left_x) / 2.0
+                self.active_side = None
+                return "both", left_x + self.last_lane_half_width
+
+            # If one lane marking disappears temporarily, infer the target
+            # from the most recently measured lane half-width. Only use the
+            # configured fixed ratio before any complete lane width is known.
+            offset_px = (
+                self.last_lane_half_width
+                if self.last_lane_half_width is not None
+                else lane_offset_px
+            )
+
+            if self.active_side == "right":
+                if right_x is not None:
+                    return "only_right", right_x - offset_px
+                if left_x is not None:
+                    self.active_side = "left"
+                    return "only_left", left_x + offset_px
+                return (
+                    "none",
+                    self.last_lane_center
+                    if self.last_lane_center is not None
+                    else frame_center,
+                )
+
+            if self.active_side == "left":
+                if left_x is not None:
+                    return "only_left", left_x + offset_px
+                if right_x is not None:
+                    self.active_side = "right"
+                    return "only_right", right_x - offset_px
+                return (
+                    "none",
+                    self.last_lane_center
+                    if self.last_lane_center is not None
+                    else frame_center,
+                )
+
+            if right_x is not None:
+                self.active_side = "right"
+                return "only_right", right_x - offset_px
+            if left_x is not None:
+                self.active_side = "left"
+                return "only_left", left_x + offset_px
+            return (
+                "none",
+                self.last_lane_center
+                if self.last_lane_center is not None
+                else frame_center,
+            )
 
         def _draw_debug(
             self,
