@@ -67,6 +67,7 @@ DEFAULT_AVIS_SETTINGS: dict[str, Any] = {
     "obstacle_pass_sensor_clear_threshold_cm": 550,
     "obstacle_pass_sensor_presence_frames": 2,
     "obstacle_pass_sensor_clear_frames": 3,
+    "obstacle_pass_clearance_distance_m": 3.0,
     "obstacle_return_delay_seconds": 2.0,
     "obstacle_pass_sensor_timeout_seconds": 30.0,
     "obstacle_front_threshold_cm": 950,
@@ -76,6 +77,8 @@ DEFAULT_AVIS_SETTINGS: dict[str, Any] = {
     "obstacle_lane_change_steer_distance_m": 3.0,
     "obstacle_lane_change_left_steer": 0.30,
     "obstacle_lane_change_right_steer": 0.30,
+    "obstacle_lane_change_retry_steer": 0.20,
+    "obstacle_lane_change_retry_pulse_distance_m": 0.30,
     "obstacle_lane_line_confirm_frames": 3,
     "obstacle_lane_line_search_max_distance_m": 40.0,
     "obstacle_clearance_after_pass_m": 5.0,
@@ -133,6 +136,8 @@ _NUMERIC_LIMITS: dict[str, tuple[float, float, bool]] = {
     "obstacle_lane_change_steer_distance_m": (0.1, 100.0, False),
     "obstacle_lane_change_left_steer": (0.001, 1.0, False),
     "obstacle_lane_change_right_steer": (0.001, 1.0, False),
+    "obstacle_lane_change_retry_steer": (0.001, 1.0, False),
+    "obstacle_lane_change_retry_pulse_distance_m": (0.05, 10.0, False),
     "obstacle_lane_line_confirm_frames": (1.0, 60.0, True),
     "obstacle_lane_line_search_max_distance_m": (0.1, 1000.0, False),
     "obstacle_clearance_after_pass_m": (0.0, 1000.0, False),
@@ -145,6 +150,7 @@ _NUMERIC_LIMITS: dict[str, tuple[float, float, bool]] = {
     "obstacle_pass_sensor_clear_threshold_cm": (21.0, 1500.0, True),
     "obstacle_pass_sensor_presence_frames": (1.0, 30.0, True),
     "obstacle_pass_sensor_clear_frames": (1.0, 30.0, True),
+    "obstacle_pass_clearance_distance_m": (0.1, 100.0, False),
     "obstacle_return_delay_seconds": (0.0, 60.0, False),
     "obstacle_pass_sensor_timeout_seconds": (1.0, 120.0, False),
     "adaptive_roi_max_expansion_ratio": (0.0, 0.30, False),
@@ -819,9 +825,11 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
           <div class="field"><label for="obstacle_model_confirm_frames">Model trigger confirmation frames</label><input id="obstacle_model_confirm_frames" data-setting="obstacle_model_confirm_frames" type="number" min="1" max="30" step="1"></div>
           <div class="field"><label for="obstacle_model_rearm_frames">Clear frames before next trigger</label><input id="obstacle_model_rearm_frames" data-setting="obstacle_model_rearm_frames" type="number" min="1" max="30" step="1"></div>
           <div class="field"><label for="obstacle_lane_change_steer_distance_m">Initial steering distance (m)</label><input id="obstacle_lane_change_steer_distance_m" data-setting="obstacle_lane_change_steer_distance_m" type="number" min=".1" max="100" step="any"></div>
-          <div class="field"><label for="obstacle_lane_line_confirm_frames">Target ROI line confirm frames</label><input id="obstacle_lane_line_confirm_frames" data-setting="obstacle_lane_line_confirm_frames" type="number" min="1" max="20" step="1"></div>
-          <div class="field"><label for="obstacle_lane_change_left_steer">Left steering pulse</label><input id="obstacle_lane_change_left_steer" data-setting="obstacle_lane_change_left_steer" type="number" min=".001" max="1" step="any"></div>
-          <div class="field"><label for="obstacle_lane_change_right_steer">Right steering pulse</label><input id="obstacle_lane_change_right_steer" data-setting="obstacle_lane_change_right_steer" type="number" min=".001" max="1" step="any"></div>
+          <div class="field"><label for="obstacle_lane_line_confirm_frames">Model lane confirmation frames</label><input id="obstacle_lane_line_confirm_frames" data-setting="obstacle_lane_line_confirm_frames" type="number" min="1" max="20" step="1"></div>
+          <div class="field"><label for="obstacle_lane_change_left_steer">First left steering attempt</label><input id="obstacle_lane_change_left_steer" data-setting="obstacle_lane_change_left_steer" type="number" min=".001" max="1" step="any"></div>
+          <div class="field"><label for="obstacle_lane_change_right_steer">First right steering attempt</label><input id="obstacle_lane_change_right_steer" data-setting="obstacle_lane_change_right_steer" type="number" min=".001" max="1" step="any"></div>
+          <div class="field"><label for="obstacle_lane_change_retry_steer">Gentle retry steering</label><input id="obstacle_lane_change_retry_steer" data-setting="obstacle_lane_change_retry_steer" type="number" min=".001" max="1" step="any"></div>
+          <div class="field"><label for="obstacle_lane_change_retry_pulse_distance_m">Gentle retry distance (m)</label><input id="obstacle_lane_change_retry_pulse_distance_m" data-setting="obstacle_lane_change_retry_pulse_distance_m" type="number" min=".05" max="10" step=".05"></div>
           <div class="field full"><label for="obstacle_lane_line_search_max_distance_m">Maximum lane-line reacquisition distance (m)</label><input id="obstacle_lane_line_search_max_distance_m" data-setting="obstacle_lane_line_search_max_distance_m" type="number" min=".1" max="1000" step="any"></div>
         </div>
         <div class="section-label">Right-side pass confirmation sensor</div>
@@ -831,10 +839,10 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
           <div class="field"><label for="obstacle_pass_sensor_clear_threshold_cm">Right sensor clear at (cm)</label><input id="obstacle_pass_sensor_clear_threshold_cm" data-setting="obstacle_pass_sensor_clear_threshold_cm" type="number" min="21" max="1500" step="1"></div>
           <div class="field"><label for="obstacle_pass_sensor_presence_frames">Obstacle-seen confirmation frames</label><input id="obstacle_pass_sensor_presence_frames" data-setting="obstacle_pass_sensor_presence_frames" type="number" min="1" max="30" step="1"></div>
           <div class="field"><label for="obstacle_pass_sensor_clear_frames">Obstacle-clear confirmation frames</label><input id="obstacle_pass_sensor_clear_frames" data-setting="obstacle_pass_sensor_clear_frames" type="number" min="1" max="30" step="1"></div>
-          <div class="field"><label for="obstacle_return_delay_seconds">Delay after obstacle clears (seconds)</label><input id="obstacle_return_delay_seconds" data-setting="obstacle_return_delay_seconds" type="number" min="0" max="60" step=".1"></div>
-          <div class="field full"><label for="obstacle_pass_sensor_timeout_seconds">Maximum wait for pass confirmation (seconds)</label><input id="obstacle_pass_sensor_timeout_seconds" data-setting="obstacle_pass_sensor_timeout_seconds" type="number" min="1" max="120" step=".5"></div>
+          <div class="field"><label for="obstacle_pass_clearance_distance_m">Distance after sensor pattern before returning (m)</label><input id="obstacle_pass_clearance_distance_m" data-setting="obstacle_pass_clearance_distance_m" type="number" min=".1" max="100" step=".1"></div>
+          <div class="field"><label for="obstacle_pass_sensor_timeout_seconds">Maximum wait for pass pattern (seconds)</label><input id="obstacle_pass_sensor_timeout_seconds" data-setting="obstacle_pass_sensor_timeout_seconds" type="number" min="1" max="120" step=".5"></div>
         </div>
-        <div class="hint">The RoadForge ONNX model starts avoidance only after it repeatedly predicts obstacle_ahead=yes and lane=left above the configured confidence thresholds. AVIS first changes from the right lane to the left and confirms the lane line. It then switches the sensor array to the configured pass angle and watches only the right-side sensor: the sensor must first see the obstacle, then report a clear distance for the confirmation frames. Only then does the return-delay timer start. After the delay, AVIS steers back to the right lane. If the right sensor never confirms the pass before the timeout, AVIS enters a safe stop instead of guessing that the obstacle is gone.</div>
+        <div class="hint">The RoadForge model triggers avoidance from obstacle_ahead=yes. For both directions, AVIS sends one initial steering pulse, pauses, and checks the model's lane output. If the model still reports the old lane, it repeats a gentler, shorter pulse until the destination lane is confirmed for the configured number of fresh inferences. Once left is confirmed, the right sensor must report the sequence CLEAR → OBSTACLE PRESENT → CLEAR. AVIS then travels the configured clearance distance (default 3 m) before repeating the same model-confirmed retry process back to the right lane. Failure to confirm the sensor sequence or target lane before the search limits causes a safe stop rather than an assumed lane change.</div>
         <div class="section-label">Adaptive lane ROI recovery</div>
         <div class="fields">
           <div class="field full"><label for="adaptive_roi_enabled">Adaptive ROI expansion</label><select id="adaptive_roi_enabled" data-setting="adaptive_roi_enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
