@@ -1635,7 +1635,7 @@ def test_avis_client_sends_reverse_speed_only_for_manual_controls():
 
 
 
-def test_avis_model_extracts_only_lane_lines_and_does_not_require_other_classes(monkeypatch):
+def test_avis_model_extracts_lane_lines_and_optional_drivable_area_only(monkeypatch):
     import numpy as np
     import vision.city_vision_processing as shared_vision
 
@@ -1739,7 +1739,7 @@ def test_avis_model_single_boundary_uses_last_measured_lane_half_width(monkeypat
     assert right_only_center == pytest.approx(160.0)
 
 
-def test_avis_model_debug_uses_pure_red_lane_pixels_and_suppresses_other_masks(monkeypatch):
+def test_avis_model_debug_shows_drivable_area_and_keeps_lane_pixels_red(monkeypatch):
     import numpy as np
     import vision.city_vision_processing as shared_vision
 
