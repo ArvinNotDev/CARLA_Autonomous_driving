@@ -687,6 +687,7 @@ def test_lane_change_ignores_previous_target_roi_line_until_new_line_is_confirme
     assert state["phase"] == expected_phase
 
 
+def test_avis_obstacle_lane_change_returns_right_after_configured_distance():
     controller = AvisObstacleLaneChangeController()
     settings = _obstacle_lane_change_test_settings()
 
