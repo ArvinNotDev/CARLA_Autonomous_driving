@@ -1156,11 +1156,14 @@ class AvisCombinedVisionProcessor:
 
 
 class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
-    """Model-triggered right-to-left pass with right-side sensor-confirmed return."""
+    """Model-triggered lane changes with a fixed 10 m return distance."""
 
-    WAIT_OBSTACLE_PASS = "WAIT_OBSTACLE_PASS"
-    WAIT_PASS_CLEARANCE = "WAIT_PASS_CLEARANCE"
-    RETURN_DELAY = "RETURN_DELAY"
+    WAIT_RETURN_DISTANCE = "WAIT_RETURN_DISTANCE"
+    # Compatibility aliases for integrations that used the former phase names.
+    WAIT_OBSTACLE_PASS = WAIT_RETURN_DISTANCE
+    WAIT_PASS_CLEARANCE = WAIT_RETURN_DISTANCE
+    RETURN_DELAY = WAIT_RETURN_DISTANCE
+    RETURN_AFTER_DISTANCE_M = 10.0
 
     def __init__(self) -> None:
         super().__init__()
@@ -1174,13 +1177,7 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
         self.model_lane_confidence: float | None = None
         self.model_lane_confirm_frames = 0
         self.last_lane_target_observation_id = None
-        self.pass_sensor_stage = "WAITING_FOR_INITIAL_CLEAR"
-        self.pass_sensor_initial_clear_frames = 0
-        self.pass_sensor_seen_frames = 0
-        self.pass_sensor_clear_frames = 0
-        self.pass_sensor_started_at: float | None = None
-        self.pass_sensor_cleared_at: float | None = None
-        self.pass_sensor_timeout = False
+        self.return_distance_stage = "IDLE"
 
     @staticmethod
     def _nonnegative_setting(
@@ -1207,10 +1204,6 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
         frame_width: int | float | None = None,
         now: float | None = None,
     ) -> dict[str, Any]:
-        current_time = time.monotonic() if now is None else float(now)
-        if not math.isfinite(current_time):
-            current_time = time.monotonic()
-
         detection_enabled = bool(settings.get("obstacle_lane_change_enabled", True))
         observation_is_new = (
             observation_id is not None
@@ -1393,9 +1386,7 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
         base_settings["obstacle_lane_change_retry_steer"] = retry_steer
         base_settings["obstacle_lane_change_retry_pulse_distance_m"] = retry_pulse_distance
         original_phase = self.phase
-        pass_wait_active = original_phase in {
-            self.WAIT_OBSTACLE_PASS, self.RETURN_DELAY, self.WAIT_PASS_CLEARANCE
-        }
+        pass_wait_active = original_phase == self.WAIT_RETURN_DISTANCE
         if pass_wait_active:
             self.phase = self.LEFT_LANE
         result = super().update(
@@ -1423,17 +1414,11 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
             self.phase in {self.STEER_LEFT, self.ACQUIRE_LEFT_LINE}
             and self.model_lane_confirm_frames >= lane_frames_required
         ):
-            self.phase = self.WAIT_OBSTACLE_PASS
+            self.phase = self.WAIT_RETURN_DISTANCE
             self.phase_distance_m = 0.0
             self.left_lane_distance_m = 0.0
             self._reset_target_line_tracking()
-            self.pass_sensor_stage = "WAITING_FOR_INITIAL_CLEAR"
-            self.pass_sensor_initial_clear_frames = 0
-            self.pass_sensor_seen_frames = 0
-            self.pass_sensor_clear_frames = 0
-            self.pass_sensor_started_at = current_time
-            self.pass_sensor_cleared_at = None
-            self.pass_sensor_timeout = False
+            self.return_distance_stage = "WAITING_FOR_10M"
             self.model_lane_confirm_frames = 0
             pid_reset = True
 
@@ -1476,89 +1461,24 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
             self.last_obstacle_distance_m = None
             self._reset_target_line_tracking()
             self.model_lane_confirm_frames = 0
-            self.pass_sensor_stage = "PATTERN_CONFIRMED_3M"
+            self.return_distance_stage = "IDLE"
             self.return_reason = "RIGHT_LANE_CONFIRMED_BY_MODEL"
             pid_reset = True
 
-        right_sensor_cm = self.sensor_distances_cm(sensors)[2]
-        presence_threshold = self._nonnegative_setting(
-            settings, "obstacle_pass_sensor_presence_threshold_cm", 250.0
-        )
-        clear_threshold = self._nonnegative_setting(
-            settings, "obstacle_pass_sensor_clear_threshold_cm", 550.0
-        )
-        presence_frames_required = max(
-            1, int(self._nonnegative_setting(
-                settings, "obstacle_pass_sensor_presence_frames", 2
-            ))
-        )
-        clear_frames_required = max(
-            1, int(self._nonnegative_setting(
-                settings, "obstacle_pass_sensor_clear_frames", 3
-            ))
-        )
-        pass_timeout = self._nonnegative_setting(
-            settings, "obstacle_pass_sensor_timeout_seconds", 30.0
-        )
-        pass_clearance_distance_m = self._nonnegative_setting(
-            settings, "obstacle_pass_clearance_distance_m", 3.0
-        )
-
-        if self.phase == self.WAIT_OBSTACLE_PASS:
-            # Required sensor sequence: clear first, then obstacle present,
-            # then clear again. A sensor already seeing something at the
-            # moment the left lane is acquired cannot skip the initial clear.
-            if self.pass_sensor_stage == "WAITING_FOR_INITIAL_CLEAR":
-                if right_sensor_cm is not None and right_sensor_cm >= clear_threshold:
-                    self.pass_sensor_initial_clear_frames += 1
-                    if self.pass_sensor_initial_clear_frames >= clear_frames_required:
-                        self.pass_sensor_stage = "WAITING_FOR_OBSTACLE"
-                else:
-                    self.pass_sensor_initial_clear_frames = 0
-
-            elif self.pass_sensor_stage == "WAITING_FOR_OBSTACLE":
-                if right_sensor_cm is not None and right_sensor_cm <= presence_threshold:
-                    self.pass_sensor_seen_frames += 1
-                    if self.pass_sensor_seen_frames >= presence_frames_required:
-                        self.pass_sensor_stage = "OBSTACLE_SEEN_ON_RIGHT"
-                else:
-                    self.pass_sensor_seen_frames = 0
-
-            elif self.pass_sensor_stage == "OBSTACLE_SEEN_ON_RIGHT":
-                if right_sensor_cm is not None and right_sensor_cm >= clear_threshold:
-                    self.pass_sensor_clear_frames += 1
-                    if self.pass_sensor_clear_frames >= clear_frames_required:
-                        self.pass_sensor_cleared_at = current_time
-                        self.pass_sensor_stage = "OBSTACLE_CLEARED"
-                        self.phase = self.WAIT_PASS_CLEARANCE
-                        self.left_lane_distance_m = 0.0
-                else:
-                    self.pass_sensor_clear_frames = 0
-
-            if (
-                self.phase == self.WAIT_OBSTACLE_PASS
-                and self.pass_sensor_started_at is not None
-                and current_time - self.pass_sensor_started_at >= pass_timeout
-            ):
-                self.phase = self.FAILED
-                self.pass_sensor_timeout = True
-                self.return_reason = "RIGHT_SENSOR_SEQUENCE_TIMEOUT"
-
+        # The return trigger is deliberately independent of all side sensors:
+        # count a fixed 10 m from the moment the model confirms the left lane.
+        return_distance_m = self.RETURN_AFTER_DISTANCE_M
         if (
-            self.phase == self.WAIT_PASS_CLEARANCE
-            and self.left_lane_distance_m >= pass_clearance_distance_m
+            self.phase == self.WAIT_RETURN_DISTANCE
+            and self.left_lane_distance_m >= return_distance_m
         ):
-            self._begin_right_return("RIGHT_SENSOR_SEQUENCE_CONFIRMED_AFTER_3M", None)
-            self.pass_sensor_stage = "PATTERN_CONFIRMED_3M"
+            self._begin_right_return("FIXED_10M_AFTER_LEFT_LANE", None)
+            self.left_lane_distance_m = 0.0
+            self.return_distance_stage = "10M_REACHED"
             self.model_lane_confirm_frames = 0
-            self.return_reason = "RIGHT_SENSOR_SEQUENCE_CONFIRMED_AFTER_3M"
             pid_reset = True
 
-        sensor_angle_override = (
-            int(settings.get("obstacle_pass_sensor_angle", settings.get("sensor_angle", 40)))
-            if self.phase in {self.WAIT_OBSTACLE_PASS, self.WAIT_PASS_CLEARANCE, self.RETURN_DELAY}
-            else int(settings.get("sensor_angle", 40))
-        )
+        sensor_angle_override = int(settings.get("sensor_angle", 40))
         search_limit = self._nonnegative_setting(
             settings, "obstacle_lane_line_search_max_distance_m", 40.0
         )
@@ -1599,22 +1519,25 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
         attempt_number = (
             self.steering_pulse_index + 1 if self.phase in active_phases else 0
         )
-        clearance_remaining = max(
-            0.0, pass_clearance_distance_m - self.left_lane_distance_m
-        ) if self.phase == self.WAIT_PASS_CLEARANCE else 0.0
+        return_distance_travelled = (
+            self.left_lane_distance_m
+            if self.phase == self.WAIT_RETURN_DISTANCE else 0.0
+        )
+        return_distance_remaining = (
+            max(0.0, return_distance_m - return_distance_travelled)
+            if self.phase == self.WAIT_RETURN_DISTANCE else 0.0
+        )
         result.update({
             "phase": self.phase,
             "lane_side": (
                 "left" if self.phase in {
                     self.STEER_RIGHT, self.ACQUIRE_RIGHT_LINE,
-                    self.LEFT_LANE, self.WAIT_OBSTACLE_PASS,
-                    self.WAIT_PASS_CLEARANCE, self.RETURN_DELAY,
+                    self.LEFT_LANE, self.WAIT_RETURN_DISTANCE,
                 } else "right"
             ),
             "target_lane": "left" if self.phase in {
                 self.STEER_LEFT, self.ACQUIRE_LEFT_LINE,
-                self.LEFT_LANE, self.WAIT_OBSTACLE_PASS,
-                self.WAIT_PASS_CLEARANCE, self.RETURN_DELAY,
+                self.LEFT_LANE, self.WAIT_RETURN_DISTANCE,
             } else "right",
             "pid_reset": pid_reset,
             "safe_stop": safe_stop,
@@ -1634,20 +1557,10 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
             "lane_change_attempt_number": attempt_number,
             "lane_change_retry_steer": retry_steer,
             "lane_change_retry_pulse_distance_m": retry_pulse_distance,
-            "pass_sensor_stage": self.pass_sensor_stage,
-            "pass_sensor_right_cm": right_sensor_cm,
-            "pass_sensor_initial_clear_frames": self.pass_sensor_initial_clear_frames,
-            "pass_sensor_seen_frames": self.pass_sensor_seen_frames,
-            "pass_sensor_clear_frames": self.pass_sensor_clear_frames,
-            "pass_sensor_cleared_at": self.pass_sensor_cleared_at,
-            "pass_clearance_distance_m": pass_clearance_distance_m,
-            "pass_clearance_travelled_m": (
-                self.left_lane_distance_m
-                if self.phase == self.WAIT_PASS_CLEARANCE else 0.0
-            ),
-            "pass_clearance_remaining_m": clearance_remaining,
-            "return_delay_remaining_s": 0.0,
-            "pass_sensor_timeout": self.pass_sensor_timeout,
+            "return_distance_stage": self.return_distance_stage,
+            "return_after_distance_m": return_distance_m,
+            "return_distance_travelled_m": return_distance_travelled,
+            "return_distance_remaining_m": return_distance_remaining,
             "sensor_angle_override": sensor_angle_override,
             "search_limit_reached": search_limit_reached,
             "line_confirm_frames": 0,
@@ -2752,18 +2665,11 @@ def run_avis(args: argparse.Namespace) -> int:
                         coasting = requested_brake > 0.0
                         if coasting:
                             throttle = 0.0
-                        if lane_change_state["phase"] == "WAIT_OBSTACLE_PASS":
+                        if lane_change_state["phase"] == "WAIT_RETURN_DISTANCE":
                             status = (
-                                "OBSTACLE AVOIDANCE / RIGHT SENSOR SEQUENCE "
-                                + str(lane_change_state.get("pass_sensor_stage", "WAITING_FOR_INITIAL_CLEAR"))
+                                "OBSTACLE AVOIDANCE / LEFT LANE · "
+                                f"RETURN IN {lane_change_state.get('return_distance_remaining_m', 10.0):.1f}m"
                             )
-                        elif lane_change_state["phase"] == "WAIT_PASS_CLEARANCE":
-                            status = (
-                                "OBSTACLE AVOIDANCE / PASS CONFIRMED · "
-                                f"{lane_change_state.get('pass_clearance_remaining_m', 0.0):.1f}m BEFORE RETURN"
-                            )
-                        elif lane_change_state["phase"] == "RETURN_DELAY":
-                            status = "OBSTACLE AVOIDANCE / LEGACY RETURN DELAY"
                         elif lane_change_state["phase"] == "LEFT_LANE":
                             status = "OBSTACLE AVOIDANCE / LEFT LANE"
                         else:
