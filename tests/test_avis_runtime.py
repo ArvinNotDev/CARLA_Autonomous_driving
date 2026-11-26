@@ -552,6 +552,71 @@ def test_avis_model_still_uses_vehicle_class_when_checkpoint_has_it(monkeypatch)
     assert vehicles_mask.tolist() == [[255]]
 
 
+@pytest.mark.parametrize("active_side", [None, "left", "right"])
+def test_avis_model_lane_center_uses_midpoint_regardless_of_sticky_side(
+    monkeypatch, active_side
+):
+    import vision.city_vision_processing as shared_vision
+
+    class FakeVisionProcessor:
+        def __init__(self, mode):
+            self.mode = mode
+            self.active_side = None
+            self.last_lane_center = None
+            self.vehicles_class_id = None
+
+    monkeypatch.setattr(shared_vision, "VisionProcessor", FakeVisionProcessor)
+    processor = _create_avis_vision_processor("ultralytics", {})
+    processor.active_side = active_side
+
+    lane_type, lane_center = processor._pick_sticky_lane(
+        left_x=100,
+        right_x=220,
+        frame_center=160.0,
+        lane_offset_px=20.0,
+    )
+
+    assert lane_type == "both"
+    assert lane_center == pytest.approx(160.0)
+    assert processor.last_lane_half_width == pytest.approx(60.0)
+    assert processor.active_side is None
+
+
+def test_avis_model_single_boundary_uses_last_measured_lane_half_width(monkeypatch):
+    import vision.city_vision_processing as shared_vision
+
+    class FakeVisionProcessor:
+        def __init__(self, mode):
+            self.mode = mode
+            self.active_side = None
+            self.last_lane_center = None
+            self.vehicles_class_id = None
+
+    monkeypatch.setattr(shared_vision, "VisionProcessor", FakeVisionProcessor)
+    processor = _create_avis_vision_processor("ultralytics", {})
+
+    processor._pick_sticky_lane(100, 220, 160.0, 20.0)
+
+    lane_type, left_only_center = processor._pick_sticky_lane(
+        left_x=100,
+        right_x=None,
+        frame_center=160.0,
+        lane_offset_px=20.0,
+    )
+    assert lane_type == "only_left"
+    assert left_only_center == pytest.approx(160.0)
+
+    processor.active_side = "right"
+    lane_type, right_only_center = processor._pick_sticky_lane(
+        left_x=None,
+        right_x=220,
+        frame_center=160.0,
+        lane_offset_px=20.0,
+    )
+    assert lane_type == "only_right"
+    assert right_only_center == pytest.approx(160.0)
+
+
 def test_avis_model_debug_suppresses_vehicle_mask_without_mutating_shared_processor(monkeypatch):
     import vision.city_vision_processing as shared_vision
 
