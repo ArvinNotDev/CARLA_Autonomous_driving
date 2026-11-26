@@ -2157,7 +2157,7 @@ def test_avis_onnx_classifier_uses_roadforge_task_metadata_and_training_preproce
             ]
 
         def get_providers(self):
-            return ["CPUExecutionProvider"]
+            return self.providers
 
         def run(self, output_names, feeds):
             assert output_names == ["logits_obstacle_ahead", "logits_lane"]
@@ -2169,19 +2169,24 @@ def test_avis_onnx_classifier_uses_roadforge_task_metadata_and_training_preproce
 
     fake_session = FakeSession()
     dll_events = []
+
+    def create_session(_path, providers):
+        dll_events.append("session")
+        fake_session.providers = list(providers)
+        return fake_session
+
     fake_ort = SimpleNamespace(
-        get_available_providers=lambda: ["CPUExecutionProvider"],
+        get_available_providers=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"],
         preload_dlls=lambda: dll_events.append("preload"),
-        InferenceSession=lambda _path, providers: (
-            dll_events.append("session") or fake_session
-        ),
+        InferenceSession=create_session,
     )
     monkeypatch.setitem(sys.modules, "onnxruntime", fake_ort)
     checkpoint = tmp_path / "avis_classifier.onnx"
     checkpoint.write_bytes(b"mock ONNX placeholder")
 
     classifier = AvisObstacleLaneClassifier(checkpoint)
-    assert dll_events == ["session"]  # CPU-only providers do not preload CUDA DLLs.
+    assert dll_events == ["preload", "session"]
+    assert classifier.providers == ["CUDAExecutionProvider", "CPUExecutionProvider"]
     frame_bgr = np.empty((32, 48, 3), dtype=np.uint8)
     frame_bgr[:] = [10, 128, 240]  # BGR input must become RGB [240, 128, 10].
     prediction = classifier.predict(frame_bgr)
