@@ -530,7 +530,7 @@
     "DEBUG_SHOW_DRIVABLE_AREA": true,
     "DEBUG_SHOW_TEXT": true,
     "DEBUG_PANEL_HZ": 40,
-    "MODEL_PATH": "models_and_datasets/lane_and_drivable-area_model_Avis.pt",
+    "MODEL_PATH": "models_and_datasets/Avis_models/lane_and_drivable-area_model_Avis.pt",
     "MODEL_IMAGE_SIZE": 512,
     "ACCELERATION_MPS2": 1.5,
     "MIN_SPEED_KMH": 8,
