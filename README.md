@@ -222,14 +222,17 @@ saved rectangle is restored. Permanent ROI coordinates are not changed by
 this automatic recovery; the feature and its tuning are profile settings.
 
 Select **Classical CV** in the Vision backend field to use the adjustable HLS,
-blur, Canny, morphology, and HoughLinesP pipeline. Both backends use the same
-LL/RL ROI rectangles and the same lane-marking selection rule: fragmented Hough
-segments are grouped by their projected position near the bottom of the ROI and
-their angle, then LL keeps only the rightmost candidate while RL keeps only the
-leftmost candidate. The selected marking alone is used for median-x and angle
-calculation, so adjacent markings are not averaged together. Select
-**Ultralytics** to use the trained semantic checkpoint; its lane mask passes
-through the same ROI-specific selector. When the configured Ultralytics
+blur, Canny, morphology, and HoughLinesP pipeline. Both backends use one shared
+ROI line selector. Hough fragments are grouped by their projected position and
+signed angle, then candidates are scored using vertical coverage, line support,
+and fragment continuity. LL targets the rightmost candidate; RL targets the
+leftmost. A temporal tracker associates detections by position and angle,
+smooths the selected line, and requires a more extreme replacement to persist
+for three inference frames before switching. A short Hough dropout holds the
+last track for up to two frames. The selected track alone is used for median-x
+and angle calculation; the Ultralytics path never falls back to mixing the raw
+multi-line mask when Hough selection is temporarily unavailable. Select
+**Ultralytics** to use the trained semantic checkpoint. When the configured
 checkpoint is missing, AVIS starts in classical mode and reports the fallback.
 
 For manual driving, switch to **Manual** and use `W` / `S` for forward /

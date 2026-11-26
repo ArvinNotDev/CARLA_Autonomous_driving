@@ -590,6 +590,177 @@ def test_avis_model_backend_uses_the_same_inner_line_selection(monkeypatch):
     assert debug["right_hough_candidates"] == 2
 
 
+
+@pytest.mark.parametrize(
+    ("roi_side", "transient_x", "expected_x"),
+    [
+        ("ll", 36, 30),
+        ("rl", 0, 6),
+    ],
+)
+def test_temporal_lane_selector_ignores_one_frame_extreme_outlier(
+    monkeypatch, roi_side, transient_x, expected_x
+):
+    import avis_lane_line_selection as selector
+
+    def lines(*xs):
+        return np.array([[[x, 0, x, 39]] for x in xs], dtype=np.int32)
+
+    responses = iter([
+        lines(6, 30),
+        lines(6, 30, transient_x),
+        lines(6, 30),
+    ])
+    monkeypatch.setattr(
+        selector.cv2,
+        "HoughLinesP",
+        lambda *_args, **_kwargs: next(responses),
+    )
+    tracker = selector.TemporalLaneLineSelector(roi_side)
+    settings = {
+        "hough_threshold": 2,
+        "hough_min_line_length_ratio": 0.05,
+        "hough_max_line_gap": 2,
+        "min_lane_angle_deg": 0.0,
+        "max_lane_angle_deg": 80.0,
+    }
+    mask = np.full((40, 50), 255, dtype=np.uint8)
+
+    first = tracker.select(mask, settings)
+    second = tracker.select(mask, settings)
+    third = tracker.select(mask, settings)
+
+    assert first.selected_x == pytest.approx(expected_x)
+    assert second.selected_x == pytest.approx(expected_x)
+    assert second.pending_switch_frames == 1
+    assert third.selected_x == pytest.approx(expected_x)
+    assert third.switched is False
+
+
+@pytest.mark.parametrize(
+    ("roi_side", "new_edge_x", "expected_initial_x"),
+    [
+        ("ll", 36, 30),
+        ("rl", 0, 6),
+    ],
+)
+def test_temporal_lane_selector_switches_after_new_edge_is_stable(
+    monkeypatch, roi_side, new_edge_x, expected_initial_x
+):
+    import avis_lane_line_selection as selector
+
+    def lines(*xs):
+        return np.array([[[x, 0, x, 39]] for x in xs], dtype=np.int32)
+
+    responses = iter([
+        lines(6, 30),
+        lines(6, 30, new_edge_x),
+        lines(6, 30, new_edge_x),
+        lines(6, 30, new_edge_x),
+    ])
+    monkeypatch.setattr(
+        selector.cv2,
+        "HoughLinesP",
+        lambda *_args, **_kwargs: next(responses),
+    )
+    tracker = selector.TemporalLaneLineSelector(roi_side)
+    settings = {
+        "hough_threshold": 2,
+        "hough_min_line_length_ratio": 0.05,
+        "hough_max_line_gap": 2,
+        "min_lane_angle_deg": 0.0,
+        "max_lane_angle_deg": 80.0,
+    }
+    mask = np.full((40, 50), 255, dtype=np.uint8)
+
+    assert tracker.select(mask, settings).selected_x == pytest.approx(
+        expected_initial_x
+    )
+    second = tracker.select(mask, settings)
+    third = tracker.select(mask, settings)
+    fourth = tracker.select(mask, settings)
+
+    assert second.switched is False
+    assert third.switched is False
+    assert fourth.switched is True
+    assert fourth.selected_x == pytest.approx(new_edge_x)
+
+
+def test_temporal_lane_selector_holds_hough_dropout_and_tracks_absolute_x(
+    monkeypatch,
+):
+    import avis_lane_line_selection as selector
+
+    responses = iter([
+        np.array([[[12, 0, 12, 39]]], dtype=np.int32),
+        None,
+        np.array([[[17, 0, 17, 39]]], dtype=np.int32),
+    ])
+    monkeypatch.setattr(
+        selector.cv2,
+        "HoughLinesP",
+        lambda *_args, **_kwargs: next(responses),
+    )
+    tracker = selector.TemporalLaneLineSelector("ll")
+    settings = {
+        "hough_threshold": 2,
+        "hough_min_line_length_ratio": 0.05,
+        "hough_max_line_gap": 2,
+        "min_lane_angle_deg": 0.0,
+        "max_lane_angle_deg": 80.0,
+    }
+    mask = np.full((40, 50), 255, dtype=np.uint8)
+
+    first = tracker.select(mask, settings, x_offset=100.0)
+    dropout = tracker.select(mask, settings, x_offset=95.0)
+    recovered = tracker.select(mask, settings, x_offset=95.0)
+
+    assert first.selected_x == pytest.approx(112.0)
+    assert dropout.selected_x == pytest.approx(112.0)
+    assert dropout.predicted is True
+    assert np.count_nonzero(dropout.mask) > 0
+    assert recovered.selected_x == pytest.approx(112.0)
+    assert recovered.missed_frames == 0
+
+
+def test_temporal_lane_selector_reacquires_when_the_previous_track_disappears(
+    monkeypatch,
+):
+    import avis_lane_line_selection as selector
+
+    responses = iter([
+        np.array([[[30, 0, 30, 39]]], dtype=np.int32),
+        np.array([[[6, 0, 6, 39]]], dtype=np.int32),
+        np.array([[[6, 0, 6, 39]]], dtype=np.int32),
+    ])
+    monkeypatch.setattr(
+        selector.cv2,
+        "HoughLinesP",
+        lambda *_args, **_kwargs: next(responses),
+    )
+    tracker = selector.TemporalLaneLineSelector("rl")
+    settings = {
+        "hough_threshold": 2,
+        "hough_min_line_length_ratio": 0.05,
+        "hough_max_line_gap": 2,
+        "min_lane_angle_deg": 0.0,
+        "max_lane_angle_deg": 80.0,
+    }
+    mask = np.full((40, 50), 255, dtype=np.uint8)
+
+    first = tracker.select(mask, settings)
+    missing = tracker.select(mask, settings)
+    reacquired = tracker.select(mask, settings)
+
+    assert first.selected_x == pytest.approx(30.0)
+    assert missing.selected_x == pytest.approx(30.0)
+    assert missing.predicted is True
+    assert reacquired.selected_x == pytest.approx(6.0)
+    assert reacquired.switched is True
+
+
+
+
 def _obstacle_lane_change_test_settings(**overrides):
     settings = dict(DEFAULT_AVIS_SETTINGS)
     settings.update({

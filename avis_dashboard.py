@@ -775,7 +775,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
             <div class="field"><label for="center_smoothing">Center smoothing (α)</label><input id="center_smoothing" data-setting="center_smoothing" type="number" min=".01" max="1" step=".01"></div>
             <div class="field"><label for="yellow_enabled">Detect yellow markings</label><select id="yellow_enabled" data-setting="yellow_enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
           </div>
-          <div class="hint">Only pixels inside the corresponding LL or RL ROI are sent through HLS thresholding, Gaussian blur, Canny, morphology and HoughLinesP. The resulting mask then uses the project's median-x, line-angle, sticky-side and lane-offset logic.</div>
+          <div class="hint">Only pixels inside each LL/RL crop are processed. Hough fragments are grouped and scored by line coverage and support. LL keeps the rightmost stable line and RL the leftmost stable line; a more extreme candidate must persist across three inference frames before switching. A short detection dropout holds the previous track for up to two frames instead of merging all lines.</div>
         </div>
         <div class="actions"><button class="btn save" type="submit">Apply and save settings</button><span class="message" id="settingsMessage"></span></div>
       </form>

@@ -8,7 +8,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from avis_lane_line_selection import select_lane_line_mask
+from avis_lane_line_selection import TemporalLaneLineSelector
 
 
 DEFAULT_CLASSICAL_SETTINGS: dict[str, Any] = {
@@ -73,6 +73,10 @@ class AvisClassicalVisionProcessor:
         self._lock = threading.RLock()
         self.adaptive_roi_controller = adaptive_roi_controller
         self._settings = dict(DEFAULT_CLASSICAL_SETTINGS)
+        self._lane_line_selectors = {
+            "ll": TemporalLaneLineSelector("ll"),
+            "rl": TemporalLaneLineSelector("rl"),
+        }
         if settings:
             self.update_settings(settings)
         self.last_lane_center: float | None = None
@@ -85,6 +89,20 @@ class AvisClassicalVisionProcessor:
             for key, value in settings.items():
                 if key in self._settings:
                     self._settings[key] = value
+            selector_keys = (
+                "hough_threshold",
+                "hough_min_line_length_ratio",
+                "hough_max_line_gap",
+                "min_lane_angle_deg",
+                "max_lane_angle_deg",
+            )
+            selection_changed = any(
+                previous.get(key) != self._settings.get(key)
+                for key in (*self.ROI_KEYS, *selector_keys)
+            )
+            if selection_changed:
+                for selector in self._lane_line_selectors.values():
+                    selector.reset()
             if any(previous.get(key) != self._settings.get(key) for key in self.ROI_KEYS):
                 self.last_lane_center = None
                 self.last_lane_half_width = None
@@ -200,26 +218,27 @@ class AvisClassicalVisionProcessor:
         settings: dict[str, Any],
         line_mask: np.ndarray,
         threshold_mask: np.ndarray,
-    ) -> tuple[int | None, int | None, int, int, float | None]:
+    ):
         height, width = frame.shape[:2]
         top, bottom, left, right = self._roi_bounds(
             (height, width), settings, prefix
         )
         if bottom <= top or right <= left:
-            return None, None, 0, 0, None
+            selection = self._lane_line_selectors[prefix].select(
+                np.zeros((0, 0), dtype=np.uint8), settings
+            )
+            return top, bottom, selection
 
-        # Every vision stage sees only this ROI. The shared AVIS selector then
-        # keeps one coherent marking instead of merging all Hough candidates.
         roi = frame[top:bottom, left:right]
         binary = self._threshold_roi(roi, settings)
         threshold_mask[top:bottom, left:right] = binary
-
-        roi_line_mask, valid_segments, candidate_lines, selected_x = (
-            select_lane_line_mask(binary, prefix, settings)
+        selection = self._lane_line_selectors[prefix].select(
+            binary,
+            settings,
+            x_offset=float(left),
         )
-        destination = line_mask[top:bottom, left:right]
-        cv2.bitwise_or(destination, roi_line_mask, dst=destination)
-        return top, bottom, valid_segments, candidate_lines, selected_x
+        line_mask[top:bottom, left:right] = selection.mask
+        return top, bottom, selection
 
     def _boundary_from_roi(
         self,
@@ -393,10 +412,10 @@ class AvisClassicalVisionProcessor:
 
         line_mask = np.zeros((height, width), dtype=np.uint8)
         threshold_mask = np.zeros((height, width), dtype=np.uint8)
-        _, _, ll_segments, ll_candidates, ll_selected_x = self._hough_roi_mask(
+        _, _, ll_selection = self._hough_roi_mask(
             frame, "ll", roi_settings, line_mask, threshold_mask
         )
-        _, _, rl_segments, rl_candidates, rl_selected_x = self._hough_roi_mask(
+        _, _, rl_selection = self._hough_roi_mask(
             frame, "rl", roi_settings, line_mask, threshold_mask
         )
 
@@ -510,12 +529,24 @@ class AvisClassicalVisionProcessor:
                 ),
                 "left_line_angle_deg": left_angle,
                 "right_line_angle_deg": right_angle,
-                "left_hough_segments": int(ll_segments or 0),
-                "right_hough_segments": int(rl_segments or 0),
-                "left_hough_candidates": int(ll_candidates or 0),
-                "right_hough_candidates": int(rl_candidates or 0),
-                "left_selected_line_x": ll_selected_x,
-                "right_selected_line_x": rl_selected_x,
+                "left_hough_segments": int(ll_selection.segment_count),
+                "right_hough_segments": int(rl_selection.segment_count),
+                "left_hough_candidates": int(ll_selection.candidate_count),
+                "right_hough_candidates": int(rl_selection.candidate_count),
+                "left_selected_line_x": ll_selection.selected_x,
+                "right_selected_line_x": rl_selection.selected_x,
+                "left_selected_line_quality": ll_selection.quality,
+                "right_selected_line_quality": rl_selection.quality,
+                "left_selected_line_stable_frames": ll_selection.stable_frames,
+                "right_selected_line_stable_frames": rl_selection.stable_frames,
+                "left_selected_line_missed_frames": ll_selection.missed_frames,
+                "right_selected_line_missed_frames": rl_selection.missed_frames,
+                "left_pending_switch_frames": ll_selection.pending_switch_frames,
+                "right_pending_switch_frames": rl_selection.pending_switch_frames,
+                "left_selected_line_switched": ll_selection.switched,
+                "right_selected_line_switched": rl_selection.switched,
+                "left_selected_line_predicted": ll_selection.predicted,
+                "right_selected_line_predicted": rl_selection.predicted,
                 "lane_valid": lane_valid,
                 "adaptive_roi": (
                     self.adaptive_roi_controller.snapshot()

@@ -1132,13 +1132,13 @@ def _create_avis_vision_processor(
         )
 
     from vision.city_vision_processing import VisionProcessor
+    from avis_lane_line_selection import TemporalLaneLineSelector
 
     class AvisVisionProcessor(VisionProcessor):
         """AVIS model adapter; vehicle segmentation is optional and never drawn."""
 
         def detect(self, semantic_frame, rgb_frame=None):
-            # Apply adaptive AVIS ROI coordinates before resolving the exact
-            # pixel rectangles used by the shared VisionProcessor.
+            # Apply adaptive AVIS ROI coordinates before resolving crop bounds.
             if self.adaptive_roi_controller is not None:
                 import config_city as avis_conf
 
@@ -1168,6 +1168,23 @@ def _create_avis_vision_processor(
                         int(float(avis_conf.RL_RIGHT_ROI) * width),
                     ),
                 }
+                signature = (
+                    (height, width),
+                    tuple(
+                        (key, settings.get(key))
+                        for key in (
+                            "hough_threshold",
+                            "hough_min_line_length_ratio",
+                            "hough_max_line_gap",
+                            "min_lane_angle_deg",
+                            "max_lane_angle_deg",
+                        )
+                    ),
+                )
+                if signature != self._avis_selection_signature:
+                    for selector in self._avis_line_selectors.values():
+                        selector.reset()
+                    self._avis_selection_signature = signature
 
             result = super().detect(semantic_frame, rgb_frame=rgb_frame)
             if isinstance(result, dict):
@@ -1175,13 +1192,25 @@ def _create_avis_vision_processor(
                 if isinstance(debug, dict):
                     for side, prefix in (("ll", "left"), ("rl", "right")):
                         stats = self._avis_line_selection_stats.get(side, {})
-                        debug[f"{prefix}_hough_segments"] = int(
-                            stats.get("segments", 0)
-                        )
-                        debug[f"{prefix}_hough_candidates"] = int(
-                            stats.get("candidates", 0)
-                        )
+                        debug[f"{prefix}_hough_segments"] = int(stats.get("segments", 0))
+                        debug[f"{prefix}_hough_candidates"] = int(stats.get("candidates", 0))
                         debug[f"{prefix}_selected_line_x"] = stats.get("selected_x")
+                        debug[f"{prefix}_selected_line_quality"] = stats.get("quality")
+                        debug[f"{prefix}_selected_line_stable_frames"] = int(
+                            stats.get("stable_frames", 0)
+                        )
+                        debug[f"{prefix}_selected_line_missed_frames"] = int(
+                            stats.get("missed_frames", 0)
+                        )
+                        debug[f"{prefix}_pending_switch_frames"] = int(
+                            stats.get("pending_switch_frames", 0)
+                        )
+                        debug[f"{prefix}_selected_line_switched"] = bool(
+                            stats.get("switched", False)
+                        )
+                        debug[f"{prefix}_selected_line_predicted"] = bool(
+                            stats.get("predicted", False)
+                        )
 
             if (
                 self.adaptive_roi_controller is not None
@@ -1206,8 +1235,6 @@ def _create_avis_vision_processor(
             left,
             right,
         ):
-            from avis_lane_line_selection import select_lane_line_mask
-
             bounds = (int(top), int(bottom), int(left), int(right))
             side = next(
                 (
@@ -1218,21 +1245,25 @@ def _create_avis_vision_processor(
                 None,
             )
             if side is not None and bottom > top and right > left:
-                selected_mask, segments, candidates, selected_x = (
-                    select_lane_line_mask(
-                        full_mask[top:bottom, left:right],
-                        side,
-                        settings,
-                    )
+                selection = self._avis_line_selectors[side].select(
+                    full_mask[top:bottom, left:right],
+                    settings,
+                    x_offset=float(left),
                 )
                 self._avis_line_selection_stats[side] = {
-                    "segments": segments,
-                    "candidates": candidates,
-                    "selected_x": selected_x,
+                    "segments": selection.segment_count,
+                    "candidates": selection.candidate_count,
+                    "selected_x": selection.selected_x,
+                    "quality": selection.quality,
+                    "stable_frames": selection.stable_frames,
+                    "missed_frames": selection.missed_frames,
+                    "pending_switch_frames": selection.pending_switch_frames,
+                    "switched": selection.switched,
+                    "predicted": selection.predicted,
                 }
-                # Replace the ROI before shared median-x and angle extraction.
-                if candidates > 0:
-                    full_mask[top:bottom, left:right] = selected_mask
+                # Always replace raw pixels; never reintroduce all candidate
+                # lines when Hough selection has a brief dropout.
+                full_mask[top:bottom, left:right] = selection.mask
 
             return super()._boundary_from_roi(
                 full_mask, top, bottom, left, right
@@ -1307,6 +1338,11 @@ def _create_avis_vision_processor(
         def __init__(self, mode: str):
             super().__init__(mode)
             self.adaptive_roi_controller = adaptive_roi_controller
+            self._avis_line_selectors = {
+                "ll": TemporalLaneLineSelector("ll"),
+                "rl": TemporalLaneLineSelector("rl"),
+            }
+            self._avis_selection_signature = None
             self.last_lane_half_width: float | None = None
             if getattr(self, "vehicles_class_id", None) is None:
                 print(
