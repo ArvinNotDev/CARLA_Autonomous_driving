@@ -6,3 +6,6 @@ YOLOPv2.onnx
 CARLA_Autonomous_driving_fixed/
 CARLA_Autonomous_driving_fixed_by_llm/
 avis_settings.json
+avis_profiles.json
+avis_profiles.json.tmp
+avis_settings.json.tmp

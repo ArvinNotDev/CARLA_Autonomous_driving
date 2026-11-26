@@ -286,7 +286,10 @@ class AvisDashboardState:
     @staticmethod
     def _normalize_profile_name(name: Any) -> str:
         value = str(name or "").strip()
-        if not value or len(value) > 48 or not re.fullmatch(r"[\\w .-]{1,48}", value):
+        if not value or len(value) > 48 or any(
+            not (character.isalnum() or character in " _.-")
+            for character in value
+        ):
             raise ValueError(
                 "Profile name must be 1-48 characters and may contain letters, "
                 "numbers, spaces, dots, underscores or hyphens."
@@ -346,7 +349,7 @@ class AvisDashboardState:
             self.profile_path.suffix + ".tmp"
         )
         temporary_path.write_text(
-            json.dumps(document, indent=2, ensure_ascii=False) + "\\n",
+            json.dumps(document, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
         os.replace(temporary_path, self.profile_path)
@@ -1285,7 +1288,7 @@ $("exportProfileButton").addEventListener("click", async () => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = name.replace(/[^\\w.-]+/g, "_") + ".json";
+    link.download = name.replace(/[^A-Za-z0-9_.-]+/g, "_") + ".json";
     link.click();
     URL.revokeObjectURL(url);
     $("profilesMessage").textContent = "Exported " + name + ".json";
@@ -1417,9 +1420,9 @@ def create_avis_dashboard_app(state: AvisDashboardState) -> Flask:
             profile = state.export_profile(request.args.get("name"))
         except (TypeError, ValueError) as exc:
             return jsonify({"error": str(exc)}), 400
-        filename = re.sub(r"[^\\w.-]+", "_", profile["name"]) + ".json"
+        filename = re.sub(r"[^A-Za-z0-9_.-]+", "_", profile["name"]) + ".json"
         return Response(
-            json.dumps(profile, indent=2, ensure_ascii=False) + "\\n",
+            json.dumps(profile, indent=2, ensure_ascii=False) + "\n",
             mimetype="application/json",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )

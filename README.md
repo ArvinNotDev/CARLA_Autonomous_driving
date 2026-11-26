@@ -202,6 +202,25 @@ are shared by Ultralytics and Classical CV. Settings are saved separately in
 `avis_settings.json`; this file is local and git-ignored. They do not modify
 `runtime_profiles.json`, CARLA configuration, or CARLA controllers.
 
+AVIS has its own named profile manager, separate from CARLA profiles. Create,
+load, delete, import, and export profiles from the Settings tab. Profile data
+is stored locally in the git-ignored `avis_profiles.json` and can be exported
+as portable JSON files. The GitHub profile panel reads public profiles from
+`avis_profiles/` on `main`, can load them, and can publish local profiles to
+the same folder. Publishing requires GitHub Contents write permission and
+authentication through `gh auth login` or the `GITHUB_TOKEN` / `GH_TOKEN`
+environment variable; credentials are never stored in AVIS settings or sent
+to the browser. GitHub writes are restricted to local dashboard connections.
+
+Adaptive ROI recovery is enabled by default for both AVIS vision backends.
+Each LL/RL region tracks the last seven inference results independently. When
+a detected marking trends toward an edge and reaches the configured boundary
+zone, that edge expands temporarily, up to the configured maximum. After the
+marking returns near the center of its original ROI for the configured
+confirmation frames, the expansion is reduced gradually until the original
+saved rectangle is restored. Permanent ROI coordinates are not changed by
+this automatic recovery; the feature and its tuning are profile settings.
+
 Select **Classical CV** in the Vision backend field to use the adjustable HLS,
 blur, Canny, morphology, and HoughLinesP pipeline. Both backends use the same
 LL/RL ROI rectangles and the same downstream lane-centre calculation. Select
@@ -333,6 +352,9 @@ trajectory/                     Waypoint model, steering agent, visualization
 vision/                         ONNX/segmentation perception and debug views
 ui/                             Legacy desktop panel, renderers, spawn/goal startup dialogs
 models_and_datasets/             Model checkpoints and ONNX assets
+avis_adaptive_roi.py             AVIS-only 7-frame adaptive ROI recovery
+avis_profiles.py                  Local/GitHub AVIS profile import, export and sync
+avis_profiles/                    Versioned AVIS profiles published to GitHub
 tests/                           Regression and GUI smoke tests
 ```
 

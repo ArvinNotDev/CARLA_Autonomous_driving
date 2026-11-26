@@ -978,7 +978,7 @@ def test_avis_adaptive_roi_uses_last_seven_frames_to_expand_toward_escape():
     assert snapshot["ll"]["history_frames"] == 7
     assert snapshot["ll"]["expanded_left"] > 0
     assert snapshot["ll"]["expanded_right"] == 0
-    assert snapshot["ll"]["left"] < pytest.approx(left)
+    assert snapshot["ll"]["left"] < left
 
 
 def test_avis_adaptive_roi_restores_slowly_after_line_returns_to_base_roi_center():
@@ -1030,3 +1030,102 @@ def test_avis_adaptive_roi_can_be_disabled_without_changing_base_rectangles():
     active = adaptive.active_settings()
     assert active["ll_left_roi"] == pytest.approx(left)
     assert active["ll_right_roi"] == pytest.approx(right)
+
+
+def test_avis_named_profiles_save_load_import_export_and_persist(tmp_path):
+    settings_path = tmp_path / "avis_settings.json"
+    profile_path = tmp_path / "avis_profiles.json"
+    state = AvisDashboardState(
+        settings_path=settings_path,
+        profile_path=profile_path,
+    )
+    state.update_settings(
+        {
+            "vision_backend": "classical",
+            "min_speed_kmh": 7.5,
+            "adaptive_roi_max_expansion_ratio": 0.18,
+        }
+    )
+    saved = state.save_profile("Night Track")
+    assert saved["name"] == "Night Track"
+    assert saved["settings"]["vision_backend"] == "classical"
+
+    state.update_settings({"vision_backend": "ultralytics", "min_speed_kmh": 10.0})
+    loaded = state.load_profile("Night Track")
+    assert loaded["vision_backend"] == "classical"
+    assert loaded["min_speed_kmh"] == pytest.approx(7.5)
+    assert loaded["adaptive_roi_max_expansion_ratio"] == pytest.approx(0.18)
+
+    exported = state.export_profile("Night Track")
+    restored = AvisDashboardState(
+        settings_path=tmp_path / "other_settings.json",
+        profile_path=tmp_path / "other_profiles.json",
+    )
+    imported = restored.import_profile(exported)
+    assert imported["settings"]["min_speed_kmh"] == pytest.approx(7.5)
+    assert restored.load_profile("Night Track")["vision_backend"] == "classical"
+
+    reloaded = AvisDashboardState(
+        settings_path=tmp_path / "reloaded_settings.json",
+        profile_path=profile_path,
+    )
+    assert any(
+        profile["name"] == "Night Track"
+        for profile in reloaded.profiles_snapshot()
+    )
+    reloaded.delete_profile("Night Track")
+    assert all(
+        profile["name"] != "Night Track"
+        for profile in reloaded.profiles_snapshot()
+    )
+
+
+def test_avis_named_profiles_reject_invalid_names_and_protect_baseline(tmp_path):
+    state = AvisDashboardState(
+        settings_path=tmp_path / "avis_settings.json",
+        profile_path=tmp_path / "avis_profiles.json",
+    )
+    for name in ("", "../escape", "bad/name", "x" * 49):
+        with pytest.raises(ValueError):
+            state.save_profile(name)
+    with pytest.raises(ValueError, match="cannot be deleted"):
+        state.delete_profile("AVIS_StableV2")
+
+
+def test_avis_profile_api_import_export_and_listing(tmp_path):
+    state = AvisDashboardState(
+        settings_path=tmp_path / "avis_settings.json",
+        profile_path=tmp_path / "avis_profiles.json",
+    )
+    client = create_avis_dashboard_app(state).test_client()
+    assert client.get("/api/profiles").status_code == 200
+    imported = client.post(
+        "/api/profiles/import",
+        json={
+            "schema_version": 1,
+            "name": "Imported CV",
+            "settings": {"vision_backend": "classical", "min_speed_kmh": 6.5},
+        },
+    )
+    assert imported.status_code == 200
+    assert imported.get_json()["settings"]["vision_backend"] == "classical"
+    exported = client.get("/api/profiles/export?name=Imported%20CV")
+    assert exported.status_code == 200
+    document = json.loads(exported.get_data(as_text=True))
+    assert document["name"] == "Imported CV"
+    assert document["settings"]["min_speed_kmh"] == pytest.approx(6.5)
+
+
+def test_avis_adaptive_roi_reconfiguration_resets_stale_expansion():
+    settings = dict(DEFAULT_AVIS_SETTINGS)
+    adaptive = AvisAdaptiveROIController(settings)
+    width = 1000
+    left, right = settings["ll_left_roi"], settings["ll_right_roi"]
+    for ratio in (0.60, 0.42, 0.24, 0.16, 0.10):
+        adaptive.observe((left + (right-left)*ratio)*width, None, width)
+    assert adaptive.snapshot()["ll"]["expanded_left"] > 0
+
+    adaptive.configure({"adaptive_roi_enabled": False})
+    assert adaptive.snapshot()["ll"]["expanded_left"] == 0
+    adaptive.configure({"adaptive_roi_enabled": True})
+    assert adaptive.snapshot()["ll"]["expanded_left"] == 0

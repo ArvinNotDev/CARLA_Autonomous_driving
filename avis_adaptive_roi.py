@@ -49,12 +49,30 @@ class AvisAdaptiveROIController:
                 for keys in self.SIDES.values()
                 for key in keys
             )
+            enabled_changed = (
+                self._settings.get("adaptive_roi_enabled", True)
+                != updated.get("adaptive_roi_enabled", True)
+            )
             self._settings = updated
-            if roi_changed:
+            if roi_changed or enabled_changed:
                 for side in self.SIDES:
                     self._history[side].clear()
                     self._expansion[side] = {"left": 0.0, "right": 0.0}
                     self._center_frames[side] = 0
+            else:
+                maximum = min(
+                    0.30,
+                    max(0.0, self._number(
+                        updated, "adaptive_roi_max_expansion_ratio", 0.12
+                    )),
+                )
+                for side in self.SIDES:
+                    self._expansion[side]["left"] = min(
+                        self._expansion[side]["left"], maximum
+                    )
+                    self._expansion[side]["right"] = min(
+                        self._expansion[side]["right"], maximum
+                    )
 
     def _active_settings_locked(self) -> dict[str, Any]:
         active = dict(self._settings)

@@ -120,7 +120,7 @@ class AvisGitHubProfileSync:
     def _filename(name: str) -> str:
         # Profile names are validated by AvisDashboardState and cannot contain
         # path separators. Percent-encoding keeps non-ASCII names portable.
-        return urllib.parse.quote(name.strip(), safe="-_. ") + ".json"
+        return urllib.parse.quote(name.strip(), safe="-_.") + ".json"
 
     def list_profiles(self) -> list[str]:
         result = self._request(
@@ -135,7 +135,7 @@ class AvisGitHubProfileSync:
         names = []
         for item in result:
             if item.get("type") == "file" and str(item.get("name", "")).lower().endswith(".json"):
-                names.append(str(item["name"])[:-5])
+                names.append(urllib.parse.unquote(str(item["name"])[:-5]))
         return sorted(names, key=str.casefold)
 
     @staticmethod
