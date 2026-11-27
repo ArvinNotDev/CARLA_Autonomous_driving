@@ -4611,6 +4611,8 @@ def run_avis(args: argparse.Namespace) -> int:
                             allow_recovery=False,
                             now=time.perf_counter(),
                         )
+                    else:
+                        last_city_maneuver_direction = None
 
                     reverse_brake_state = city_reverse_brake_controller.update(
                         active=bool(city_junction_state.get("braking")),
@@ -4890,6 +4892,8 @@ def run_avis(args: argparse.Namespace) -> int:
                         "city_junction_maneuver_active": bool(city_junction_state.get("maneuver_active")),
                         "city_junction_maneuver_segment": city_junction_state.get("segment_index", 0),
                         "city_junction_maneuver_segments": city_junction_state.get("segment_count", 0),
+                        "city_junction_maneuver_direction": city_junction_state.get("segment_direction", 1),
+                        "city_junction_maneuver_direction_label": city_junction_state.get("segment_direction_label", "FORWARD"),
                         "city_junction_segment_distance_m": city_junction_state.get("segment_distance_m", 0.0),
                         "city_junction_segment_target_distance_m": city_junction_state.get("segment_target_distance_m", 0.0),
                         "city_junction_segment_distance_remaining_m": city_junction_state.get("segment_distance_remaining_m", 0.0),
