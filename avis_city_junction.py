@@ -119,8 +119,10 @@ def parse_city_maneuver_sequences(value: Any) -> dict[str, list[dict[str, float]
                 raise ValueError(
                     f"{maneuver}[{index}] needs numeric distance_m and steering_value."
                 ) from exc
-            if not math.isfinite(distance) or distance <= 0.0:
-                raise ValueError(f"{maneuver}[{index}].distance_m must be greater than zero.")
+            if not math.isfinite(distance) or distance == 0.0 or abs(distance) > 500.0:
+                raise ValueError(
+                    f"{maneuver}[{index}].distance_m must be non-zero and within -500 to 500 metres."
+                )
             if not math.isfinite(steering) or not -1.0 <= steering <= 1.0:
                 raise ValueError(f"{maneuver}[{index}].steering_value must be between -1 and 1.")
             normalized_actions.append(
@@ -1011,7 +1013,7 @@ class AvisCityJunctionController:
             )
             if self._segment_index < len(self._sequence):
                 action = self._sequence[self._segment_index]
-                target_distance = float(action["distance_m"])
+                target_distance = abs(float(action["distance_m"]))
                 segment_elapsed = (
                     max(0.0, current - self._segment_started_at)
                     if self._segment_started_at is not None else 0.0
@@ -1024,6 +1026,7 @@ class AvisCityJunctionController:
                     self._segment_index += 1
                     self._segment_distance_m = 0.0
                     self._segment_started_at = current
+                    self._seed_distance_sample(speed, speed_sample_at)
                     if self._segment_index >= len(self._sequence):
                         self._finish(current)
                     else:
@@ -1067,8 +1070,12 @@ class AvisCityJunctionController:
             and self._segment_index < len(self._sequence)
             else None
         )
+        target_distance = (
+            float(action["distance_m"]) if action is not None else 0.0
+        )
+        segment_direction = -1 if target_distance < 0.0 else 1
         remaining = (
-            max(0.0, float(action["distance_m"]) - self._segment_distance_m)
+            max(0.0, abs(target_distance) - self._segment_distance_m)
             if action is not None else 0.0
         )
         prediction = self._last_sign_prediction or {}
@@ -1095,9 +1102,9 @@ class AvisCityJunctionController:
             "segment_index": int(self._segment_index + 1) if action is not None else 0,
             "segment_count": len(self._sequence),
             "segment_distance_m": float(self._segment_distance_m),
-            "segment_target_distance_m": (
-                float(action["distance_m"]) if action is not None else 0.0
-            ),
+            "segment_target_distance_m": float(target_distance),
+            "segment_direction": int(segment_direction),
+            "segment_direction_label": "REVERSE" if segment_direction < 0 else "FORWARD",
             "segment_distance_remaining_m": float(remaining),
             "maneuver_distance_total_m": float(self._distance_total_m),
             "distance_sample_interval_seconds": float(
