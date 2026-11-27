@@ -36,9 +36,9 @@
     "ll_bottom_roi": 0.753,
     "ll_left_roi": 0.163,
     "ll_right_roi": 0.364,
-    "rl_top_roi": 0.636,
+    "rl_top_roi": 0.637,
     "rl_bottom_roi": 0.759,
-    "rl_left_roi": 0.645,
+    "rl_left_roi": 0.653,
     "rl_right_roi": 0.862,
     "white_l_min": 165,
     "white_s_max": 115,
@@ -98,5 +98,5 @@
     "adaptive_roi_recovery_frames": 4,
     "adaptive_roi_restore_step_ratio": 0.01
   },
-  "saved_at": 1795778465.7729979
+  "saved_at": 1795778468.9849021
 }
