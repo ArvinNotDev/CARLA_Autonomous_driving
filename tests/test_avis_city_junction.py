@@ -146,6 +146,23 @@ def test_sign_class_order_validation_requires_exactly_the_six_model_labels():
         )
 
 
+def test_avIs_default_normal_turn_sequences_match_active_carla_stable_v2_profile():
+    root = Path(__file__).resolve().parents[1]
+    carla_profiles = json.loads(
+        (root / "runtime_profiles.json").read_text(encoding="utf-8")
+    )
+    carla_sequences = carla_profiles["StableV2"]["JUNCTION_MOVEMENT_SEQUENCES"]
+    avis_sequences = json.loads(DEFAULT_AVIS_SETTINGS["city_maneuver_sequences_json"])
+
+    for route in ("LEFT", "RIGHT", "STRAIGHT"):
+        assert avis_sequences[route] == carla_sequences[route]
+
+    # 90-degree sign classes are independently editable but start from the
+    # matching CARLA left/right route until calibrated separately.
+    assert avis_sequences["LEFT_90"] == avis_sequences["LEFT"]
+    assert avis_sequences["RIGHT_90"] == avis_sequences["RIGHT"]
+
+
 def test_maneuver_json_accepts_independent_sequences_for_all_turn_types():
     sequences = {
         "STRAIGHT": [{"distance_m": 4.0, "steering_value": 0.0}],
