@@ -73,10 +73,10 @@
     "city_crosswalk_min_line_length_ratio": 0.35,
     "city_crosswalk_max_line_angle_deg": 12.0,
     "city_crosswalk_confirm_frames": 2,
-    "cw_top_roi": 0.531,
-    "cw_bottom_roi": 0.688,
-    "cw_left_roi": 0.269,
-    "cw_right_roi": 0.7,
+    "cw_top_roi": 0.547,
+    "cw_bottom_roi": 0.704,
+    "cw_left_roi": 0.28,
+    "cw_right_roi": 0.711,
     "obstacle_model_confidence_threshold": 0.9,
     "obstacle_lane_confidence_threshold": 0.65,
     "obstacle_model_confirm_frames": 3,
@@ -162,5 +162,5 @@
       }
     ]
   },
-  "saved_at": 1795806748.4820564
+  "saved_at": 1795806837.8824408
 }
