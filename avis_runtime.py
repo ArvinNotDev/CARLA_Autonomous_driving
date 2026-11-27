@@ -3926,6 +3926,32 @@ def run_avis(args: argparse.Namespace) -> int:
                         bool(current_settings.get("obstacle_detection_enabled", True))
                         and obstacle_path_changed
                     )
+                    sign_enabled = (
+                        args.avis_mode == "city"
+                        and bool(current_settings.get("city_junction_sign_enabled", False))
+                    )
+                    previous_sign_enabled = (
+                        args.avis_mode == "city"
+                        and bool(settings.get("city_junction_sign_enabled", False))
+                    )
+                    sign_model_changed = (
+                        current_settings.get("junction_sign_model_path")
+                        != settings.get("junction_sign_model_path")
+                    )
+                    sign_format_changed = any(
+                        current_settings.get(key) != settings.get(key)
+                        for key in (
+                            "city_junction_sign_class_order_json",
+                            "city_junction_sign_input_size",
+                        )
+                    )
+                    junction_sign_processor_changed = (
+                        sign_enabled != previous_sign_enabled
+                        or (sign_enabled and (sign_model_changed or sign_format_changed))
+                    )
+                    sign_threshold = float(
+                        current_settings.get("city_junction_sign_confidence_threshold", 0.55)
+                    )
                     rebuild_lane_processor = (
                         selected_backend != active_backend
                         or (selected_backend == "ultralytics" and lane_model_changed)
@@ -3980,13 +4006,42 @@ def run_avis(args: argparse.Namespace) -> int:
                         else:
                             obstacle_replacement = None
 
-                    if rebuild_lane_processor or obstacle_processor_changed:
+                    junction_sign_replacement = junction_sign_classifier
+                    if junction_sign_processor_changed:
+                        if sign_enabled:
+                            sign_path = _resolve_avis_model_path(
+                                current_settings["junction_sign_model_path"],
+                                suffix=".onnx",
+                                setting_name="Junction-sign classifier model",
+                            )
+                            class_order = json.loads(
+                                current_settings["city_junction_sign_class_order_json"]
+                            )
+                            junction_sign_replacement = AvisJunctionSignOnnxClassifier(
+                                sign_path,
+                                class_order=class_order,
+                                input_size=int(current_settings["city_junction_sign_input_size"]),
+                            )
+                        else:
+                            junction_sign_replacement = None
+
+                    if (
+                        rebuild_lane_processor
+                        or obstacle_processor_changed
+                        or junction_sign_processor_changed
+                    ):
                         replacement = AvisCombinedVisionProcessor(
-                            lane_replacement, obstacle_replacement
+                            lane_replacement,
+                            obstacle_replacement,
+                            junction_sign_replacement,
+                            sign_threshold,
                         )
                         inference_worker.set_vision_processor(replacement)
                         vision_processor = replacement
                         obstacle_classifier = obstacle_replacement
+                        junction_sign_classifier = junction_sign_replacement
+                    else:
+                        vision_processor.junction_sign_confidence_threshold = sign_threshold
 
                     active_backend = selected_backend
                     if rebuild_lane_processor:
@@ -4003,6 +4058,14 @@ def run_avis(args: argparse.Namespace) -> int:
                             print(
                                 f"[AVIS] Activated obstacle classifier: "
                                 f"{current_settings['obstacle_model_path']}."
+                            )
+                    if junction_sign_processor_changed:
+                        if junction_sign_classifier is None:
+                            print("[AVIS] City junction-sign classifier disabled.")
+                        else:
+                            print(
+                                "[AVIS] Activated City junction-sign ONNX classifier: "
+                                f"{current_settings['junction_sign_model_path']}."
                             )
 
                     if int(current_settings["sensor_angle"]) != active_sensor_angle:
