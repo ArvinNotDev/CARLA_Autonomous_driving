@@ -1907,6 +1907,15 @@ async function refreshStatus() {
       " · Obstacle model: " + String(t.obstacle_classifier?.obstacle_ahead?.label || "--") +
       " (" + (t.obstacle_model_probability == null ? "--" : (Number(t.obstacle_model_probability) * 100).toFixed(0) + "%") + ")" +
       " · Crosswalk: " + (t.city_crosswalk_enabled === false ? "OFF" : t.city_crosswalk_stop_active ? "STOP " + Number(t.city_crosswalk_stop_remaining_seconds || 0).toFixed(1) + "s" : t.city_crosswalk_detected ? "DETECTED" : t.city_crosswalk_line_present ? "LINE PRESENT" : "SEARCHING") +
+       " · Stop control: " + (
+         t.city_reverse_brake_phase === "REVERSE_BRAKING"
+           ? "REV " + Math.abs(Number(t.city_reverse_brake_command || 0)) + "%"
+           : t.city_reverse_brake_phase === "NEUTRAL_HOLD"
+             ? "NEUTRAL HOLD"
+             : t.city_reverse_brake_phase === "SPEED_UNAVAILABLE"
+               ? "SPEED UNAVAILABLE"
+               : "--"
+       ) +
        " · Junction: " + String(t.city_junction_phase || "IDLE") +
        " · Sign: " + String(t.city_junction_sign_class || "--") + (t.city_junction_sign_confidence == null ? "" : " " + (Number(t.city_junction_sign_confidence) * 100).toFixed(0) + "%") +
        " · Route: " + String(t.city_junction_route_type || t.city_junction_pending_sign || "--") +
