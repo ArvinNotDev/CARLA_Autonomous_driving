@@ -812,7 +812,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
   <div class="header-status"><span class="status-pill"><span id="connectionDot" class="dot"></span><span id="connectionText">Connecting to AVIS</span></span><span class="status-pill" id="backendTag">VISION —</span></div>
 </header>
 <main>
-  <div class="topline"><div><div class="eyebrow">Live control / perception</div><h2>Vehicle perception workspace</h2><div class="muted">AVIS settings are stored independently and do not modify CARLA profiles or runtime configuration.</div></div><div class="tag">AVIS ONLY</div></div>
+  <div class="topline"><div><div class="eyebrow">Live control / perception</div><h2>Vehicle perception workspace</h2><div class="muted">All AVIS settings, including model paths, model/line selection, confidence thresholds and ROI calibration, are saved with the active profile and synced to GitHub when settings are applied.</div></div><div class="tag">AVIS ONLY</div></div>
   <div class="grid">
     <section class="stack">
       <div class="panel">
@@ -907,7 +907,19 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
         <div class="divider"></div>
         <div class="section-label">Lane-line perception backend</div>
         <div class="fields">
-          <div class="field full"><label for="vision_backend">Lane-line backend</label><select id="vision_backend" data-setting="vision_backend"><option value="ultralytics">Ultralytics lane-line model</option><option value="classical">Classical CV · HLS / Canny / Hough</option></select></div>
+          <div class="field full"><label for="vision_backend">Lane detection mode · model or line</label><select id="vision_backend" data-setting="vision_backend"><option value="ultralytics">AI segmentation model · lane_lines mask</option><option value="classical">Classical line detection · HLS / Canny / Hough</option></select></div>
+          <div class="field full checkbox-field"><label for="auto_mode_default"><input id="auto_mode_default" type="checkbox" data-setting="auto_mode_default"><span>Start in autonomous mode after application launch</span></label><div class="hint">This affects the next AVIS runtime launch; it does not override the current drive mode.</div></div>
+          <div class="field full"><label for="lane_model_path">Lane segmentation model checkpoint (.pt)</label><input id="lane_model_path" data-setting="lane_model_path" type="text" spellcheck="false" placeholder="models_and_datasets/Avis_models/lane_and_drivable-area_model_Avis.pt"></div>
+          <div class="field full"><label for="obstacle_model_path">Obstacle / lane classifier model (.onnx)</label><input id="obstacle_model_path" data-setting="obstacle_model_path" type="text" spellcheck="false" placeholder="models_and_datasets/Avis_models/obstacle_and_lane_Avis_model.onnx"></div>
+          <div class="field"><label for="model_image_size">Lane model inference size</label><input id="model_image_size" data-setting="model_image_size" type="number" min="160" max="2048" step="32"></div>
+          <div class="field"><label for="lane_prob_threshold">Lane probability threshold</label><input id="lane_prob_threshold" data-setting="lane_prob_threshold" type="number" min="0" max="1" step=".01"></div>
+          <div class="field"><label for="drivable_prob_threshold">Drivable-area probability threshold</label><input id="drivable_prob_threshold" data-setting="drivable_prob_threshold" type="number" min="0" max="1" step=".01"></div>
+          <div class="field"><label for="debug_panel_hz">Debug panel update rate (Hz)</label><input id="debug_panel_hz" data-setting="debug_panel_hz" type="number" min="1" max="120" step="1"></div>
+          <div class="field full checkbox-field"><label for="vision_debug"><input id="vision_debug" type="checkbox" data-setting="vision_debug"><span>Enable vision debug outputs</span></label></div>
+          <div class="field checkbox-field"><label for="debug_show_rois"><input id="debug_show_rois" type="checkbox" data-setting="debug_show_rois"><span>Show ROI overlays</span></label></div>
+          <div class="field checkbox-field"><label for="debug_show_lane_mask"><input id="debug_show_lane_mask" type="checkbox" data-setting="debug_show_lane_mask"><span>Show lane mask</span></label></div>
+          <div class="field checkbox-field"><label for="debug_show_drivable_area"><input id="debug_show_drivable_area" type="checkbox" data-setting="debug_show_drivable_area"><span>Show drivable-area mask</span></label></div>
+          <div class="field checkbox-field"><label for="debug_show_text"><input id="debug_show_text" type="checkbox" data-setting="debug_show_text"><span>Show debug text</span></label></div>
           <div class="field"><label for="sensor_angle">Normal sensor angle (degrees)</label><input id="sensor_angle" data-setting="sensor_angle" type="number" min="10" max="90" step="1"></div>
           <div class="field"><label for="control_loop_hz">Control frequency (Hz)</label><input id="control_loop_hz" data-setting="control_loop_hz" type="number" min="10" max="60" step="1"></div>
           <div class="field"><label for="inference_interval_ms">Inference interval (ms)</label><input id="inference_interval_ms" data-setting="inference_interval_ms" type="number" min="10" max="500" step="1"></div>
@@ -936,6 +948,24 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
         </div>
         <div class="section-label">Return to the right lane</div>
         <div class="hint">After the model confirms the vehicle has entered the left lane, AVIS travels exactly 4 metres, then starts the right-lane change. The return uses the same model-confirmed steering pulse, pause, and gentler retry sequence as the initial move to the left. Right-side sensor readings and sensor timeouts do not control this return.</div>
+        <div class="section-label">Additional obstacle and lane-change tuning</div>
+        <div class="fields">
+          <div class="field"><label for="obstacle_front_threshold_cm">Front sensor obstacle threshold (cm)</label><input id="obstacle_front_threshold_cm" data-setting="obstacle_front_threshold_cm" type="number" min="50" max="1499" step="1"></div>
+          <div class="field"><label for="obstacle_trigger_confirm_frames">Sensor trigger confirmation frames</label><input id="obstacle_trigger_confirm_frames" data-setting="obstacle_trigger_confirm_frames" type="number" min="1" max="30" step="1"></div>
+          <div class="field"><label for="obstacle_sensor_clear_threshold_cm">Sensor clear threshold (cm)</label><input id="obstacle_sensor_clear_threshold_cm" data-setting="obstacle_sensor_clear_threshold_cm" type="number" min="51" max="1500" step="1"></div>
+          <div class="field"><label for="obstacle_sensor_clear_confirm_frames">Sensor clear confirmation frames</label><input id="obstacle_sensor_clear_confirm_frames" data-setting="obstacle_sensor_clear_confirm_frames" type="number" min="1" max="30" step="1"></div>
+          <div class="field"><label for="obstacle_pass_sensor_angle">Pass-check sensor angle</label><input id="obstacle_pass_sensor_angle" data-setting="obstacle_pass_sensor_angle" type="number" min="10" max="90" step="1"></div>
+          <div class="field"><label for="obstacle_pass_sensor_presence_threshold_cm">Pass sensor presence threshold (cm)</label><input id="obstacle_pass_sensor_presence_threshold_cm" data-setting="obstacle_pass_sensor_presence_threshold_cm" type="number" min="20" max="1499" step="1"></div>
+          <div class="field"><label for="obstacle_pass_sensor_clear_threshold_cm">Pass sensor clear threshold (cm)</label><input id="obstacle_pass_sensor_clear_threshold_cm" data-setting="obstacle_pass_sensor_clear_threshold_cm" type="number" min="21" max="1500" step="1"></div>
+          <div class="field"><label for="obstacle_pass_sensor_presence_frames">Pass sensor presence frames</label><input id="obstacle_pass_sensor_presence_frames" data-setting="obstacle_pass_sensor_presence_frames" type="number" min="1" max="30" step="1"></div>
+          <div class="field"><label for="obstacle_pass_sensor_clear_frames">Pass sensor clear frames</label><input id="obstacle_pass_sensor_clear_frames" data-setting="obstacle_pass_sensor_clear_frames" type="number" min="1" max="30" step="1"></div>
+          <div class="field"><label for="obstacle_pass_clearance_distance_m">Pass clearance distance (m)</label><input id="obstacle_pass_clearance_distance_m" data-setting="obstacle_pass_clearance_distance_m" type="number" min=".1" max="100" step=".1"></div>
+          <div class="field"><label for="obstacle_return_delay_seconds">Return delay (seconds)</label><input id="obstacle_return_delay_seconds" data-setting="obstacle_return_delay_seconds" type="number" min="0" max="60" step=".1"></div>
+          <div class="field"><label for="obstacle_pass_sensor_timeout_seconds">Pass sensor timeout (seconds)</label><input id="obstacle_pass_sensor_timeout_seconds" data-setting="obstacle_pass_sensor_timeout_seconds" type="number" min="1" max="120" step="1"></div>
+          <div class="field"><label for="obstacle_lane_line_search_max_distance_m">Lane search limit (m)</label><input id="obstacle_lane_line_search_max_distance_m" data-setting="obstacle_lane_line_search_max_distance_m" type="number" min=".1" max="1000" step=".1"></div>
+          <div class="field"><label for="obstacle_clearance_after_pass_m">Clearance after pass (m)</label><input id="obstacle_clearance_after_pass_m" data-setting="obstacle_clearance_after_pass_m" type="number" min="0" max="1000" step=".1"></div>
+        </div>
+        <div class="hint">All values in this section are included in local and GitHub profiles for complete configuration portability. Sensor-based fields are retained for compatible controller profiles; the current model-confirmed lane-change controller does not use them for pass confirmation.</div>
         <div class="section-label">Drivable-area path correction</div>
         <div class="fields">
           <div class="field full"><label for="drivable_recovery_enabled">Use drivable-area lane correction</label><select id="drivable_recovery_enabled" data-setting="drivable_recovery_enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
@@ -1131,9 +1161,10 @@ async function saveROISelection() {
     keys.forEach(key => $(key).value = data.settings[key]);
     drawROIOverlays();
     $("settingsForm").dataset.dirty = "true";
-    showMessage(selectedROI+" ROI saved.",false);
-    $("roiCanvasMessage").textContent = selectedROI + " ROI saved.";
-    $("roiCanvasMessage").style.color = "#68dfa7";
+    const syncSuffix = data.github_synced ? " · GitHub synced" : " · GitHub: " + (data.github_message || "not synced");
+    showMessage(selectedROI + " ROI saved" + syncSuffix + ".", !data.github_synced);
+    $("roiCanvasMessage").textContent = selectedROI + " ROI saved" + syncSuffix + ".";
+    $("roiCanvasMessage").style.color = data.github_synced ? "#68dfa7" : "#ffb36b";
     return true;
   } catch (error) {
     showMessage(error.message,true);
@@ -1324,13 +1355,16 @@ $("settingsForm").addEventListener("submit", async event => {
   showMessage("Applying settings...", false);
   try {
     const data = await postJson("/api/settings", collectSettings());
+    const syncMessage = data.github_synced
+      ? " · GitHub profile " + data.profile_name + " updated"
+      : " · GitHub not synced: " + (data.github_message || "authentication required");
     if (settingsEditRevision === submittedRevision) {
       fillSettings(data.settings);
       delete form.dataset.dirty;
-      showMessage("Settings applied and saved.", false);
+      showMessage("Settings applied and saved locally" + syncMessage + ".", !data.github_synced);
     } else {
       form.dataset.dirty = "true";
-      showMessage("Settings saved. New edits are still pending; apply again.", false);
+      showMessage("Settings saved" + syncMessage + ". New edits are still pending; apply again.", !data.github_synced);
     }
   } catch (error) {
     form.dataset.dirty = "true";
@@ -1609,10 +1643,9 @@ $("saveProfileButton").addEventListener("click", async () => {
   const name = $("profileName").value.trim();
   if (!name) { $("profilesMessage").textContent = "Enter a profile name first."; return; }
   try {
-    const applied = await postJson("/api/settings", collectSettings());
-    fillSettings(applied.settings);
+    const saved = await postJson("/api/profiles/save", {name, settings: collectSettings()});
+    fillSettings(saved.settings);
     delete $("settingsForm").dataset.dirty;
-    const saved = await postJson("/api/profiles/save", {name});
     await refreshLocalProfiles(name);
     $("profilesMessage").textContent = saved.github_synced
       ? "Profile saved locally and published to GitHub."
