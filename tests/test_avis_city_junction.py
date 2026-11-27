@@ -483,13 +483,21 @@ def test_negative_maneuver_distance_commands_reverse_and_measures_absolute_trave
     assert reverse_step["segment_target_distance_m"] == pytest.approx(-0.15)
     assert reverse_step["segment_distance_m"] == pytest.approx(0.05)
 
-    forward_step = controller.update(
+    controller.update(
         None, None,
         enabled=True,
         settings=settings,
         current_speed_kmh=3.6,
         dt=0.01,
         now=7.3,
+    )
+    forward_step = controller.update(
+        None, None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=3.6,
+        dt=0.01,
+        now=7.4,
     )
     assert forward_step["phase"] == "MANEUVER"
     assert forward_step["segment_index"] == 2
