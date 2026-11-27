@@ -4035,22 +4035,34 @@ def run_avis(args: argparse.Namespace) -> int:
                             "obstacle_model_confidence_threshold",
                             current_settings.get("obstacle_model_confidence_threshold", 0.65),
                         ),
+                        "obstacle_detection_enabled": bool(
+                            current_settings.get("obstacle_detection_enabled", True)
+                        ),
                         "obstacle_avoidance_enabled": bool(
                             current_settings.get("obstacle_lane_change_enabled", True)
                         ),
-                        "city_pedestrian_stop_enabled": bool(
+                        "city_crosswalk_enabled": bool(
                             args.avis_mode == "city"
-                            and current_settings.get("city_pedestrian_stop_enabled", False)
+                            and current_settings.get("city_crosswalk_enabled", False)
                         ),
-                        "city_pedestrian_stop_active": bool(
-                            city_pedestrian_stop_state.get("active", False)
+                        "city_crosswalk_stop_active": bool(
+                            city_crosswalk_stop_state.get("active", False)
                         ),
-                        "city_pedestrian_stop_reason": city_pedestrian_stop_state.get("reason"),
-                        "city_pedestrian_stop_elapsed_seconds": round(
-                            float(city_pedestrian_stop_state.get("elapsed_seconds", 0.0)), 2
+                        "city_crosswalk_stop_reason": city_crosswalk_stop_state.get("reason"),
+                        "city_crosswalk_stop_elapsed_seconds": round(
+                            float(city_crosswalk_stop_state.get("elapsed_seconds", 0.0)), 2
                         ),
-                        "city_pedestrian_stop_remaining_seconds": round(
-                            float(city_pedestrian_stop_state.get("remaining_seconds", 0.0)), 2
+                        "city_crosswalk_stop_remaining_seconds": round(
+                            float(city_crosswalk_stop_state.get("remaining_seconds", 0.0)), 2
+                        ),
+                        "city_crosswalk_line_present": bool(
+                            city_crosswalk_stop_state.get("line_present", False)
+                        ),
+                        "city_crosswalk_detected": bool(
+                            city_crosswalk_stop_state.get("detected", False)
+                        ),
+                        "city_crosswalk_length_ratio": float(
+                            city_crosswalk_stop_state.get("length_ratio", 0.0)
                         ),
                         "obstacle_lane_probability": lane_change_state.get("obstacle_lane_probability"),
                         "obstacle_lane_prediction": lane_change_state.get("obstacle_lane_prediction"),
