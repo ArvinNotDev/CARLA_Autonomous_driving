@@ -7,11 +7,30 @@ import json
 import math
 import numpy as np
 import os
+import socket
 import sys
 import time
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Optional
+
+
+def _avis_engine_recvall(connection: Any) -> str:
+    """Receive one AVIS response and fail immediately when the peer closes.
+
+    The vendor API's original recvall() loops forever when recv() returns b""
+    after an Engine restart. A closed TCP stream must become a reconnect signal.
+    """
+    buffer = bytearray()
+    while True:
+        chunk = connection.recv(131072)
+        if not chunk:
+            raise ConnectionError(
+                "AVIS Engine closed the TCP connection before sending <EOF>."
+            )
+        buffer.extend(chunk)
+        if b"<EOF>" in buffer:
+            return buffer.decode("utf-8")
 
 
 class AvisFpsMonitor:
@@ -2093,6 +2112,18 @@ class AvisEngineClient:
         self.car = api_module.Car()
         self._connected = False
         self._closed = False
+
+        # AVIS-Engine-Python-API currently declares Car.sock at class scope.
+        # Every Car() therefore inherits the same socket, including one closed
+        # by a previous runtime session. Give each client its own TCP socket.
+        inherited_socket = getattr(type(self.car), "sock", None)
+        if isinstance(inherited_socket, socket.socket):
+            self.car.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+        # The vendor recvall() spins forever on b"" after the Engine closes its
+        # side of TCP. Replace it with EOF-aware receive logic so disconnects
+        # reach the runtime's reconnect loop.
+        self.car.recvall = lambda connection: _avis_engine_recvall(connection)
 
         # The vendor destructor calls stop() even after explicit shutdown.
         # This adapter owns shutdown and makes that destructor path harmless.
