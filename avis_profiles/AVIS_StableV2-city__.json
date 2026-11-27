@@ -108,5 +108,73 @@
     "adaptive_roi_recovery_frames": 4,
     "adaptive_roi_restore_step_ratio": 0.01
   },
-  "saved_at": 1795797964.8047132
+  "maneuvers": {
+    "STRAIGHT": [
+      {
+        "distance_m": 6.0,
+        "steering_value": 0.0
+      }
+    ],
+    "LEFT": [
+      {
+        "distance_m": 22.0,
+        "steering_value": 0.0
+      },
+      {
+        "distance_m": 5.0,
+        "steering_value": -0.4
+      },
+      {
+        "distance_m": 3.5,
+        "steering_value": -0.5
+      },
+      {
+        "distance_m": 2.5,
+        "steering_value": 0.0
+      }
+    ],
+    "RIGHT": [
+      {
+        "distance_m": 0.5,
+        "steering_value": 0.0
+      },
+      {
+        "distance_m": 2.0,
+        "steering_value": 1.0
+      }
+    ],
+    "LEFT_90": [
+      {
+        "distance_m": 22.0,
+        "steering_value": 0.0
+      },
+      {
+        "distance_m": 5.0,
+        "steering_value": -0.4
+      },
+      {
+        "distance_m": 3.5,
+        "steering_value": -0.5
+      },
+      {
+        "distance_m": 2.5,
+        "steering_value": 0.0
+      }
+    ],
+    "RIGHT_90": [
+      {
+        "distance_m": 9.5,
+        "steering_value": 0.0
+      },
+      {
+        "distance_m": 8.0,
+        "steering_value": 0.25
+      },
+      {
+        "distance_m": 3.0,
+        "steering_value": 0.7
+      }
+    ]
+  },
+  "saved_at": 1795798092.4639423
 }
