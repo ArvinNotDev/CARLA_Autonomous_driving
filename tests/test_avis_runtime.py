@@ -1680,22 +1680,22 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     assert "1.5-second persistence gate" in html
     assert 'id="obstacle_model_confidence_threshold"' in html
     assert 'id="obstacle_lane_confidence_threshold"' in html
-    assert 'id="obstacle_pass_sensor_angle"' not in html
-    assert 'id="obstacle_pass_sensor_presence_threshold_cm"' not in html
-    assert 'id="obstacle_pass_sensor_clear_threshold_cm"' not in html
-    assert 'id="obstacle_return_delay_seconds"' not in html
-    assert 'id="obstacle_pass_clearance_distance_m"' not in html
+    assert 'id="obstacle_pass_sensor_angle" data-setting="obstacle_pass_sensor_angle"' in html
+    assert 'id="obstacle_pass_sensor_presence_threshold_cm" data-setting="obstacle_pass_sensor_presence_threshold_cm"' in html
+    assert 'id="obstacle_pass_sensor_clear_threshold_cm" data-setting="obstacle_pass_sensor_clear_threshold_cm"' in html
+    assert 'id="obstacle_return_delay_seconds" data-setting="obstacle_return_delay_seconds"' in html
+    assert 'id="obstacle_pass_clearance_distance_m" data-setting="obstacle_pass_clearance_distance_m"' in html
     assert "exactly 4 metres" in html
     assert "Right-side sensor readings and sensor timeouts do not control this return." in html
     assert 'id="obstacle_lane_change_retry_steer"' in html
     assert 'id="obstacle_lane_change_retry_pulse_distance_m"' in html
     assert 'id="obstacle_slowdown_start_cm"' not in html
-    assert 'id="obstacle_clearance_after_pass_m"' not in html
+    assert 'id="obstacle_clearance_after_pass_m" data-setting="obstacle_clearance_after_pass_m"' in html
     assert 'id="obstacle_return_distance_m"' not in html
-    assert 'id="obstacle_front_threshold_cm"' not in html
+    assert 'id="obstacle_front_threshold_cm" data-setting="obstacle_front_threshold_cm"' in html
     assert "exactly 4 metres" in html
     assert "Right-side sensor readings and sensor timeouts do not control this return." in html
-    assert 'id="obstacle_lane_line_search_max_distance_m"' not in html
+    assert 'id="obstacle_lane_line_search_max_distance_m" data-setting="obstacle_lane_line_search_max_distance_m"' in html
     assert "dedicated low lane-change speed" in html
     assert 'id="settingsForm" novalidate' in html
     assert 'id="obstacle_lane_change_speed_kmh" data-setting="obstacle_lane_change_speed_kmh" type="number" min="1" max="20" step=".5"' in html
