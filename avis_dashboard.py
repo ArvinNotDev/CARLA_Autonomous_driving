@@ -2006,7 +2006,9 @@ async function refreshStatus() {
        " · Junction: " + String(t.city_junction_phase || "IDLE") +
        " · Sign: " + String(t.city_junction_sign_class || "--") + (t.city_junction_sign_confidence == null ? "" : " " + (Number(t.city_junction_sign_confidence) * 100).toFixed(0) + "%") +
        " · Route: " + String(t.city_junction_route_type || t.city_junction_pending_sign || "--") +
-       (t.city_junction_maneuver_active ? " · Maneuver: " + String(t.city_junction_maneuver_segment) + "/" + String(t.city_junction_maneuver_segments) : "") +
+       (t.city_junction_maneuver_active ? " · Maneuver: " + String(t.city_junction_maneuver_segment) + "/" + String(t.city_junction_maneuver_segments) + " · Distance: " + Number(t.city_junction_segment_distance_m || 0).toFixed(2) + "/" + Number(t.city_junction_segment_target_distance_m || 0).toFixed(2) + " m" : "") +
+       " · Distance scale: x" + Number(t.city_junction_distance_scale ?? data.settings.city_maneuver_distance_scale ?? 1).toFixed(2) +
+       (Number(t.city_junction_distance_sample_gap_count || 0) > 0 ? " · Ignored speed gaps: " + String(t.city_junction_distance_sample_gap_count) : "") +
        " · Avoidance gate: " + (t.obstacle_avoidance_enabled === false ? "DISABLED" : t.obstacle_model_accepted ? "ACCEPTED" : "REJECTED") +
        " · Confidence threshold: " + (Number(t.obstacle_model_confidence_threshold ?? data.settings.obstacle_model_confidence_threshold ?? 0.65) * 100).toFixed(0) + "%" +
       " · Lane choice: " + String(t.obstacle_lane_prediction || "--") +
