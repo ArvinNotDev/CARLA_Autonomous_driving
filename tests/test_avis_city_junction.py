@@ -104,6 +104,18 @@ def _trigger_crosswalk(controller, settings, *, speed=8.0, now=2.0):
     )
 
 
+def _observe_sign(controller, settings, label, observed_at):
+    return controller.update(
+        None,
+        _sign_prediction(label, observed_at),
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=8.0,
+        dt=0.05,
+        now=observed_at,
+    )
+
+
 def test_six_sign_classes_are_mapped_without_conflating_normal_and_90_degree_turns():
     mapping = parse_city_sign_class_map(DEFAULT_CITY_SIGN_CLASS_MAP)
     assert mapping["RIGHT"] == {"right"}
@@ -114,6 +126,45 @@ def test_six_sign_classes_are_mapped_without_conflating_normal_and_90_degree_tur
     assert "90l" in mapping["LEFT_90"]
     assert "right" not in mapping["RIGHT_90"]
     assert "left" not in mapping["LEFT_90"]
+
+
+def test_sign_votes_accumulate_until_crosswalk_and_reject_late_outlier_frames():
+    settings = _settings()
+    controller = AvisCityJunctionController()
+    for timestamp in (1.0, 1.1, 1.2):
+        _observe_sign(controller, settings, "left", timestamp)
+    for timestamp in (1.3, 1.4):
+        selected = _observe_sign(controller, settings, "right", timestamp)
+    assert selected["selected_sign_type"] == "LEFT"
+
+    crosswalk = controller.update(
+        _crosswalk(), None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=8.0,
+        dt=0.05,
+        observation_id=40,
+        observation_timestamp=1.5,
+        now=1.5,
+    )
+    assert crosswalk["route_type"] == "LEFT"
+    assert crosswalk["selected_sign_type"] == "LEFT"
+
+
+def test_sign_vote_window_resets_when_a_maneuver_finishes():
+    settings = _settings()
+    controller = AvisCityJunctionController()
+    _observe_sign(controller, settings, "left", 1.0)
+    _observe_sign(controller, settings, "left", 1.1)
+    assert controller.snapshot(now=1.1, settings=settings)["selected_sign_type"] == "LEFT"
+
+    controller._active_route_type = "LEFT"
+    controller._finish(2.0)
+    after_finish = controller.snapshot(now=2.0, settings=settings)
+    assert after_finish["selected_sign_type"] is None
+    _observe_sign(controller, settings, "right", 2.1)
+    selected = _observe_sign(controller, settings, "right", 2.2)
+    assert selected["selected_sign_type"] == "RIGHT"
 
 
 def test_onnx_metadata_class_names_support_label_to_index_dictionary():
@@ -874,6 +925,7 @@ def test_dashboard_exposes_sign_model_and_editable_maneuver_sequences():
     assert 'min="-500" max="500"' in DASHBOARD_HTML
     assert "negative = reverse" in DASHBOARD_HTML
     assert "RIGHT_90" in DEFAULT_AVIS_SETTINGS["city_maneuver_sequences_json"]
+    assert "· Selected: " in DASHBOARD_HTML
 
 def test_maneuver_sequences_are_persisted_and_restored_per_profile(tmp_path):
     settings_path = tmp_path / "avis_settings.json"

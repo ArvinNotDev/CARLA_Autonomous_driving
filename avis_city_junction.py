@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import deque
 import json
 import math
 import time
@@ -595,7 +594,11 @@ class AvisCityJunctionController:
         self._pending_sign_type: str | None = None
         self._pending_sign_confidence = 0.0
         self._pending_sign_at: float | None = None
-        self._sign_votes: deque[str] = deque(maxlen=8)
+        # Keep all confident sign votes from maneuver completion to the next
+        # crosswalk. A short burst of late misclassifications must not erase
+        # the class supported by the rest of that approach.
+        self._sign_votes: dict[str, tuple[int, float]] = {}
+        self._last_sign_vote_at: float | None = None
         self._last_sign_observed_at: float | None = None
         self._sign_locked_until_clear = False
         self._sign_clear_frames = 0
@@ -680,11 +683,12 @@ class AvisCityJunctionController:
         self._last_sign_prediction = dict(prediction)
 
         max_age = max(0.5, float(settings.get("city_junction_sign_max_age_seconds", 20.0)))
-        if self._pending_sign_at is not None and now - self._pending_sign_at > max_age:
+        if self._last_sign_vote_at is not None and now - self._last_sign_vote_at > max_age:
             self._pending_sign_type = None
             self._pending_sign_confidence = 0.0
             self._pending_sign_at = None
             self._sign_votes.clear()
+            self._last_sign_vote_at = None
 
         try:
             class_map = parse_city_sign_class_map(
@@ -709,24 +713,42 @@ class AvisCityJunctionController:
                     self._sign_locked_until_clear = False
                     self._sign_clear_frames = 0
                     self._sign_votes.clear()
+                    self._pending_sign_type = None
+                    self._pending_sign_confidence = 0.0
+                    self._pending_sign_at = None
+                    self._last_sign_vote_at = None
             else:
                 self._sign_clear_frames = 0
             return
 
         if canonical is None:
-            self._sign_votes.clear()
             return
 
         confirm_frames = max(
             1, min(10, int(settings.get("city_junction_sign_confirm_frames", 2)))
         )
-        self._sign_votes = deque(self._sign_votes, maxlen=confirm_frames)
-        self._sign_votes.append(canonical)
-        if len(self._sign_votes) >= confirm_frames and all(
-            vote == canonical for vote in self._sign_votes
+        count, confidence_total = self._sign_votes.get(canonical, (0, 0.0))
+        self._sign_votes[canonical] = (count + 1, confidence_total + float(confidence))
+        self._last_sign_vote_at = observed_at
+        ranked = sorted(
+            self._sign_votes,
+            key=lambda vote: self._sign_votes[vote],
+            reverse=True,
+        )
+        leader = ranked[0]
+        leader_count, leader_confidence_total = self._sign_votes[leader]
+        runner_up_count = self._sign_votes[ranked[1]][0] if len(ranked) > 1 else 0
+        has_consensus = leader_count >= confirm_frames
+        has_clear_margin = leader_count - runner_up_count >= 2
+        if has_consensus and (
+            self._pending_sign_type is None
+            or leader == self._pending_sign_type
+            or has_clear_margin
         ):
-            self._pending_sign_type = canonical
-            self._pending_sign_confidence = float(confidence)
+            self._pending_sign_type = leader
+            self._pending_sign_confidence = (
+                leader_confidence_total / leader_count
+            )
             self._pending_sign_at = observed_at
 
     @staticmethod
@@ -872,6 +894,15 @@ class AvisCityJunctionController:
         self._distance_last_speed_kmh = None
         self._distance_sample_interval_seconds = 0.0
         self._distance_last_increment_m = 0.0
+        # Begin a fresh sign-voting window for the approach to the next
+        # crosswalk; no sign seen during the completed maneuver carries over.
+        self._pending_sign_type = None
+        self._pending_sign_confidence = 0.0
+        self._pending_sign_at = None
+        self._sign_votes.clear()
+        self._last_sign_vote_at = None
+        self._sign_locked_until_clear = False
+        self._sign_clear_frames = 0
         self._cooldown_until = now + self.POST_MANEUVER_CROSSWALK_IGNORE_SECONDS
         self._just_completed = True
         self._last_reason = "junction_event_complete"
@@ -1125,6 +1156,7 @@ class AvisCityJunctionController:
                 or self._active_route_type
                 or ("STRAIGHT" if self._phase == "IDLE" else "UNKNOWN")
             ),
+            "selected_sign_type": self._pending_sign_type or self._active_route_type,
             "pending_sign_confidence": float(self._pending_sign_confidence),
             "sign_class": prediction.get("class_name"),
             "sign_confidence": prediction.get("confidence"),

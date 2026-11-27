@@ -4896,6 +4896,7 @@ def run_avis(args: argparse.Namespace) -> int:
                         "city_junction_phase": city_junction_state.get("phase", "IDLE"),
                         "city_junction_route_type": city_junction_state.get("route_type"),
                         "city_junction_pending_sign": city_junction_state.get("pending_sign_type"),
+                        "city_junction_sign_selected_class": city_junction_state.get("selected_sign_type"),
                         "city_junction_sign_class": city_junction_state.get("sign_class"),
                         "city_junction_sign_confidence": city_junction_state.get("sign_confidence"),
                         "city_junction_maneuver_active": bool(city_junction_state.get("maneuver_active")),

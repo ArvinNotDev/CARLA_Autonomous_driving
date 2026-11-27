@@ -2081,7 +2081,8 @@ async function refreshStatus() {
                : "--"
        ) +
        " · Junction: " + String(t.city_junction_phase || "IDLE") +
-       " · Sign: " + String(t.city_junction_sign_class || "--") + (t.city_junction_sign_confidence == null ? "" : " " + (Number(t.city_junction_sign_confidence) * 100).toFixed(0) + "%") +
+       " · Sign model: " + String(t.city_junction_sign_class || "--") + (t.city_junction_sign_confidence == null ? "" : " " + (Number(t.city_junction_sign_confidence) * 100).toFixed(0) + "%") +
+       " · Selected: " + String(t.city_junction_sign_selected_class || "WAITING") +
        " · Route: " + String(t.city_junction_route_type || t.city_junction_pending_sign || "--") +
        (t.city_junction_maneuver_active || t.city_junction_phase === "MANEUVER_TIMEOUT" ? " · " + String(t.city_junction_maneuver_direction_label || "FORWARD") + " maneuver: " + String(t.city_junction_maneuver_segment) + "/" + String(t.city_junction_maneuver_segments) + " · Distance: " + Number(t.city_junction_segment_distance_m || 0).toFixed(2) + "/" + Number(t.city_junction_segment_target_distance_m || 0).toFixed(2) + " m" : "") +
        " · Distance scale: x" + Number(t.city_junction_distance_scale ?? data.settings.city_maneuver_distance_scale ?? 1).toFixed(2) +
