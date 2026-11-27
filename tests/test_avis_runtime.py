@@ -16,8 +16,11 @@ from avis_runtime import (
     AvisObstacleLaneChangeController,
     AvisModelObstacleLaneChangeController,
     AvisObstacleLaneClassifier,
+    AvisCityPedestrianStopController,
     apply_avis_profile,
+    build_parser,
     load_avis_profile,
+    load_avis_mode_profile,
     normalize_avis_controls,
     normalize_avis_manual_controls,
     select_avis_target_speed,
@@ -106,6 +109,106 @@ def test_load_avis_profile_rejects_incomplete_profile(tmp_path):
 
     with pytest.raises(RuntimeError, match="incomplete"):
         load_avis_profile(path)
+
+
+def test_avis_mode_profiles_are_loaded_independently_from_committed_files():
+    city = load_avis_mode_profile("city")
+    road = load_avis_mode_profile("road")
+
+    assert city["name"] == "AVIS_StableV2-city"
+    assert road["name"] == "AVIS_StableV2-road"
+    assert city["settings"]["vision_backend"] == "ultralytics"
+    assert city["settings"]["obstacle_lane_change_enabled"] is False
+    assert city["settings"]["city_pedestrian_stop_enabled"] is True
+    assert city["settings"]["city_pedestrian_stop_seconds"] == pytest.approx(5.0)
+    assert road["settings"]["vision_backend"] == "classical"
+    assert road["settings"]["obstacle_lane_change_enabled"] is True
+    assert road["settings"]["city_pedestrian_stop_enabled"] is False
+
+
+def test_avis_cli_defaults_to_road_and_accepts_city_or_road_flags(monkeypatch):
+    from avis_runtime import main as avis_main
+
+    parser = build_parser()
+    assert parser.parse_args(["--avis"]).avis_mode is None
+    assert parser.parse_args(["--avis", "--road"]).avis_mode == "road"
+    assert parser.parse_args(["--avis", "--city"]).avis_mode == "city"
+
+    selected = []
+    monkeypatch.setattr(
+        "avis_runtime.run_avis",
+        lambda args: selected.append((args.avis, args.avis_mode)) or 0,
+    )
+    assert avis_main(["--avis"]) == 0
+    assert avis_main(["--road"]) == 0
+    assert avis_main(["--city"]) == 0
+    assert selected == [(True, "road"), (True, "road"), (True, "city")]
+
+
+def test_city_pedestrian_stop_requires_confirmed_obstacle_minimum_wait_and_clear_frames():
+    controller = AvisCityPedestrianStopController()
+    obstacle = {
+        "valid": True,
+        "obstacle_ahead": {
+            "label": "yes",
+            "confidence": 0.96,
+            "probabilities": {"no": 0.04, "yes": 0.96},
+        },
+    }
+    clear = {
+        "valid": True,
+        "obstacle_ahead": {
+            "label": "no",
+            "confidence": 0.97,
+            "probabilities": {"no": 0.97, "yes": 0.03},
+        },
+    }
+    options = {
+        "enabled": True,
+        "hold_seconds": 5.0,
+        "confidence_threshold": 0.90,
+        "confirm_frames": 2,
+        "clear_frames": 3,
+    }
+
+    pending = controller.update(obstacle, observation_id=1, now=10.0, **options)
+    assert pending["active"] is False
+    stopped = controller.update(obstacle, observation_id=2, now=10.1, **options)
+    assert stopped["active"] is True
+    assert stopped["just_activated"] is True
+    assert stopped["remaining_seconds"] == pytest.approx(5.0)
+
+    # The vehicle must not resume merely because five seconds elapsed.
+    still_waiting = controller.update(clear, observation_id=3, now=16.0, **options)
+    assert still_waiting["active"] is True
+    controller.update(clear, observation_id=4, now=16.1, **options)
+    released = controller.update(clear, observation_id=5, now=16.2, **options)
+    assert released["active"] is False
+    assert released["reason"] == "obstacle_cleared_after_minimum_wait"
+
+
+def test_city_pedestrian_stop_ignores_low_confidence_positive_predictions():
+    controller = AvisCityPedestrianStopController()
+    uncertain = {
+        "valid": True,
+        "obstacle_ahead": {
+            "label": "yes",
+            "confidence": 0.70,
+            "probabilities": {"no": 0.30, "yes": 0.70},
+        },
+    }
+    result = controller.update(
+        uncertain,
+        enabled=True,
+        hold_seconds=5.0,
+        confidence_threshold=0.90,
+        confirm_frames=1,
+        clear_frames=2,
+        observation_id=1,
+        now=1.0,
+    )
+    assert result["active"] is False
+    assert result["confirm_frames"] == 0
 
 
 def test_apply_avis_roi_settings_restores_all_roi_and_shared_geometry_values():
