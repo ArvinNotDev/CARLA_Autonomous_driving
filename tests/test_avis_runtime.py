@@ -647,23 +647,17 @@ def test_avis_simulator_handbrake_reports_unavailable_off_windows():
     assert controller.held is False
 
 
-def test_avis_client_keeps_full_reverse_braking_until_speed_reaches_point_three_kmh():
+def test_avis_client_never_commands_reverse_during_crosswalk_braking():
     api = SimpleNamespace(Car=FakeCar)
     client = AvisEngineClient(api, "127.0.0.1", 25001)
     fake_car = client.car
 
-    # Full reverse input is used at all speeds above the stop threshold,
-    # including the low-speed range where AVIS maps it to reverse motor torque.
-    for speed_kmh in (30.0, 15.0, 8.0, 7.0, 1.0, 0.31):
-        client.send_control(0.0, 0.0, brake=True, current_speed_kmh=speed_kmh)
-        assert fake_car.speed_commands[-1] == -100
-        assert fake_car.steering_commands[-1] == 0
-
-    # At 0.3 km/h and below, reverse input is cut immediately to avoid
-    # accelerating backwards; the native handbrake remains held by the caller.
-    for speed_kmh in (0.3, 0.2, 0.0):
+    # Crosswalk braking must be independent of speed and dashboard max-speed:
+    # Speed=0 removes motor torque while the native handbrake does the stopping.
+    for speed_kmh in (30.0, 15.0, 8.0, 7.0, 1.0, 0.31, 0.3, 0.2, 0.0):
         client.send_control(0.0, 0.0, brake=True, current_speed_kmh=speed_kmh)
         assert fake_car.speed_commands[-1] == 0
+        assert fake_car.speed_commands[-1] >= 0
         assert fake_car.steering_commands[-1] == 0
     client.close()
 
