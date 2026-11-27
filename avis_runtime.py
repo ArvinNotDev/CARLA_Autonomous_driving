@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+from ctypes import wintypes
 from collections import deque
 import importlib.util
 import json
@@ -2307,6 +2309,264 @@ def load_avis_api(api_path: str | None = None) -> ModuleType:
     return engine_module
 
 
+class AvisSimulatorHandbrake:
+    """Hold AVIS Engine's native Space-key handbrake during a crosswalk stop.
+
+    The simulator's InputManager maps the "Forward" handbrake axis to Space.
+    This controller temporarily focuses the AVIS Engine window, holds Space
+    through Win32 SendInput, and restores the previous foreground window when
+    the stop ends. It does not interfere with other Windows platforms.
+    """
+
+    VK_SPACE = 0x20
+    INPUT_KEYBOARD = 1
+    KEYEVENTF_KEYUP = 0x0002
+    SW_RESTORE = 9
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+    def __init__(self, *, user32: Any = None, kernel32: Any = None) -> None:
+        self._injected_api = user32 is not None
+        self._user32 = user32
+        self._kernel32 = kernel32
+        self._held = False
+        self._target_hwnd = 0
+        self._previous_hwnd = 0
+        self.last_error: str | None = None
+
+        if self._user32 is None:
+            if os.name != "nt":
+                self.last_error = "AVIS native handbrake automation is supported on Windows only."
+                return
+            try:
+                self._user32 = ctypes.WinDLL("user32", use_last_error=True)
+                self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            except (AttributeError, OSError) as exc:
+                self.last_error = f"Could not load the Windows input API: {exc}"
+                return
+
+    @property
+    def available(self) -> bool:
+        return self._user32 is not None and self._kernel32 is not None
+
+    @property
+    def held(self) -> bool:
+        return bool(self._held)
+
+    def _process_image(self, hwnd: int) -> str:
+        process_id = wintypes.DWORD(0)
+        self._user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+        if not process_id.value:
+            return ""
+        process = self._kernel32.OpenProcess(
+            self.PROCESS_QUERY_LIMITED_INFORMATION,
+            False,
+            process_id.value,
+        )
+        if not process:
+            return ""
+        try:
+            buffer = ctypes.create_unicode_buffer(32768)
+            size = wintypes.DWORD(len(buffer))
+            if self._kernel32.QueryFullProcessImageNameW(
+                process, 0, buffer, ctypes.byref(size)
+            ):
+                return buffer.value
+            return ""
+        finally:
+            self._kernel32.CloseHandle(process)
+
+    def _find_avis_window(self) -> int:
+        if not self.available:
+            return 0
+        matches: list[tuple[int, str, str]] = []
+        callback_type = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)
+        enum_callback = callback_type(
+            wintypes.BOOL, wintypes.HWND, ctypes.c_ssize_t
+        )
+
+        def visit(hwnd, _parameter):
+            if not self._user32.IsWindowVisible(hwnd):
+                return True
+            length = int(self._user32.GetWindowTextLengthW(hwnd))
+            if length <= 0:
+                return True
+            title_buffer = ctypes.create_unicode_buffer(length + 1)
+            self._user32.GetWindowTextW(hwnd, title_buffer, length + 1)
+            title = title_buffer.value.strip()
+            if "avis" not in title.casefold():
+                return True
+            image_path = self._process_image(hwnd)
+            process_name = os.path.basename(image_path).casefold()
+            # Prefer the actual simulator process over browser tabs whose
+            # window title happens to contain the words "AVIS Engine".
+            if process_name and "avis" not in process_name:
+                return True
+            matches.append((int(hwnd), title, process_name))
+            return True
+
+        callback = enum_callback(visit)
+        if not self._user32.EnumWindows(callback, 0):
+            return 0
+        return matches[0][0] if matches else 0
+
+    @staticmethod
+    def _keyboard_input_type():
+        class KEYBDINPUT(ctypes.Structure):
+            _fields_ = [
+                ("wVk", wintypes.WORD),
+                ("wScan", wintypes.WORD),
+                ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("dwExtraInfo", ctypes.c_size_t),
+            ]
+
+        class MOUSEINPUT(ctypes.Structure):
+            _fields_ = [
+                ("dx", wintypes.LONG),
+                ("dy", wintypes.LONG),
+                ("mouseData", wintypes.DWORD),
+                ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("dwExtraInfo", ctypes.c_size_t),
+            ]
+
+        class HARDWAREINPUT(ctypes.Structure):
+            _fields_ = [
+                ("uMsg", wintypes.DWORD),
+                ("wParamL", wintypes.WORD),
+                ("wParamH", wintypes.WORD),
+            ]
+
+        class INPUTUNION(ctypes.Union):
+            _fields_ = [
+                ("mi", MOUSEINPUT),
+                ("ki", KEYBDINPUT),
+                ("hi", HARDWAREINPUT),
+            ]
+
+        class INPUT(ctypes.Structure):
+            _anonymous_ = ("data",)
+            _fields_ = [
+                ("type", wintypes.DWORD),
+                ("data", INPUTUNION),
+            ]
+
+        return INPUT, KEYBDINPUT
+
+    def _send_space(self, *, key_up: bool) -> None:
+        if not self.available:
+            raise RuntimeError(self.last_error or "Windows input API is unavailable.")
+        input_type, keyboard_type = self._keyboard_input_type()
+        event = input_type()
+        event.type = self.INPUT_KEYBOARD
+        event.ki = keyboard_type(
+            self.VK_SPACE,
+            0,
+            self.KEYEVENTF_KEYUP if key_up else 0,
+            0,
+            0,
+        )
+        sent = int(
+            self._user32.SendInput(
+                1, ctypes.byref(event), ctypes.sizeof(input_type)
+            )
+        )
+        if sent != 1:
+            error = ctypes.get_last_error() if os.name == "nt" else 0
+            raise OSError(error, "Windows did not accept the Space-key input event.")
+
+    def _focus_window(self, hwnd: int) -> None:
+        previous = int(self._user32.GetForegroundWindow() or 0)
+        if previous == hwnd:
+            self._previous_hwnd = 0
+            return
+
+        self._previous_hwnd = previous
+        self._user32.ShowWindow(hwnd, self.SW_RESTORE)
+        process_id = wintypes.DWORD(0)
+        target_thread = int(
+            self._user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+        )
+        current_thread = int(self._kernel32.GetCurrentThreadId())
+        attached = False
+        try:
+            if target_thread and current_thread and target_thread != current_thread:
+                attached = bool(
+                    self._user32.AttachThreadInput(
+                        current_thread, target_thread, True
+                    )
+                )
+            self._user32.BringWindowToTop(hwnd)
+            self._user32.SetForegroundWindow(hwnd)
+            self._user32.SetActiveWindow(hwnd)
+            self._user32.SetFocus(hwnd)
+        finally:
+            if attached:
+                self._user32.AttachThreadInput(
+                    current_thread, target_thread, False
+                )
+
+        if int(self._user32.GetForegroundWindow() or 0) != hwnd:
+            self._previous_hwnd = 0
+            raise RuntimeError(
+                "Windows did not allow AVIS Engine to receive the handbrake key. "
+                "Bring the AVIS Engine window to the foreground and retry."
+            )
+
+    def set_active(self, active: bool) -> bool:
+        if not active:
+            self.release()
+            return False
+        if self._held:
+            return True
+        if not self.available:
+            return False
+
+        hwnd = self._find_avis_window()
+        if not hwnd:
+            self.last_error = (
+                "Could not find the AVIS Engine window. Its title must contain 'AVIS'."
+            )
+            return False
+
+        try:
+            self._focus_window(hwnd)
+            self._send_space(key_up=False)
+        except Exception as exc:
+            self.last_error = f"Could not engage the AVIS handbrake: {exc}"
+            self._restore_previous_window()
+            return False
+
+        self._target_hwnd = hwnd
+        self._held = True
+        self.last_error = None
+        return True
+
+    def _restore_previous_window(self) -> None:
+        previous = self._previous_hwnd
+        target = self._target_hwnd
+        self._previous_hwnd = 0
+        self._target_hwnd = 0
+        if previous and self.available:
+            try:
+                current = int(self._user32.GetForegroundWindow() or 0)
+                if current == target and self._user32.IsWindow(previous):
+                    self._user32.SetForegroundWindow(previous)
+            except Exception:
+                pass
+
+    def release(self) -> None:
+        if not self._held:
+            self._restore_previous_window()
+            return
+        try:
+            self._send_space(key_up=True)
+        except Exception as exc:
+            self.last_error = f"Could not release the AVIS handbrake key: {exc}"
+        finally:
+            self._held = False
+            self._restore_previous_window()
+
 class AvisEngineClient:
     """Defensive adapter around the vendor's synchronous TCP client."""
 
@@ -3252,7 +3512,13 @@ def run_avis(args: argparse.Namespace) -> int:
         )
         obstacle_lane_change = AvisModelObstacleLaneChangeController()
         city_crosswalk_stop_controller = AvisCityCrosswalkStopController()
+        city_crosswalk_handbrake = AvisSimulatorHandbrake()
         drivable_recovery_controller = AvisDrivableAreaRecoveryController()
+        if args.avis_mode == "city" and not city_crosswalk_handbrake.available:
+            print(
+                "[AVIS] WARNING: Native City crosswalk handbrake is unavailable: "
+                f"{city_crosswalk_handbrake.last_error}"
+            )
 
         if not bool(settings["auto_mode_default"]):
             dashboard_state.set_mode("stopped")
@@ -3327,6 +3593,7 @@ def run_avis(args: argparse.Namespace) -> int:
         next_tick = last_control_time
         frame_read_fps = AvisFpsMonitor(window_seconds=2.0)
         inference_fps = AvisFpsMonitor(window_seconds=2.0)
+        crosswalk_handbrake_warning_sent = False
         control_loop_fps = AvisFpsMonitor(window_seconds=2.0)
         last_inference_fps_timestamp: float | None = None
 
@@ -3352,6 +3619,8 @@ def run_avis(args: argparse.Namespace) -> int:
                         "[AVIS] Engine connection lost. "
                         "Stopping drive commands and waiting for the server to return."
                     )
+                    city_crosswalk_handbrake.release()
+                    city_crosswalk_stop_controller.reset()
                     try:
                         client.close()
                     except Exception:
@@ -3652,6 +3921,7 @@ def run_avis(args: argparse.Namespace) -> int:
                 city_crosswalk_stop_state = city_crosswalk_stop_controller.snapshot()
 
                 if drive_mode == "manual":
+                    city_crosswalk_handbrake.release()
                     city_crosswalk_stop_controller.reset()
                     city_crosswalk_stop_state = city_crosswalk_stop_controller.snapshot()
                     drivable_recovery_state = drivable_recovery_controller.update(
@@ -3671,6 +3941,7 @@ def run_avis(args: argparse.Namespace) -> int:
                         else "MANUAL / INPUT TIMED OUT - ZERO THROTTLE"
                     )
                 elif drive_mode == "stopped":
+                    city_crosswalk_handbrake.release()
                     city_crosswalk_stop_controller.reset()
                     city_crosswalk_stop_state = city_crosswalk_stop_controller.snapshot()
                     drivable_recovery_state = drivable_recovery_controller.update(
@@ -3901,6 +4172,13 @@ def run_avis(args: argparse.Namespace) -> int:
                             status = "AUTO / COAST" if coasting else "AUTO"
 
                     if city_crosswalk_stop_state.get("active"):
+                        handbrake_engaged = city_crosswalk_handbrake.set_active(True)
+                        if not handbrake_engaged and not crosswalk_handbrake_warning_sent:
+                            print(
+                                "[AVIS] WARNING: Crosswalk handbrake could not engage. "
+                                f"{city_crosswalk_handbrake.last_error or 'Unknown Windows input error'}"
+                            )
+                            crosswalk_handbrake_warning_sent = True
                         if city_crosswalk_stop_state.get("just_activated"):
                             steering_controller.reset()
                         drivable_recovery_state = drivable_recovery_controller.update(
@@ -3916,7 +4194,14 @@ def run_avis(args: argparse.Namespace) -> int:
                         target_speed = 0.0
                         coasting = False
                         remaining = float(city_crosswalk_stop_state.get("remaining_seconds", 0.0))
-                        status = f"CITY / CROSSWALK STOP · {remaining:.1f}s"
+                        status = (
+                            f"CITY / CROSSWALK STOP · {remaining:.1f}s"
+                            + (" · HANDBRAKE" if handbrake_engaged else " · HANDBRAKE UNAVAILABLE")
+                        )
+                    else:
+                        handbrake_engaged = False
+                        city_crosswalk_handbrake.release()
+                        crosswalk_handbrake_warning_sent = False
 
                     client.send_control(
                         throttle,
@@ -4113,6 +4398,9 @@ def run_avis(args: argparse.Namespace) -> int:
                         "city_crosswalk_detected": bool(
                             city_crosswalk_stop_state.get("detected", False)
                         ),
+                        "city_crosswalk_handbrake_active": bool(
+                            city_crosswalk_handbrake.held
+                        ),
                         "city_crosswalk_length_ratio": float(
                             city_crosswalk_stop_state.get("length_ratio", 0.0)
                         ),
@@ -4200,6 +4488,8 @@ def run_avis(args: argparse.Namespace) -> int:
         print(f"[AVIS] Runtime failed: {type(exc).__name__}: {exc}")
         return 1
     finally:
+        if "city_crosswalk_handbrake" in locals():
+            city_crosswalk_handbrake.release()
         if dashboard_state is not None:
             dashboard_state.set_mode("stopped")
         if client is not None:
