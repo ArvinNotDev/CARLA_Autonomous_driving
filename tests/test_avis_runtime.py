@@ -201,9 +201,28 @@ def test_city_crosswalk_stop_uses_confirmed_roi_event_and_five_second_dwell():
     )
     assert complete["active"] is False
     assert complete["reason"] == "crosswalk_stop_complete"
+    assert complete["cooldown_active"] is True
+    assert complete["cooldown_remaining_seconds"] == pytest.approx(5.0)
+
+    still_cooling_down = controller.update(
+        crosswalk, enabled=True, stop_seconds=5.0,
+        rearm_clear_seconds=1.0, observation_id=4,
+        observation_timestamp=19.9, now=19.9,
+    )
+    assert still_cooling_down["active"] is False
+    assert still_cooling_down["cooldown_active"] is True
+    assert still_cooling_down["cooldown_remaining_seconds"] == pytest.approx(0.1)
+
+    cooldown_complete = controller.update(
+        crosswalk, enabled=True, stop_seconds=5.0,
+        rearm_clear_seconds=1.0, observation_id=5,
+        observation_timestamp=20.0, now=20.0,
+    )
+    assert cooldown_complete["active"] is False
+    assert cooldown_complete["cooldown_active"] is False
 
 
-def test_city_crosswalk_does_not_retrigger_until_roi_evidence_clears():
+def test_city_crosswalk_does_not_retrigger_until_five_second_cooldown_and_clear_evidence():
     controller = AvisCityCrosswalkStopController()
     marked = {"line_present": True, "detected": True, "line": (0, 40, 250, 40), "length_ratio": 0.8}
     clear = {"line_present": False, "detected": False, "line": None, "length_ratio": 0.0}
@@ -213,17 +232,33 @@ def test_city_crosswalk_does_not_retrigger_until_roi_evidence_clears():
     assert started["active"] is True
     finished = controller.update(marked, observation_id=2, observation_timestamp=2.0, now=2.0, **options)
     assert finished["active"] is False
+    assert finished["cooldown_active"] is True
 
-    # The same visible marking stays latched and cannot start another stop.
+    # The same visible marking cannot start another stop, even after the
+    # original dwell ended.
     repeated = controller.update(marked, observation_id=3, observation_timestamp=2.2, now=2.2, **options)
     assert repeated["active"] is False
     assert repeated["trigger_pending"] is False
+    assert repeated["cooldown_active"] is True
 
+    # Clear evidence during the cooldown does not release the lock early.
     controller.update(clear, observation_id=4, observation_timestamp=3.0, now=3.0, **options)
     controller.update(clear, observation_id=5, observation_timestamp=4.1, now=4.1, **options)
-    rearmed = controller.update(marked, observation_id=6, observation_timestamp=4.2, now=4.2, **options)
-    assert rearmed["active"] is True
-    assert rearmed["just_activated"] is True
+    before_cooldown_end = controller.update(
+        clear, observation_id=6, observation_timestamp=6.9, now=6.9, **options
+    )
+    assert before_cooldown_end["active"] is False
+    assert before_cooldown_end["cooldown_active"] is True
+
+    # Once the five-second lock expires, clear evidence has already been
+    # present for at least the configured rearm interval.
+    rearmed = controller.update(clear, observation_id=7, observation_timestamp=7.0, now=7.0, **options)
+    assert rearmed["cooldown_active"] is False
+    next_crosswalk = controller.update(
+        marked, observation_id=8, observation_timestamp=7.1, now=7.1, **options
+    )
+    assert next_crosswalk["active"] is True
+    assert next_crosswalk["just_activated"] is True
 
 
 def test_city_crosswalk_stop_can_be_disabled_and_resets_active_stop():
@@ -429,6 +464,23 @@ class FakeCar:
 
     def stop(self):
         self.stopped = True
+
+
+def test_avis_client_uses_native_braking_only_above_safe_speed():
+    api = SimpleNamespace(Car=FakeCar)
+    client = AvisEngineClient(api, "127.0.0.1", 25001)
+    fake_car = client.car
+
+    client.send_control(0.0, 0.0, brake=True, current_speed_kmh=15.0)
+    assert fake_car.speed_commands[-1] == -100
+    assert fake_car.steering_commands[-1] == 0
+
+    # Below the simulator's 5 mph brake threshold, negative speed means
+    # reverse motor torque, so the adapter must command neutral instead.
+    client.send_control(0.0, 0.0, brake=True, current_speed_kmh=7.0)
+    assert fake_car.speed_commands[-1] == 0
+    assert fake_car.steering_commands[-1] == 0
+    client.close()
 
 
 def test_avis_client_maps_controls_and_closes_socket_once():
