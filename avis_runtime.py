@@ -546,7 +546,7 @@ def normalize_avis_manual_controls(
 
 
 class AvisReverseBrakeController:
-    """Apply reverse motor torque only until the vehicle reports a full stop."""
+    """Apply motor torque opposite the active travel direction until near-zero speed."""
 
     def __init__(self, *, stop_speed_kmh=0.3, reverse_gain=10.0,
                  min_reverse_command=1, max_reverse_command=100):
@@ -607,6 +607,7 @@ class AvisReverseBrakeController:
             "phase": self.phase,
             "command": int(self.last_command),
             "reverse_active": self.last_command < 0,
+            "brake_active": self.last_command != 0,
             "braking_direction": int(self.braking_direction),
             "stop_confirmed": bool(self.stop_confirmed),
             "speed_kmh": float(self.last_speed_kmh),
@@ -4911,7 +4912,8 @@ def run_avis(args: argparse.Namespace) -> int:
                         ),
                         "city_reverse_brake_phase": reverse_brake_state.get("phase", "IDLE"),
                         "city_reverse_brake_command": reverse_brake_command,
-                        "city_reverse_brake_active": bool(reverse_brake_state.get("reverse_active")),
+                        "city_reverse_brake_active": bool(reverse_brake_state.get("brake_active", reverse_brake_state.get("reverse_active"))),
+                        "city_reverse_brake_direction": reverse_brake_state.get("braking_direction", 1),
                         "city_reverse_brake_stop_confirmed": bool(reverse_brake_state.get("stop_confirmed")),
                         "city_crosswalk_length_ratio": float(
                             city_junction_state.get("length_ratio", 0.0)
