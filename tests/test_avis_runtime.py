@@ -2602,6 +2602,41 @@ def test_avis_named_profiles_save_load_import_export_and_persist(tmp_path):
     )
 
 
+def test_dashboard_state_uses_and_protects_the_selected_mode_baseline(tmp_path):
+    state = AvisDashboardState(
+        initial_settings={"vision_backend": "ultralytics"},
+        settings_path=tmp_path / "avis_settings_city.json",
+        profile_path=tmp_path / "avis_profiles_city_local.json",
+        default_profile_name="AVIS_StableV2-city",
+    )
+    assert state.active_profile_name() == "AVIS_StableV2-city"
+    assert any(
+        item["name"] == "AVIS_StableV2-city"
+        for item in state.profiles_snapshot()
+    )
+    with pytest.raises(ValueError, match="baseline"):
+        state.delete_profile("AVIS_StableV2-city")
+
+
+def test_city_stop_settings_are_validated_and_visible_in_dashboard():
+    updated = validate_avis_settings(
+        dict(DEFAULT_AVIS_SETTINGS),
+        {
+            "city_pedestrian_stop_enabled": True,
+            "city_pedestrian_stop_seconds": 5.0,
+        },
+    )
+    assert updated["city_pedestrian_stop_enabled"] is True
+    assert updated["city_pedestrian_stop_seconds"] == pytest.approx(5.0)
+    assert 'data-setting="city_pedestrian_stop_enabled"' in DASHBOARD_HTML
+    assert 'data-setting="city_pedestrian_stop_seconds"' in DASHBOARD_HTML
+    with pytest.raises(ValueError, match="city_pedestrian_stop_seconds"):
+        validate_avis_settings(
+            dict(DEFAULT_AVIS_SETTINGS),
+            {"city_pedestrian_stop_seconds": 0.1},
+        )
+
+
 def test_avis_named_profiles_reject_invalid_names_and_protect_baseline(tmp_path):
     state = AvisDashboardState(
         settings_path=tmp_path / "avis_settings.json",
