@@ -533,11 +533,7 @@ def test_maneuver_sequences_are_persisted_and_restored_per_profile(tmp_path):
         {
             "schema_version": 1,
             "name": "AVIS_StableV2-imported",
-            "settings": {
-                "city_maneuver_sequences_json": json.dumps(
-                    {"LEFT": [{"distance_m": 99.0, "steering_value": -1.0}]}
-                )
-            },
+            "settings": {},
             "maneuvers": {
                 "LEFT": [{"distance_m": 8.0, "steering_value": -0.4}]
             },
