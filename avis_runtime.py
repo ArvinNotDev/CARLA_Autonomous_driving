@@ -4303,7 +4303,9 @@ def run_avis(args: argparse.Namespace) -> int:
                         classifier_output=(
                             vision_data.get("obstacle_classifier") if result_fresh else None
                         ),
-                        allow_new_maneuver=True,
+                        allow_new_maneuver=not bool(
+                            city_junction_state.get("active", False)
+                        ),
                         observation_id=(
                             last_vision_result.completed_at if result_fresh else None
                         ),
