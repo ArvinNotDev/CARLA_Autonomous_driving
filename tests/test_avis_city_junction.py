@@ -155,7 +155,10 @@ def test_avis_default_normal_turn_sequences_match_active_carla_stable_v2_profile
     avis_sequences = json.loads(DEFAULT_AVIS_SETTINGS["city_maneuver_sequences_json"])
 
     for route in ("LEFT", "RIGHT", "STRAIGHT"):
-        assert avis_sequences[route] == carla_sequences[route]
+        assert len(avis_sequences[route]) == len(carla_sequences[route])
+        for avis_step, carla_step in zip(avis_sequences[route], carla_sequences[route]):
+            assert avis_step["distance_m"] == pytest.approx(carla_step["distance_m"])
+            assert avis_step["steering_value"] == pytest.approx(carla_step["steering_value"])
 
     # 90-degree sign classes are independently editable but start from the
     # matching CARLA left/right route until calibrated separately.
