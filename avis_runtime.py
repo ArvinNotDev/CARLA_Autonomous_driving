@@ -3123,8 +3123,80 @@ def run_avis(args: argparse.Namespace) -> int:
             current_settings, current_revision = dashboard_state.settings_snapshot()
             if current_revision != settings_revision:
                 try:
+                    selected_backend = str(current_settings["vision_backend"])
+                    lane_model_changed = (
+                        current_settings["lane_model_path"] != settings["lane_model_path"]
+                        or int(current_settings["model_image_size"])
+                        != int(settings["model_image_size"])
+                    )
+                    obstacle_model_changed = (
+                        current_settings["obstacle_model_path"]
+                        != settings["obstacle_model_path"]
+                    )
+                    rebuild_lane_processor = (
+                        selected_backend != active_backend
+                        or (selected_backend == "ultralytics" and lane_model_changed)
+                    )
+
+                    # Resolve every selected model before changing the live
+                    # inference worker. A bad checkpoint must not replace a
+                    # working processor with a partially initialized one.
+                    _apply_avis_model_settings(conf, current_settings)
                     adaptive_roi_controller.configure(current_settings)
                     _apply_avis_roi_settings(conf, current_settings)
+
+                    lane_replacement = vision_processor.lane_processor
+                    if rebuild_lane_processor:
+                        lane_replacement = _create_avis_vision_processor(
+                            selected_backend,
+                            current_settings,
+                            adaptive_roi_controller=adaptive_roi_controller,
+                        )
+                    elif selected_backend == "classical":
+                        lane_replacement.update_settings(current_settings)
+                    else:
+                        lane_replacement.min_side_pixels = int(
+                            current_settings["min_side_pixels"]
+                        )
+                        lane_replacement.fallback_lane_offset_ratio = float(
+                            current_settings["lane_offset_ratio"]
+                        )
+                        lane_replacement.lane_center_alpha = float(
+                            current_settings["center_smoothing"]
+                        )
+                        lane_replacement.update_hough_fallback_settings(current_settings)
+
+                    obstacle_replacement = obstacle_classifier
+                    if obstacle_model_changed:
+                        obstacle_path = _resolve_avis_model_path(
+                            current_settings["obstacle_model_path"],
+                            suffix=".onnx",
+                            setting_name="Obstacle classifier model",
+                        )
+                        obstacle_replacement = AvisObstacleLaneClassifier(obstacle_path)
+
+                    if rebuild_lane_processor or obstacle_model_changed:
+                        replacement = AvisCombinedVisionProcessor(
+                            lane_replacement, obstacle_replacement
+                        )
+                        inference_worker.set_vision_processor(replacement)
+                        vision_processor = replacement
+                        obstacle_classifier = obstacle_replacement
+
+                    active_backend = selected_backend
+                    if rebuild_lane_processor:
+                        print(f"[AVIS] Lane-line backend changed to {active_backend}.")
+                    if lane_model_changed:
+                        print(
+                            f"[AVIS] Reloaded lane model: {current_settings['lane_model_path']} "
+                            f"(imgsz={current_settings['model_image_size']})."
+                        )
+                    if obstacle_model_changed:
+                        print(
+                            f"[AVIS] Reloaded obstacle classifier: "
+                            f"{current_settings['obstacle_model_path']}."
+                        )
+
                     if int(current_settings["sensor_angle"]) != active_sensor_angle:
                         client.set_sensor_angle(int(current_settings["sensor_angle"]))
                         active_sensor_angle = int(current_settings["sensor_angle"])
@@ -3142,34 +3214,6 @@ def run_avis(args: argparse.Namespace) -> int:
                         max_speed_kmh=float(current_settings["max_speed_kmh"]),
                     )
 
-                    selected_backend = str(current_settings["vision_backend"])
-                    if selected_backend != active_backend:
-                        lane_replacement = _create_avis_vision_processor(
-                            selected_backend,
-                            current_settings,
-                            adaptive_roi_controller=adaptive_roi_controller,
-                        )
-                        replacement = AvisCombinedVisionProcessor(
-                            lane_replacement, obstacle_classifier
-                        )
-                        inference_worker.set_vision_processor(replacement)
-                        vision_processor = replacement
-                        active_backend = selected_backend
-                        print(f"[AVIS] Vision backend changed to {active_backend}.")
-                    elif active_backend == "classical":
-                        vision_processor.update_settings(current_settings)
-                    else:
-                        vision_processor.min_side_pixels = int(
-                            current_settings["min_side_pixels"]
-                        )
-                        vision_processor.fallback_lane_offset_ratio = float(
-                            current_settings["lane_offset_ratio"]
-                        )
-                        vision_processor.lane_center_alpha = float(
-                            current_settings["center_smoothing"]
-                        )
-                        vision_processor.update_hough_fallback_settings(current_settings)
-
                     if any(
                         settings.get(key) != current_settings.get(key)
                         for key in (
@@ -3179,8 +3223,8 @@ def run_avis(args: argparse.Namespace) -> int:
                     ) and active_backend == "ultralytics":
                         # Reset only the AVIS-side sticky lane state after
                         # editing shared ROI/centre geometry settings.
-                        vision_processor.last_lane_center = None
-                        vision_processor.active_side = None
+                        lane_replacement.last_lane_center = None
+                        lane_replacement.active_side = None
 
                     control_period = 1.0 / float(current_settings["control_loop_hz"])
                     inference_interval = (
@@ -3195,11 +3239,14 @@ def run_avis(args: argparse.Namespace) -> int:
                         f"Could not apply AVIS settings: {type(exc).__name__}: {exc}"
                     )
                     print(f"[AVIS] {error_message}")
-                    previous_backend = active_backend
-                    dashboard_state.update_settings(
-                        {"vision_backend": previous_backend}, persist=True
-                    )
+                    # Roll back the entire settings document, not only the
+                    # backend selector, so a failed model reload cannot leave
+                    # a mismatched path or partially applied ROI configuration.
+                    dashboard_state.update_settings(settings, persist=True)
                     settings, settings_revision = dashboard_state.settings_snapshot()
+                    _apply_avis_model_settings(conf, settings)
+                    _apply_avis_roi_settings(conf, settings)
+                    adaptive_roi_controller.configure(settings)
 
             valid_frame = (
                 isinstance(frame, np.ndarray)
