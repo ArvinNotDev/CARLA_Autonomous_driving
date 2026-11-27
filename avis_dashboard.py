@@ -569,6 +569,25 @@ class AvisDashboardState:
                 return mode, self._manual_throttle, self._manual_steering, True
             return mode, 0.0, 0.0, False
 
+    def set_connection_status(self, connected: bool, status: str) -> None:
+        """Update connection state without discarding the latest dashboard telemetry."""
+        with self._lock:
+            self._telemetry["connected"] = bool(connected)
+            self._telemetry["status"] = str(status)
+            if not connected:
+                self._telemetry.update(
+                    {
+                        "speed_kmh": 0.0,
+                        "target_speed_kmh": 0.0,
+                        "throttle": 0.0,
+                        "steering": 0.0,
+                        "lane_valid": False,
+                        "sensors_cm": None,
+                        "front_sensor_cm": None,
+                        "sensor_distances_cm": None,
+                    }
+                )
+
     def publish_telemetry(self, telemetry: dict[str, Any]) -> None:
         with self._lock:
             self._telemetry = dict(telemetry)
