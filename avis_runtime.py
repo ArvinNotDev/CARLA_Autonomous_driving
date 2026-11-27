@@ -2572,11 +2572,12 @@ def _apply_avis_model_settings(conf: ModuleType, settings: dict[str, Any]) -> No
         suffix=".pt",
         setting_name="Lane segmentation model",
     )
-    _resolve_avis_model_path(
-        settings["obstacle_model_path"],
-        suffix=".onnx",
-        setting_name="Obstacle classifier model",
-    )
+    if bool(settings.get("obstacle_detection_enabled", True)):
+        _resolve_avis_model_path(
+            settings["obstacle_model_path"],
+            suffix=".onnx",
+            setting_name="Obstacle classifier model",
+        )
     conf.MODEL_PATH = str(lane_model)
     conf.MODEL_IMAGE_SIZE = int(settings["model_image_size"])
     conf.LANE_PROB_THRESHOLD = float(settings["lane_prob_threshold"])
@@ -2590,6 +2591,39 @@ def _apply_avis_model_settings(conf: ModuleType, settings: dict[str, Any]) -> No
     conf.DEBUG_PANEL_HZ = float(settings["debug_panel_hz"])
 
 
+def _apply_avis_city_crosswalk_settings(
+    conf: ModuleType,
+    settings: dict[str, Any],
+    *,
+    city_mode: bool,
+) -> bool:
+    """Configure CARLA's non-model Crosswalk ROI detector for AVIS city mode only."""
+    roi_keys = {
+        "cw_top_roi": "CW_TOP_ROI",
+        "cw_bottom_roi": "CW_BOTTOM_ROI",
+        "cw_left_roi": "CW_LEFT_ROI",
+        "cw_right_roi": "CW_RIGHT_ROI",
+    }
+    for setting_key, config_key in roi_keys.items():
+        setattr(conf, config_key, float(settings[setting_key]))
+
+    enabled = bool(city_mode and settings.get("city_crosswalk_enabled", False))
+    conf.JUNCTION_DETECTION_MODE = "crosswalk_roi" if enabled else "model"
+    conf.JUNCTION_ROI_MIN_LINE_LENGTH_RATIO = float(
+        settings.get("city_crosswalk_min_line_length_ratio", 0.35)
+    )
+    conf.JUNCTION_ROI_MAX_LINE_ANGLE_DEG = float(
+        settings.get("city_crosswalk_max_line_angle_deg", 12.0)
+    )
+    conf.JUNCTION_ROI_CONFIRM_FRAMES = int(
+        settings.get("city_crosswalk_confirm_frames", 2)
+    )
+    conf.JUNCTION_ROI_REARM_CLEAR_SECONDS = float(
+        settings.get("city_crosswalk_rearm_clear_seconds", 1.0)
+    )
+    return enabled
+
+
 def _build_avis_settings(conf: ModuleType, sensor_angle: int) -> dict[str, Any]:
     return {
         "vision_backend": "ultralytics",
@@ -2598,6 +2632,17 @@ def _build_avis_settings(conf: ModuleType, sensor_angle: int) -> dict[str, Any]:
         "obstacle_model_path": AvisObstacleLaneClassifier.DEFAULT_PATH.relative_to(
             PROJECT_ROOT
         ).as_posix(),
+        "obstacle_detection_enabled": True,
+        "city_crosswalk_enabled": False,
+        "city_crosswalk_stop_seconds": 5.0,
+        "city_crosswalk_rearm_clear_seconds": 1.0,
+        "city_crosswalk_min_line_length_ratio": 0.35,
+        "city_crosswalk_max_line_angle_deg": 12.0,
+        "city_crosswalk_confirm_frames": 2,
+        "cw_top_roi": float(getattr(conf, "CW_TOP_ROI", 0.55)),
+        "cw_bottom_roi": float(getattr(conf, "CW_BOTTOM_ROI", 0.88)),
+        "cw_left_roi": float(getattr(conf, "CW_LEFT_ROI", 0.08)),
+        "cw_right_roi": float(getattr(conf, "CW_RIGHT_ROI", 0.92)),
         "model_image_size": int(conf.MODEL_IMAGE_SIZE),
         "lane_prob_threshold": float(conf.LANE_PROB_THRESHOLD),
         "drivable_prob_threshold": float(conf.DRIVABLE_PROB_THRESHOLD),
