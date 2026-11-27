@@ -125,7 +125,7 @@ def test_avis_mode_profiles_are_loaded_independently_from_committed_files():
     assert city["settings"]["obstacle_lane_change_enabled"] is False
     assert city["settings"]["city_crosswalk_enabled"] is True
     assert city["settings"]["city_crosswalk_stop_seconds"] == pytest.approx(5.0)
-    assert city["settings"]["cw_top_roi"] == pytest.approx(0.55)
+    assert city["settings"]["cw_top_roi"] == pytest.approx(0.629)
     assert road["settings"]["vision_backend"] == "classical"
     validate_avis_settings(dict(DEFAULT_AVIS_SETTINGS), road["settings"])
     assert road["settings"]["obstacle_detection_enabled"] is True
