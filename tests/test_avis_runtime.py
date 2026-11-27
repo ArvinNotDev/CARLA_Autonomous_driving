@@ -906,6 +906,8 @@ def test_avis_dashboard_has_dedicated_step_based_maneuver_editor_tab():
     assert 'id="applyManeuversButton"' in DASHBOARD_HTML
     assert 'id="city_maneuver_sequences_json"' in DASHBOARD_HTML
     assert "function renderManeuverEditor()" in DASHBOARD_HTML
+    assert "city_reverse_brake_phase" in DASHBOARD_HTML
+    assert "NEUTRAL HOLD" in DASHBOARD_HTML
 
 
 def test_avis_dashboard_ui_exposes_every_persisted_setting():
