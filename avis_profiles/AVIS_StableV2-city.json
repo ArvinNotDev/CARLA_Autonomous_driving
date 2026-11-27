@@ -67,16 +67,16 @@
     "city_maneuver_segment_timeout_seconds": 20.0,
     "city_maneuver_distance_scale": 1.0,
     "city_maneuver_distance_max_sample_gap_seconds": 0.5,
-    "city_maneuver_sequences_json": "{\n  \"STRAIGHT\": [\n    {\n      \"distance_m\": 15.0,\n      \"steering_value\": 0.0\n    }\n  ],\n  \"LEFT\": [\n    {\n      \"distance_m\": 2.5,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 8.5,\n      \"steering_value\": -0.25\n    },\n    {\n      \"distance_m\": 6.0,\n      \"steering_value\": -1.0\n    }\n  ],\n  \"RIGHT\": [\n    {\n      \"distance_m\": 2.0,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 5.0,\n      \"steering_value\": 0.33\n    },\n    {\n      \"distance_m\": 7.5,\n      \"steering_value\": 1.0\n    }\n  ],\n  \"LEFT_90\": [\n    {\n      \"distance_m\": 9.5,\n      \"steering_value\": -1.0\n    }\n  ],\n  \"RIGHT_90\": [\n    {\n      \"distance_m\": 9.5,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 8.0,\n      \"steering_value\": 0.25\n    },\n    {\n      \"distance_m\": 3.0,\n      \"steering_value\": 0.7\n    }\n  ]\n}",
+    "city_maneuver_sequences_json": "{\n  \"STRAIGHT\": [\n    {\n      \"distance_m\": 14.0,\n      \"steering_value\": 0.0\n    }\n  ],\n  \"LEFT\": [\n    {\n      \"distance_m\": 2.5,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 8.5,\n      \"steering_value\": -0.25\n    },\n    {\n      \"distance_m\": 6.0,\n      \"steering_value\": -1.0\n    }\n  ],\n  \"RIGHT\": [\n    {\n      \"distance_m\": 5.6,\n      \"steering_value\": 0.33\n    },\n    {\n      \"distance_m\": 6.0,\n      \"steering_value\": 1.0\n    }\n  ],\n  \"LEFT_90\": [\n    {\n      \"distance_m\": 8.5,\n      \"steering_value\": -1.0\n    }\n  ],\n  \"RIGHT_90\": [\n    {\n      \"distance_m\": 9.5,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 8.0,\n      \"steering_value\": 0.25\n    },\n    {\n      \"distance_m\": 3.0,\n      \"steering_value\": 0.7\n    }\n  ]\n}",
     "city_crosswalk_stop_seconds": 3.0,
     "city_crosswalk_rearm_clear_seconds": 1.0,
     "city_crosswalk_min_line_length_ratio": 0.35,
     "city_crosswalk_max_line_angle_deg": 12.0,
     "city_crosswalk_confirm_frames": 2,
-    "cw_top_roi": 0.547,
-    "cw_bottom_roi": 0.704,
-    "cw_left_roi": 0.28,
-    "cw_right_roi": 0.711,
+    "cw_top_roi": 0.531,
+    "cw_bottom_roi": 0.688,
+    "cw_left_roi": 0.269,
+    "cw_right_roi": 0.7,
     "obstacle_model_confidence_threshold": 0.9,
     "obstacle_lane_confidence_threshold": 0.65,
     "obstacle_model_confirm_frames": 3,
@@ -113,7 +113,7 @@
   "maneuvers": {
     "STRAIGHT": [
       {
-        "distance_m": 15.0,
+        "distance_m": 14.0,
         "steering_value": 0.0
       }
     ],
@@ -133,21 +133,17 @@
     ],
     "RIGHT": [
       {
-        "distance_m": 2.0,
-        "steering_value": 0.0
-      },
-      {
-        "distance_m": 5.0,
+        "distance_m": 5.6,
         "steering_value": 0.33
       },
       {
-        "distance_m": 7.5,
+        "distance_m": 6.0,
         "steering_value": 1.0
       }
     ],
     "LEFT_90": [
       {
-        "distance_m": 9.5,
+        "distance_m": 8.5,
         "steering_value": -1.0
       }
     ],
@@ -166,5 +162,5 @@
       }
     ]
   },
-  "saved_at": 1795807097.135511
+  "saved_at": 1795807346.3523679
 }
