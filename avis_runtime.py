@@ -1582,6 +1582,8 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
         self.last_model_observation_id = None
         self.model_trigger_latched = False
         self.model_obstacle_probability: float | None = None
+        self.model_obstacle_accepted = False
+        self.model_obstacle_threshold = 0.65
         self.model_lane_probability: float | None = None
         self.model_lane_label: str | None = None
         self.model_lane_confidence: float | None = None
@@ -1653,6 +1655,10 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
                 "obstacle_model_confirm_frames": 0,
                 "obstacle_model_rearm_frames": 0,
                 "obstacle_model_probability": obstacle_probability,
+                "obstacle_model_accepted": False,
+                "obstacle_model_confidence_threshold": self._nonnegative_setting(
+                    settings, "obstacle_model_confidence_threshold", 0.65
+                ),
                 "obstacle_lane_probability": lane_probability,
                 "obstacle_lane_prediction": lane_label,
                 "obstacle_lane_confidence": lane_confidence,
@@ -1745,11 +1751,23 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
                     settings, "obstacle_model_rearm_frames", 3
                 ))
             )
+            obstacle_label = (
+                str(obstacle.get("label", "")).strip().lower()
+                if isinstance(obstacle, dict) else ""
+            )
+            # The setting is the minimum probability of the positive "yes"
+            # class. The raw model label remains visible for diagnostics, but
+            # it is accepted as an obstacle only when BOTH the label and its
+            # yes-class confidence meet the configured threshold.
             model_requests_pass = (
                 valid_output
+                and obstacle_label == "yes"
                 and obstacle_probability >= obstacle_threshold
+                and obstacle_confidence >= obstacle_threshold
                 and obstacle_probability > no_probability
             )
+            self.model_obstacle_threshold = obstacle_threshold
+            self.model_obstacle_accepted = bool(model_requests_pass)
             model_reports_clear = (
                 valid_output and no_probability >= obstacle_probability
             )
@@ -2001,6 +2019,8 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
             "obstacle_model_confirm_frames": self.model_confirm_frames,
             "obstacle_model_rearm_frames": self.model_rearm_frames,
             "obstacle_model_probability": self.model_obstacle_probability,
+            "obstacle_model_accepted": self.model_obstacle_accepted,
+            "obstacle_model_confidence_threshold": self.model_obstacle_threshold,
             "obstacle_lane_probability": self.model_lane_probability,
             "obstacle_lane_prediction": self.model_lane_label,
             "obstacle_lane_confidence": self.model_lane_confidence,
@@ -2351,17 +2371,69 @@ def _avis_roi_lock_direction(lane_change_phase: Any) -> str | None:
     return None
 
 
-def _apply_avis_roi_settings(conf: ModuleType, settings: dict[str, Any]) -> None:
-    """Apply AVIS-only ROI and lane geometry values to this process's config."""
-    for mapping in (AVIS_ROI_CONFIG_KEYS, AVIS_SHARED_VISION_CONFIG_KEYS):
-        for setting_key, config_key in mapping.items():
-            if setting_key in settings:
-                setattr(conf, config_key, float(settings[setting_key]))
+def _resolve_avis_model_path(
+    value: Any,
+    *,
+    suffix: str,
+    setting_name: str,
+) -> Path:
+    """Resolve and validate a model path stored in an AVIS profile."""
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError(f"{setting_name} cannot be empty.")
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    path = path.resolve()
+    if path.suffix.lower() != suffix:
+        raise ValueError(f"{setting_name} must use the {suffix} file extension: {path}")
+    if not path.is_file():
+        raise FileNotFoundError(f"{setting_name} was not found: {path}")
+    return path
+
+
+def _apply_avis_model_settings(conf: ModuleType, settings: dict[str, Any]) -> None:
+    """Apply model selection, image size, probability and debug settings."""
+    lane_model = _resolve_avis_model_path(
+        settings["lane_model_path"],
+        suffix=".pt",
+        setting_name="Lane segmentation model",
+    )
+    _resolve_avis_model_path(
+        settings["obstacle_model_path"],
+        suffix=".onnx",
+        setting_name="Obstacle classifier model",
+    )
+    conf.MODEL_PATH = str(lane_model)
+    conf.MODEL_IMAGE_SIZE = int(settings["model_image_size"])
+    conf.LANE_PROB_THRESHOLD = float(settings["lane_prob_threshold"])
+    conf.DRIVABLE_PROB_THRESHOLD = float(settings["drivable_prob_threshold"])
+    conf.AUTO_MODE_DEFAULT = bool(settings["auto_mode_default"])
+    conf.VISION_DEBUG = bool(settings["vision_debug"])
+    conf.DEBUG_SHOW_ROIS = bool(settings["debug_show_rois"])
+    conf.DEBUG_SHOW_LANE_MASK = bool(settings["debug_show_lane_mask"])
+    conf.DEBUG_SHOW_DRIVABLE_AREA = bool(settings["debug_show_drivable_area"])
+    conf.DEBUG_SHOW_TEXT = bool(settings["debug_show_text"])
+    conf.DEBUG_PANEL_HZ = float(settings["debug_panel_hz"])
 
 
 def _build_avis_settings(conf: ModuleType, sensor_angle: int) -> dict[str, Any]:
     return {
         "vision_backend": "ultralytics",
+        "auto_mode_default": bool(conf.AUTO_MODE_DEFAULT),
+        "lane_model_path": str(conf.MODEL_PATH).replace("\\", "/"),
+        "obstacle_model_path": AvisObstacleLaneClassifier.DEFAULT_PATH.relative_to(
+            PROJECT_ROOT
+        ).as_posix(),
+        "model_image_size": int(conf.MODEL_IMAGE_SIZE),
+        "lane_prob_threshold": float(conf.LANE_PROB_THRESHOLD),
+        "drivable_prob_threshold": float(conf.DRIVABLE_PROB_THRESHOLD),
+        "vision_debug": bool(conf.VISION_DEBUG),
+        "debug_show_rois": bool(conf.DEBUG_SHOW_ROIS),
+        "debug_show_lane_mask": bool(conf.DEBUG_SHOW_LANE_MASK),
+        "debug_show_drivable_area": bool(conf.DEBUG_SHOW_DRIVABLE_AREA),
+        "debug_show_text": bool(conf.DEBUG_SHOW_TEXT),
+        "debug_panel_hz": float(conf.DEBUG_PANEL_HZ),
         "control_loop_hz": float(conf.CONTROL_LOOP_HZ),
         "inference_interval_ms": max(
             10.0, float(conf.VISION_INFERENCE_INTERVAL_SECONDS) * 1000.0
