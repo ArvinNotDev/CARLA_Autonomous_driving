@@ -545,8 +545,13 @@ class AvisDashboardState:
                             settings = validate_avis_settings(
                                 dict(DEFAULT_AVIS_SETTINGS), saved_settings
                             )
+                            maneuver_fallback = (
+                                entry.get("maneuvers")
+                                if "city_maneuver_sequences_json" not in saved_settings
+                                else None
+                            )
                             maneuvers = _profile_maneuver_sequences(
-                                settings, entry.get("maneuvers")
+                                settings, maneuver_fallback
                             )
                             settings = validate_avis_settings(
                                 settings,
@@ -662,7 +667,10 @@ class AvisDashboardState:
         compatible_settings.pop("city_pedestrian_stop_enabled", None)
         compatible_settings.pop("city_pedestrian_stop_seconds", None)
         compatible_settings = _migrate_legacy_lane_change_tuning(compatible_settings)
-        if document.get("maneuvers") is not None:
+        if (
+            "city_maneuver_sequences_json" not in compatible_settings
+            and document.get("maneuvers") is not None
+        ):
             compatible_settings["city_maneuver_sequences_json"] = json.dumps(
                 _profile_maneuver_sequences(
                     compatible_settings, document.get("maneuvers")
@@ -699,10 +707,13 @@ class AvisDashboardState:
         normalized = self._normalize_profile_name(name)
         profile = self.get_profile(normalized)
         profile_settings = dict(profile["settings"])
+        maneuver_fallback = (
+            profile.get("maneuvers")
+            if "city_maneuver_sequences_json" not in profile_settings
+            else None
+        )
         profile_settings["city_maneuver_sequences_json"] = json.dumps(
-            _profile_maneuver_sequences(
-                profile_settings, profile.get("maneuvers")
-            ),
+            _profile_maneuver_sequences(profile_settings, maneuver_fallback),
             indent=2,
         )
         settings = self.update_settings(profile_settings, persist=True)
