@@ -2343,6 +2343,50 @@ class AvisSimulatorHandbrake:
             except (AttributeError, OSError) as exc:
                 self.last_error = f"Could not load the Windows input API: {exc}"
                 return
+            self._configure_win32_signatures()
+
+    def _configure_win32_signatures(self) -> None:
+        """Declare pointer-sized Win32 return types to avoid 64-bit HWND truncation."""
+        try:
+            self._user32.GetForegroundWindow.restype = wintypes.HWND
+            self._user32.GetWindowThreadProcessId.argtypes = [
+                wintypes.HWND, ctypes.POINTER(wintypes.DWORD)
+            ]
+            self._user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+            self._user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+            self._user32.SetForegroundWindow.restype = wintypes.BOOL
+            self._user32.SetActiveWindow.argtypes = [wintypes.HWND]
+            self._user32.SetActiveWindow.restype = wintypes.HWND
+            self._user32.SetFocus.argtypes = [wintypes.HWND]
+            self._user32.SetFocus.restype = wintypes.HWND
+            self._user32.IsWindow.argtypes = [wintypes.HWND]
+            self._user32.IsWindow.restype = wintypes.BOOL
+            self._user32.IsWindowVisible.argtypes = [wintypes.HWND]
+            self._user32.IsWindowVisible.restype = wintypes.BOOL
+            self._user32.BringWindowToTop.argtypes = [wintypes.HWND]
+            self._user32.BringWindowToTop.restype = wintypes.BOOL
+            self._user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+            self._user32.ShowWindow.restype = wintypes.BOOL
+            self._user32.AttachThreadInput.argtypes = [
+                wintypes.DWORD, wintypes.DWORD, wintypes.BOOL
+            ]
+            self._user32.AttachThreadInput.restype = wintypes.BOOL
+
+            self._kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+            self._kernel32.OpenProcess.argtypes = [
+                wintypes.DWORD, wintypes.BOOL, wintypes.DWORD
+            ]
+            self._kernel32.OpenProcess.restype = wintypes.HANDLE
+            self._kernel32.QueryFullProcessImageNameW.argtypes = [
+                wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                ctypes.POINTER(wintypes.DWORD)
+            ]
+            self._kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+            self._kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            self._kernel32.CloseHandle.restype = wintypes.BOOL
+        except (AttributeError, TypeError):
+            # A test double may intentionally expose only the methods it uses.
+            pass
 
     @property
     def available(self) -> bool:
@@ -2466,6 +2510,11 @@ class AvisSimulatorHandbrake:
             0,
             0,
         )
+        if not self._injected_api:
+            self._user32.SendInput.argtypes = [
+                wintypes.UINT, ctypes.POINTER(input_type), ctypes.c_int
+            ]
+            self._user32.SendInput.restype = wintypes.UINT
         sent = int(
             self._user32.SendInput(
                 1, ctypes.byref(event), ctypes.sizeof(input_type)
