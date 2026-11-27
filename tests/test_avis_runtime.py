@@ -439,9 +439,9 @@ def test_avis_dashboard_profile_validator_keeps_model_paths_and_thresholds():
     assert settings["obstacle_model_path"] == "models/custom_classifier.onnx"
     assert settings["obstacle_model_confidence_threshold"] == pytest.approx(0.96)
 
-    with pytest.raises(ValueError, match="\.pt"):
+    with pytest.raises(ValueError, match=r"\.pt"):
         validate_avis_settings(dict(DEFAULT_AVIS_SETTINGS), {"lane_model_path": "wrong.onnx"})
-    with pytest.raises(ValueError, match="\.onnx"):
+    with pytest.raises(ValueError, match=r"\.onnx"):
         validate_avis_settings(dict(DEFAULT_AVIS_SETTINGS), {"obstacle_model_path": "wrong.pt"})
 
 
