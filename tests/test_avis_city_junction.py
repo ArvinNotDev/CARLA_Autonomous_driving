@@ -208,13 +208,18 @@ def test_maneuver_json_accepts_independent_sequences_for_all_turn_types():
     sequences = {
         "STRAIGHT": [{"distance_m": 4.0, "steering_value": 0.0}],
         "LEFT": [{"distance_m": 5.0, "steering_value": -0.25}],
-        "RIGHT": [{"distance_m": 6.0, "steering_value": 0.25}],
+        "RIGHT": [{"distance_m": -6.0, "steering_value": 0.25}],
         "LEFT_90": [{"distance_m": 7.0, "steering_value": -0.8}],
         "RIGHT_90": [{"distance_m": 8.0, "steering_value": 0.8}],
     }
     parsed = parse_city_maneuver_sequences(json.dumps(sequences))
     assert parsed["LEFT"][0]["steering_value"] == pytest.approx(-0.25)
     assert parsed["RIGHT_90"][0]["distance_m"] == pytest.approx(8.0)
+    assert parsed["RIGHT"][0]["distance_m"] == pytest.approx(-6.0)
+    assert validate_avis_settings(
+        dict(DEFAULT_AVIS_SETTINGS),
+        {"city_maneuver_sequences_json": json.dumps(sequences)},
+    )["city_maneuver_sequences_json"]
 
     validated = validate_avis_settings(
         dict(DEFAULT_AVIS_SETTINGS),
@@ -222,7 +227,7 @@ def test_maneuver_json_accepts_independent_sequences_for_all_turn_types():
     )
     assert json.loads(validated["city_maneuver_sequences_json"]) == sequences
 
-    with pytest.raises(ValueError, match="distance_m"):
+    with pytest.raises(ValueError, match="non-zero"):
         validate_avis_settings(
             dict(DEFAULT_AVIS_SETTINGS),
             {
@@ -448,6 +453,76 @@ def _start_left_maneuver_for_distance_test(settings):
     assert started["phase"] == "MANEUVER"
     return controller
 
+
+
+def test_negative_maneuver_distance_commands_reverse_and_measures_absolute_travelled_metres():
+    settings = _settings(
+        city_maneuver_sequences_json=json.dumps(
+            {
+                "LEFT": [
+                    {"distance_m": -0.15, "steering_value": -0.3},
+                    {"distance_m": 0.2, "steering_value": 0.25},
+                ]
+            }
+        )
+    )
+    controller = _start_left_maneuver_for_distance_test(settings)
+
+    reverse_step = controller.update(
+        None, None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=3.6,
+        dt=0.01,
+        now=7.2,
+    )
+    assert reverse_step["phase"] == "MANEUVER"
+    assert reverse_step["segment_index"] == 1
+    assert reverse_step["segment_direction"] == -1
+    assert reverse_step["segment_direction_label"] == "REVERSE"
+    assert reverse_step["segment_target_distance_m"] == pytest.approx(-0.15)
+    assert reverse_step["segment_distance_m"] == pytest.approx(0.05)
+
+    forward_step = controller.update(
+        None, None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=3.6,
+        dt=0.01,
+        now=7.3,
+    )
+    assert forward_step["phase"] == "MANEUVER"
+    assert forward_step["segment_index"] == 2
+    assert forward_step["segment_direction"] == 1
+    assert forward_step["segment_direction_label"] == "FORWARD"
+    assert forward_step["segment_target_distance_m"] == pytest.approx(0.2)
+    assert forward_step["segment_distance_m"] == pytest.approx(0.0)
+
+
+def test_negative_maneuver_distance_is_saved_and_restored_in_its_profile(tmp_path):
+    state = AvisDashboardState(
+        settings_path=tmp_path / "avis_settings.json",
+        profile_path=tmp_path / "avis_profiles.json",
+        default_profile_name="AVIS_StableV2",
+    )
+    sequences = {
+        "STRAIGHT": [{"distance_m": -2.5, "steering_value": 0.0}],
+    }
+    state.update_settings(
+        {"city_maneuver_sequences_json": json.dumps(sequences)}
+    )
+    profile = state.save_profile("AVIS_StableV2-reverse")
+    assert profile["maneuvers"]["STRAIGHT"][0]["distance_m"] == pytest.approx(-2.5)
+
+    restored = AvisDashboardState(
+        settings_path=tmp_path / "avis_settings.json",
+        profile_path=tmp_path / "avis_profiles.json",
+        default_profile_name="AVIS_StableV2",
+    )
+    loaded = restored.load_profile("AVIS_StableV2-reverse")
+    assert json.loads(loaded["city_maneuver_sequences_json"])["STRAIGHT"][0][
+        "distance_m"
+    ] == pytest.approx(-2.5)
 
 def test_maneuver_distance_uses_trapezoidal_speed_samples_and_real_timestamps():
     settings = _settings(
@@ -732,6 +807,8 @@ def test_dashboard_exposes_sign_model_and_editable_maneuver_sequences():
     assert "city_maneuver_sequences_json" in DASHBOARD_HTML
     assert "city_maneuver_distance_scale" in DASHBOARD_HTML
     assert "city_maneuver_distance_max_sample_gap_seconds" in DASHBOARD_HTML
+    assert 'min="-500" max="500"' in DASHBOARD_HTML
+    assert "negative = reverse" in DASHBOARD_HTML
     assert "RIGHT_90" in DEFAULT_AVIS_SETTINGS["city_maneuver_sequences_json"]
 
 def test_maneuver_sequences_are_persisted_and_restored_per_profile(tmp_path):
