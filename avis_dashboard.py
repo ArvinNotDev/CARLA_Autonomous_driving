@@ -1633,8 +1633,10 @@ async function refreshStatus() {
       " · Attempt: " + (Number(t.lane_change_attempt_number || 0) > 0 ? "#" + String(t.lane_change_attempt_number) : "--") +
       " · Model lane confirm: " + String(t.model_lane_confirm_frames || 0) + "/" + String(data.settings.obstacle_lane_line_confirm_frames || 3) +
       " · Return distance: " + Number(t.return_distance_travelled_m || 0).toFixed(1) + "/" + Number(t.return_after_distance_m || 10).toFixed(1) + " m" +
+      " · ONNX classifier: " + (t.obstacle_detection_enabled === false ? "NOT LOADED" : "ACTIVE") +
       " · Obstacle model: " + String(t.obstacle_classifier?.obstacle_ahead?.label || "--") +
       " (" + (t.obstacle_model_probability == null ? "--" : (Number(t.obstacle_model_probability) * 100).toFixed(0) + "%") + ")" +
+      " · Crosswalk: " + (t.city_crosswalk_enabled === false ? "OFF" : t.city_crosswalk_stop_active ? "STOP " + Number(t.city_crosswalk_stop_remaining_seconds || 0).toFixed(1) + "s" : t.city_crosswalk_detected ? "DETECTED" : t.city_crosswalk_line_present ? "LINE PRESENT" : "SEARCHING") +
        " · Avoidance gate: " + (t.obstacle_avoidance_enabled === false ? "DISABLED" : t.obstacle_model_accepted ? "ACCEPTED" : "REJECTED") +
        " · Confidence threshold: " + (Number(t.obstacle_model_confidence_threshold ?? data.settings.obstacle_model_confidence_threshold ?? 0.65) * 100).toFixed(0) + "%" +
       " · Lane choice: " + String(t.obstacle_lane_prediction || "--") +
