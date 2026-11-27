@@ -115,6 +115,13 @@ def test_six_sign_classes_are_mapped_without_conflating_normal_and_90_degree_tur
     assert "left" not in mapping["LEFT_90"]
 
 
+def test_onnx_metadata_class_names_support_label_to_index_dictionary():
+    names = AvisJunctionSignOnnxClassifier._parse_names(
+        {"90l": 5, "90r": 4, "stop": 3, "straight": 2, "left": 1, "right": 0}
+    )
+    assert names == ["right", "left", "straight", "stop", "90r", "90l"]
+
+
 def test_sign_class_order_validation_requires_exactly_the_six_model_labels():
     settings = validate_avis_settings(
         dict(DEFAULT_AVIS_SETTINGS),
