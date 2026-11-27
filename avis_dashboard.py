@@ -223,7 +223,7 @@ def validate_avis_settings(
                 raise ValueError(f"{key} must be a model path string.")
             model_path = value.strip().replace("\\", "/")
             expected_suffix = ".pt" if key == "lane_model_path" else ".onnx"
-            if not model_path or "\\x00" in model_path or not model_path.lower().endswith(expected_suffix):
+            if not model_path or chr(0) in model_path or not model_path.lower().endswith(expected_suffix):
                 raise ValueError(f"{key} must point to a {expected_suffix} model file.")
             result[key] = model_path
             continue
@@ -862,7 +862,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
       <div class="panel">
         <div class="panel-head"><h3>Model inference outputs</h3><span class="tag" id="modelPredictionStatus">WAITING FOR MODEL</span></div>
         <div class="model-prediction-grid">
-          <div class="model-prediction-card"><span>Obstacle ahead</span><strong id="modelObstacleLabel">--</strong><small id="modelObstacleConfidence">Confidence: --</small></div>
+          <div class="model-prediction-card"><span>Obstacle ahead</span><strong id="modelObstacleLabel">--</strong><small id="modelObstacleConfidence">Confidence: --</small><small id="modelObstacleDecision">Waiting for confidence gate</small></div>
           <div class="model-prediction-card"><span>Model lane prediction</span><strong id="modelLaneLabel">--</strong><small id="modelLaneConfidence">Confidence: --</small></div>
           <div class="model-prediction-card"><span>Vehicle lane state</span><strong id="modelCurrentLane">--</strong><small id="modelLanePhase">Waiting for lane state</small></div>
         </div>
@@ -1327,7 +1327,10 @@ function collectSettings() {
     if (input.type === "checkbox") result[key] = input.checked;
     else if (input.tagName === "SELECT" && key === "vision_backend") result[key] = input.value;
     else if (input.tagName === "SELECT" && (key === "yellow_enabled" || key === "adaptive_roi_enabled" || key === "drivable_recovery_enabled")) result[key] = input.value === "true";
-    else {
+    else if (input.type === "text") {
+      const raw = input.value.trim();
+      if (raw !== "") result[key] = raw;
+    } else {
       const raw = input.value.trim();
       if (raw === "") return;
       const numeric = Number(raw);
@@ -1483,6 +1486,16 @@ function renderModelPredictions(history, telemetry) {
   obstacleValue.textContent = obstacleLabel === "yes" ? "YES · OBSTACLE" : obstacleLabel === "no" ? "NO · CLEAR" : "WAITING";
   obstacleValue.className = obstacleLabel === "yes" ? "model-state-yes" : obstacleLabel === "no" ? "model-state-no" : "";
   $("modelObstacleConfidence").textContent = modelConfidenceText(obstacle?.confidence);
+  const threshold = Number(telemetry.obstacle_model_confidence_threshold ?? 0.65);
+  const thresholdText = Number.isFinite(threshold) ? (threshold * 100).toFixed(0) + "%" : "--";
+  const accepted = Boolean(telemetry.obstacle_model_accepted);
+  const avoidanceEnabled = telemetry.obstacle_avoidance_enabled !== false;
+  $("modelObstacleDecision").textContent = !avoidanceEnabled
+    ? "AVOIDANCE DISABLED"
+    : obstacleLabel === "yes"
+      ? (accepted ? "ACCEPTED FOR AVOIDANCE" : "REJECTED · BELOW THRESHOLD") + " · Gate " + thresholdText
+      : obstacleLabel === "no" ? "CLEAR · Gate " + thresholdText : "Waiting for confidence gate";
+  $("modelObstacleDecision").className = accepted ? "model-state-no" : obstacleLabel === "yes" ? "model-state-yes" : "";
 
   const laneValue = $("modelLaneLabel");
   laneValue.textContent = laneLabel ? laneLabel.toUpperCase() : "WAITING";
@@ -1571,6 +1584,8 @@ async function refreshStatus() {
       " · Return distance: " + Number(t.return_distance_travelled_m || 0).toFixed(1) + "/" + Number(t.return_after_distance_m || 10).toFixed(1) + " m" +
       " · Obstacle model: " + String(t.obstacle_classifier?.obstacle_ahead?.label || "--") +
       " (" + (t.obstacle_model_probability == null ? "--" : (Number(t.obstacle_model_probability) * 100).toFixed(0) + "%") + ")" +
+       " · Avoidance gate: " + (t.obstacle_avoidance_enabled === false ? "DISABLED" : t.obstacle_model_accepted ? "ACCEPTED" : "REJECTED") +
+       " · Confidence threshold: " + (Number(t.obstacle_model_confidence_threshold ?? data.settings.obstacle_model_confidence_threshold ?? 0.65) * 100).toFixed(0) + "%" +
       " · Lane choice: " + String(t.obstacle_lane_prediction || "--") +
       " · Sensor angle: " + (t.active_sensor_angle == null ? "--" : String(t.active_sensor_angle) + "°") +
       (t.vision_error ? " · Vision: " + t.vision_error : "");
