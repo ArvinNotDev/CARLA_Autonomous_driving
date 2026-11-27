@@ -699,10 +699,13 @@ def test_city_reverse_brake_uses_reverse_torque_then_latches_neutral_at_zero():
     assert fast["stop_confirmed"] is False
 
     medium = controller.update(active=True, speed_kmh=5.0)
-    assert medium["command"] == -40
+    assert medium["command"] == -50
 
     slow = controller.update(active=True, speed_kmh=1.0)
-    assert slow["command"] == -12
+    assert slow["command"] == -10
+
+    near_stop = controller.update(active=True, speed_kmh=0.4)
+    assert near_stop["command"] == -4
 
     stopped = controller.update(active=True, speed_kmh=0.3)
     assert stopped["phase"] == "NEUTRAL_HOLD"
