@@ -2112,18 +2112,33 @@ class AvisEngineClient:
                 "Check that the simulator server is running and its IP/port match."
             )
 
+    @property
+    def connected(self) -> bool:
+        return bool(self._connected and not self._closed)
+
+    def _mark_disconnected(self) -> None:
+        self._connected = False
+        self._close_socket()
+
     def set_sensor_angle(self, angle: int) -> None:
-        if self._closed:
-            raise RuntimeError("The AVIS connection is already closed.")
-        self.car.setSensorAngle(int(angle))
+        if not self.connected:
+            return
+        try:
+            self.car.setSensorAngle(int(angle))
+        except Exception:
+            self._mark_disconnected()
 
     def read_data(self) -> tuple[Any, float, Any]:
-        if self._closed or not self._connected:
+        if not self.connected:
             raise RuntimeError("The AVIS connection is not active.")
-        self.car.getData()
-        image = self.car.getImage()
-        speed = self.car.getSpeed()
-        sensors = self.car.getSensors()
+        try:
+            self.car.getData()
+            image = self.car.getImage()
+            speed = self.car.getSpeed()
+            sensors = self.car.getSensors()
+        except Exception:
+            self._mark_disconnected()
+            raise
         try:
             speed_kmh = float(speed)
         except (TypeError, ValueError):
@@ -2133,35 +2148,43 @@ class AvisEngineClient:
         return image, max(0.0, speed_kmh), sensors
 
     def send_control(self, throttle: float, steering: float) -> None:
-        if self._closed or not self._connected:
-            raise RuntimeError("The AVIS connection is not active.")
         speed_command, steering_command = normalize_avis_controls(throttle, steering)
-        self.car.setSpeed(speed_command)
-        self.car.setSteering(steering_command)
+        if not self.connected:
+            return
+        try:
+            self.car.setSpeed(speed_command)
+            self.car.setSteering(steering_command)
+        except Exception:
+            self._mark_disconnected()
 
     def send_manual_control(self, throttle: float, steering: float) -> None:
-        if self._closed or not self._connected:
-            raise RuntimeError("The AVIS connection is not active.")
         speed_command, steering_command = normalize_avis_manual_controls(
             throttle, steering
         )
-        self.car.setSpeed(speed_command)
-        self.car.setSteering(steering_command)
+        if not self.connected:
+            return
+        try:
+            self.car.setSpeed(speed_command)
+            self.car.setSteering(steering_command)
+        except Exception:
+            self._mark_disconnected()
 
     def _close_socket(self) -> None:
         sock = getattr(self.car, "sock", None)
         if sock is not None:
             try:
                 sock.close()
-            except OSError:
+            except Exception:
                 pass
 
     def close(self) -> None:
         if self._closed:
             return
+        was_connected = self._connected
         self._closed = True
+        self._connected = False
 
-        if self._connected:
+        if was_connected:
             try:
                 self.car.setSpeed(0)
             except Exception:
@@ -2174,7 +2197,7 @@ class AvisEngineClient:
             if sock is not None:
                 try:
                     sock.sendall(b"stop")
-                except OSError:
+                except Exception:
                     pass
         self._close_socket()
 
@@ -2189,6 +2212,27 @@ class AvisEngineClient:
             self.close()
         except Exception:
             pass
+
+
+def _connect_avis_engine(
+    api_module: ModuleType,
+    host: str,
+    port: int,
+    sensor_angle: int,
+) -> AvisEngineClient:
+    """Create and configure a fresh AVIS connection, cleaning up partial failures."""
+    client = AvisEngineClient(api_module, host, port)
+    try:
+        client.send_control(0.0, 0.0)
+        client.set_sensor_angle(int(sensor_angle))
+        if not client.connected:
+            raise ConnectionError(
+                f"AVIS Engine at {host}:{int(port)} disconnected during initialization."
+            )
+        return client
+    except Exception:
+        client.close()
+        raise
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2791,10 +2835,6 @@ def run_avis(args: argparse.Namespace) -> int:
         inference_worker = InferenceWorker(vision_processor=vision_processor)
         inference_worker.start()
 
-        client = AvisEngineClient(avis_api, args.avis_host, args.avis_port)
-        client.send_control(0.0, 0.0)
-        client.set_sensor_angle(int(settings["sensor_angle"]))
-
         steering_controller = AvisSteeringController(
             kp=float(settings["kp"]),
             ki=float(settings["ki"]),
@@ -2834,6 +2874,31 @@ def run_avis(args: argparse.Namespace) -> int:
                     "Do not expose it to untrusted networks."
                 )
 
+        last_connect_error = None
+        while client is None:
+            try:
+                client = _connect_avis_engine(
+                    avis_api,
+                    args.avis_host,
+                    args.avis_port,
+                    int(settings["sensor_angle"]),
+                )
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:
+                signature = f"{type(exc).__name__}: {exc}"
+                if signature != last_connect_error:
+                    print(
+                        f"[AVIS] Engine is unavailable ({signature}); "
+                        "retrying in 1 second."
+                    )
+                    last_connect_error = signature
+                dashboard_state.set_connection_status(
+                    False, "Waiting for AVIS Engine / reconnecting"
+                )
+                time.sleep(1.0)
+
+        dashboard_state.set_connection_status(True, "Connected; waiting for camera")
         print(f"[AVIS] Connected to {args.avis_host}:{args.avis_port}.")
         print(
             f"[AVIS] Waiting {max(0.0, args.avis_startup_delay):.1f}s "
@@ -2873,15 +2938,77 @@ def run_avis(args: argparse.Namespace) -> int:
                 consecutive_connection_errors = 0
             except Exception as exc:
                 consecutive_connection_errors += 1
-                client.send_control(0.0, 0.0)
                 signature = f"{type(exc).__name__}: {exc}"
                 if signature != last_error_message:
                     print(f"[AVIS] Data receive failed: {signature}")
                     last_error_message = signature
                 if consecutive_connection_errors >= 3:
-                    raise ConnectionError(
-                        "AVIS data reception failed three consecutive times."
-                    ) from exc
+                    print(
+                        "[AVIS] Engine connection lost. "
+                        "Stopping drive commands and waiting for the server to return."
+                    )
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+                    client = None
+                    dashboard_state.set_mode("stopped")
+                    dashboard_state.set_connection_status(
+                        False, "AVIS Engine disconnected / reconnecting"
+                    )
+
+                    reconnect_error = None
+                    while client is None:
+                        time.sleep(1.0)
+                        try:
+                            client = _connect_avis_engine(
+                                avis_api,
+                                args.avis_host,
+                                args.avis_port,
+                                int(current_settings["sensor_angle"])
+                                if "current_settings" in locals()
+                                else int(settings["sensor_angle"]),
+                            )
+                        except KeyboardInterrupt:
+                            raise
+                        except Exception as reconnect_exc:
+                            reconnect_signature = (
+                                f"{type(reconnect_exc).__name__}: {reconnect_exc}"
+                            )
+                            if reconnect_signature != reconnect_error:
+                                print(
+                                    f"[AVIS] Reconnect attempt failed: "
+                                    f"{reconnect_signature}"
+                                )
+                                reconnect_error = reconnect_signature
+
+                    steering_controller.reset()
+                    speed_controller.reset()
+                    obstacle_lane_change = AvisModelObstacleLaneChangeController()
+                    drivable_recovery_controller = AvisDrivableAreaRecoveryController()
+                    last_vision_result = None
+                    last_model_prediction_request_id = 0
+                    last_inference_submit = 0.0
+                    last_dashboard_publish = 0.0
+                    recovery_steering = 0.0
+                    last_control_time = time.perf_counter()
+                    next_tick = last_control_time
+                    active_sensor_angle = (
+                        int(current_settings["sensor_angle"])
+                        if "current_settings" in locals()
+                        else int(settings["sensor_angle"])
+                    )
+                    consecutive_connection_errors = 0
+                    last_error_message = None
+                    dashboard_state.set_connection_status(
+                        True, "Reconnected; waiting for camera"
+                    )
+                    print(
+                        f"[AVIS] Reconnected to {args.avis_host}:{args.avis_port}. "
+                        "Driving remains stopped for safety."
+                    )
+                else:
+                    time.sleep(min(control_period, 0.05))
                 continue
 
             current_settings, current_revision = dashboard_state.settings_snapshot()
