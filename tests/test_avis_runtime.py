@@ -658,8 +658,9 @@ def test_avis_simulator_handbrake_clears_ui_selection_and_restores_focus_while_h
         fake_user32.rect[2] - fake_user32.rect[0]
     )
     assert fake_user32.cursor == (35, 45)
-    # Focus is restored immediately; the parking brake remains held in AVIS.
-    assert fake_user32.foreground == 10
+    # Keep AVIS focused while Space is held so Unity continues to receive the
+    # handbrake axis; the selected Mode toggle has already been cleared.
+    assert fake_user32.foreground == 20
 
     # Repeated control ticks do not refocus AVIS or generate repeated key presses.
     focus_count = len(fake_user32.focus_history)
@@ -673,9 +674,9 @@ def test_avis_simulator_handbrake_clears_ui_selection_and_restores_focus_while_h
         "key", AvisSimulatorHandbrake.VK_SPACE,
         AvisSimulatorHandbrake.KEYEVENTF_KEYUP,
     )
-    # The previous application remains foreground after releasing the brake.
+    # The previous application is restored after the matching key-up.
     assert fake_user32.foreground == 10
-    assert fake_user32.focus_history[-2:] == [20, 10]
+    assert fake_user32.focus_history[-1] == 10
 
 
 def test_avis_simulator_handbrake_reports_unavailable_off_windows():
