@@ -24,7 +24,7 @@
     "kp": 0.013,
     "ki": 0.0,
     "kd": 0.003,
-    "steer_limit": 0.7,
+    "steer_limit": 0.05,
     "max_steer_step": 0.1,
     "blur_kernel": 5,
     "canny_low": 55,
@@ -174,5 +174,5 @@
       }
     ]
   },
-  "saved_at": 1795799626.2504628
+  "saved_at": 1795799747.4483263
 }
