@@ -70,6 +70,8 @@ DEFAULT_AVIS_SETTINGS: dict[str, Any] = {
     "lane_offset_ratio": 0.16,
     "center_smoothing": 0.30,
     "obstacle_lane_change_enabled": True,
+    "city_pedestrian_stop_enabled": False,
+    "city_pedestrian_stop_seconds": 5.0,
     "obstacle_model_confidence_threshold": 0.65,
     "obstacle_lane_confidence_threshold": 0.65,
     "obstacle_model_confirm_frames": 3,
@@ -160,6 +162,7 @@ _NUMERIC_LIMITS: dict[str, tuple[float, float, bool]] = {
     "obstacle_lane_line_confirm_frames": (1.0, 60.0, True),
     "obstacle_lane_line_search_max_distance_m": (0.1, 1000.0, False),
     "obstacle_clearance_after_pass_m": (0.0, 1000.0, False),
+    "city_pedestrian_stop_seconds": (0.5, 120.0, False),
     "obstacle_model_confidence_threshold": (0.50, 0.99, False),
     "obstacle_lane_confidence_threshold": (0.50, 0.99, False),
     "obstacle_model_confirm_frames": (1.0, 30.0, True),
@@ -231,6 +234,7 @@ def validate_avis_settings(
             "auto_mode_default", "vision_debug", "debug_show_rois",
             "debug_show_lane_mask", "debug_show_drivable_area", "debug_show_text",
             "yellow_enabled", "obstacle_lane_change_enabled",
+            "city_pedestrian_stop_enabled",
             "adaptive_roi_enabled", "drivable_recovery_enabled",
         }:
             if not isinstance(value, bool):
@@ -276,6 +280,7 @@ class AvisDashboardState:
         profile_path: Path | str | None = None,
         github_sync: AvisGitHubProfileSync | None = None,
         capture_directory: Path | str | None = None,
+        default_profile_name: str = "AVIS_StableV2",
     ) -> None:
         self._lock = threading.RLock()
         self.settings_path = Path(settings_path)
@@ -297,7 +302,8 @@ class AvisDashboardState:
             self._settings = validate_avis_settings(self._settings, initial_settings)
         self._load_saved_settings()
         self._profiles: dict[str, dict[str, Any]] = {}
-        self._active_profile_name = "AVIS_StableV2"
+        self._default_profile_name = self._normalize_profile_name(default_profile_name)
+        self._active_profile_name = self._default_profile_name
         self._load_saved_profiles()
         self._settings_revision = 0
         self._mode = "auto" if self._settings.get("auto_mode_default", True) else "stopped"
@@ -454,11 +460,11 @@ class AvisDashboardState:
             except (OSError, json.JSONDecodeError, TypeError) as exc:
                 print(f"[AVIS WEB] Ignoring invalid profile file: {exc}")
 
-        default_key = self._profile_key("AVIS_StableV2")
+        default_key = self._profile_key(self._default_profile_name)
         if default_key not in loaded:
             loaded[default_key] = {
                 "schema_version": 1,
-                "name": "AVIS_StableV2",
+                "name": self._default_profile_name,
                 "settings": dict(self._settings),
                 "saved_at": None,
             }
@@ -566,8 +572,11 @@ class AvisDashboardState:
 
     def delete_profile(self, name: Any) -> None:
         normalized = self._normalize_profile_name(name)
-        if self._profile_key(normalized) == self._profile_key("AVIS_StableV2"):
-            raise ValueError("The AVIS_StableV2 baseline profile cannot be deleted.")
+        if self._profile_key(normalized) in {
+            self._profile_key("AVIS_StableV2"),
+            self._profile_key(self._default_profile_name),
+        }:
+            raise ValueError("The AVIS baseline profile for this runtime mode cannot be deleted.")
         with self._lock:
             key = self._profile_key(normalized)
             if key not in self._profiles:
@@ -945,6 +954,12 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
           <div class="field"><label for="obstacle_lane_change_retry_steer">Gentle retry steering</label><input id="obstacle_lane_change_retry_steer" data-setting="obstacle_lane_change_retry_steer" type="number" min=".001" max="1" step="any"></div>
           <div class="field"><label for="obstacle_lane_change_retry_pulse_distance_m">Gentle retry distance (m)</label><input id="obstacle_lane_change_retry_pulse_distance_m" data-setting="obstacle_lane_change_retry_pulse_distance_m" type="number" min=".05" max="10" step=".05"></div>
           <div class="field full"><div class="hint">During both lane changes, AVIS uses the dedicated low lane-change speed and shorter steering pulses. It keeps retrying until the model confirms the destination lane; no distance sensors are used.</div></div>
+        </div>
+        <div class="section-label">City pedestrian stop</div>
+        <div class="fields">
+          <div class="field full checkbox-field"><label for="city_pedestrian_stop_enabled"><input id="city_pedestrian_stop_enabled" type="checkbox" data-setting="city_pedestrian_stop_enabled"><span>Stop when the model reports an obstacle ahead in city mode</span></label><div class="hint">The current classifier reports only obstacle_ahead = yes/no; it does not have a separate pedestrian class. When enabled, AVIS holds the vehicle stopped for at least the configured time and resumes only after the model confirms the obstacle is clear for the configured clear-frame count.</div></div>
+          <div class="field"><label for="city_pedestrian_stop_seconds">Minimum pedestrian / obstacle wait (seconds)</label><input id="city_pedestrian_stop_seconds" data-setting="city_pedestrian_stop_seconds" type="number" min="0.5" max="120" step="0.5"></div>
+          <div class="field full"><div class="hint">The existing obstacle confidence threshold, trigger confirmation frames, and clear confirmation frames are reused for this stop behaviour. Road mode keeps this feature disabled by default.</div></div>
         </div>
         <div class="section-label">Return to the right lane</div>
         <div class="hint">After the model confirms the vehicle has entered the left lane, AVIS travels exactly 4 metres, then starts the right-lane change. The return uses the same model-confirmed steering pulse, pause, and gentler retry sequence as the initial move to the left. Right-side sensor readings and sensor timeouts do not control this return.</div>
