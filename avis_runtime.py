@@ -3602,11 +3602,11 @@ def run_avis(args: argparse.Namespace) -> int:
                     debug_data = {}
                 lane_change_state = obstacle_lane_change.snapshot(sensors)
                 drivable_recovery_state = drivable_recovery_controller.snapshot()
-                city_pedestrian_stop_state = city_pedestrian_stop_controller.snapshot()
+                city_crosswalk_stop_state = city_crosswalk_stop_controller.snapshot()
 
                 if drive_mode == "manual":
-                    city_pedestrian_stop_controller.reset()
-                    city_pedestrian_stop_state = city_pedestrian_stop_controller.snapshot()
+                    city_crosswalk_stop_controller.reset()
+                    city_crosswalk_stop_state = city_crosswalk_stop_controller.snapshot()
                     drivable_recovery_state = drivable_recovery_controller.update(
                         None,
                         observation_id=None,
@@ -3624,8 +3624,8 @@ def run_avis(args: argparse.Namespace) -> int:
                         else "MANUAL / INPUT TIMED OUT - ZERO THROTTLE"
                     )
                 elif drive_mode == "stopped":
-                    city_pedestrian_stop_controller.reset()
-                    city_pedestrian_stop_state = city_pedestrian_stop_controller.snapshot()
+                    city_crosswalk_stop_controller.reset()
+                    city_crosswalk_stop_state = city_crosswalk_stop_controller.snapshot()
                     drivable_recovery_state = drivable_recovery_controller.update(
                         None,
                         observation_id=None,
@@ -3647,20 +3647,21 @@ def run_avis(args: argparse.Namespace) -> int:
                             0.75, inference_interval * 8.0
                         )
 
-                    city_pedestrian_stop_state = city_pedestrian_stop_controller.update(
-                        vision_data.get("obstacle_classifier") if result_fresh else None,
+                    city_crosswalk_stop_state = city_crosswalk_stop_controller.update(
+                        vision_data.get("junction_roi") if result_fresh else None,
                         enabled=(
                             args.avis_mode == "city"
-                            and bool(current_settings.get("city_pedestrian_stop_enabled", False))
+                            and bool(current_settings.get("city_crosswalk_enabled", False))
                         ),
-                        hold_seconds=float(current_settings.get("city_pedestrian_stop_seconds", 5.0)),
-                        confidence_threshold=float(
-                            current_settings.get("obstacle_model_confidence_threshold", 0.90)
+                        stop_seconds=float(current_settings.get("city_crosswalk_stop_seconds", 5.0)),
+                        rearm_clear_seconds=float(
+                            current_settings.get("city_crosswalk_rearm_clear_seconds", 1.0)
                         ),
-                        confirm_frames=int(current_settings.get("obstacle_model_confirm_frames", 3)),
-                        clear_frames=int(current_settings.get("obstacle_model_rearm_frames", 3)),
                         observation_id=(
                             last_vision_result.request_id if result_fresh else None
+                        ),
+                        observation_timestamp=(
+                            last_vision_result.completed_at if result_fresh else None
                         ),
                         now=time.perf_counter(),
                     )
@@ -3852,8 +3853,8 @@ def run_avis(args: argparse.Namespace) -> int:
                         else:
                             status = "AUTO / COAST" if coasting else "AUTO"
 
-                    if city_pedestrian_stop_state.get("active"):
-                        if city_pedestrian_stop_state.get("just_activated"):
+                    if city_crosswalk_stop_state.get("active"):
+                        if city_crosswalk_stop_state.get("just_activated"):
                             steering_controller.reset()
                         drivable_recovery_state = drivable_recovery_controller.update(
                             None,
@@ -3867,8 +3868,8 @@ def run_avis(args: argparse.Namespace) -> int:
                         steering = 0.0
                         target_speed = 0.0
                         coasting = False
-                        remaining = float(city_pedestrian_stop_state.get("remaining_seconds", 0.0))
-                        status = f"CITY / PEDESTRIAN STOP · {remaining:.1f}s"
+                        remaining = float(city_crosswalk_stop_state.get("remaining_seconds", 0.0))
+                        status = f"CITY / CROSSWALK STOP · {remaining:.1f}s"
 
                     client.send_control(throttle, steering)
 
