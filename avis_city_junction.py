@@ -850,7 +850,18 @@ class AvisCityJunctionController:
             )
             if elapsed >= stop_seconds:
                 if self._active_route_type == "STOP":
-                    self._finish(current)
+                    # STOP is a terminal route instruction: after the same
+                    # configured stop dwell, keep the vehicle held until the
+                    # operator explicitly switches mode or resets the run.
+                    self._last_route_type = "STOP"
+                    self._phase = "STOPPED"
+                    self._dwell_started_at = None
+                    self._sequence = []
+                    self._segment_index = 0
+                    self._segment_distance_m = 0.0
+                    self._segment_started_at = None
+                    self._just_completed = True
+                    self._last_reason = "stop_sign_terminal_stop"
                 else:
                     self._start_maneuver(settings=settings, now=current)
             else:
@@ -919,8 +930,8 @@ class AvisCityJunctionController:
         prediction = self._last_sign_prediction or {}
         return {
             "phase": self._phase,
-            "active": self._phase in {"BRAKING", "DWELL", "MANEUVER"},
-            "braking": self._phase in {"BRAKING", "DWELL"},
+            "active": self._phase in {"BRAKING", "DWELL", "MANEUVER", "STOPPED"},
+            "braking": self._phase in {"BRAKING", "DWELL", "STOPPED"},
             "waiting_for_stop": self._phase == "BRAKING",
             "dwell_active": self._phase == "DWELL",
             "dwell_remaining_seconds": float(dwell_remaining),
@@ -940,7 +951,11 @@ class AvisCityJunctionController:
             "crosswalk_detected": bool(self._crosswalk_detected),
             "detected": bool(self._crosswalk_detected),
             "length_ratio": float(self._crosswalk_length_ratio),
-            "pending_sign_type": self._pending_sign_type or "STRAIGHT",
+            "pending_sign_type": (
+                self._pending_sign_type
+                or self._active_route_type
+                or ("STRAIGHT" if self._phase == "IDLE" else "UNKNOWN")
+            ),
             "pending_sign_confidence": float(self._pending_sign_confidence),
             "sign_class": prediction.get("class_name"),
             "sign_confidence": prediction.get("confidence"),
