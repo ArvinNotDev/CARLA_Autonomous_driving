@@ -3119,12 +3119,22 @@ def run_avis(args: argparse.Namespace) -> int:
         settings, settings_revision = dashboard_state.settings_snapshot()
         _apply_avis_roi_settings(conf, settings)
         _apply_avis_model_settings(conf, settings)
+        crosswalk_enabled = _apply_avis_city_crosswalk_settings(
+            conf, settings, city_mode=args.avis_mode == "city"
+        )
+        if crosswalk_enabled and settings["vision_backend"] != "ultralytics":
+            raise RuntimeError(
+                "City Crosswalk ROI detection requires the Ultralytics lane processor."
+            )
         if settings["vision_backend"] == "ultralytics":
             print(
                 f"[AVIS] Lane-line checkpoint: {conf.MODEL_PATH} "
                 f"(imgsz={conf.MODEL_IMAGE_SIZE})"
             )
-        print(f"[AVIS] Obstacle classifier checkpoint: {settings['obstacle_model_path']}")
+        if bool(settings.get("obstacle_detection_enabled", True)):
+            print(f"[AVIS] Obstacle classifier checkpoint: {settings['obstacle_model_path']}")
+        else:
+            print("[AVIS] Obstacle ONNX classifier is disabled by the active mode profile.")
 
         from avis_adaptive_roi import AvisAdaptiveROIController
 
@@ -3161,18 +3171,23 @@ def run_avis(args: argparse.Namespace) -> int:
                 adaptive_roi_controller=adaptive_roi_controller,
             )
 
-        # ONNX Runtime is intentionally initialized after the lane model so
-        # its preload_dlls() routine can reuse PyTorch's CUDA/cuDNN DLLs.
-        obstacle_model_path = _resolve_avis_model_path(
-            settings["obstacle_model_path"],
-            suffix=".onnx",
-            setting_name="Obstacle classifier model",
-        )
-        obstacle_classifier = AvisObstacleLaneClassifier(obstacle_model_path)
+        # Initialize ONNX Runtime only when this mode explicitly enables the
+        # obstacle classifier. City mode defaults to no obstacle model at all.
+        obstacle_classifier = None
+        if bool(settings.get("obstacle_detection_enabled", True)):
+            obstacle_model_path = _resolve_avis_model_path(
+                settings["obstacle_model_path"],
+                suffix=".onnx",
+                setting_name="Obstacle classifier model",
+            )
+            obstacle_classifier = AvisObstacleLaneClassifier(obstacle_model_path)
+            print("[AVIS] RoadForge obstacle/lane ONNX classifier is active.")
+        else:
+            print("[AVIS] Obstacle classifier initialization skipped for this mode.")
+
         vision_processor = AvisCombinedVisionProcessor(
             lane_vision_processor, obstacle_classifier
         )
-        print("[AVIS] Obstacle detection and lane-change direction use the RoadForge multi-task ONNX classifier.")
         inference_worker = InferenceWorker(vision_processor=vision_processor)
         inference_worker.start()
 
@@ -3189,7 +3204,7 @@ def run_avis(args: argparse.Namespace) -> int:
             max_speed_kmh=float(settings["max_speed_kmh"]),
         )
         obstacle_lane_change = AvisModelObstacleLaneChangeController()
-        city_pedestrian_stop_controller = AvisCityPedestrianStopController()
+        city_crosswalk_stop_controller = AvisCityCrosswalkStopController()
         drivable_recovery_controller = AvisDrivableAreaRecoveryController()
 
         if not bool(settings["auto_mode_default"]):
