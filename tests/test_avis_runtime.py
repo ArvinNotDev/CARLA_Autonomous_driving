@@ -225,6 +225,53 @@ def test_city_crosswalk_stop_uses_confirmed_roi_event_and_five_second_dwell():
     assert cooldown_complete["cooldown_active"] is False
 
 
+def test_city_crosswalk_five_second_dwell_starts_only_after_vehicle_stops():
+    controller = AvisCityCrosswalkStopController()
+    marked = {"line_present": True, "detected": True, "line": (0, 40, 250, 40), "length_ratio": 0.8}
+    options = {"enabled": True, "stop_seconds": 5.0, "rearm_clear_seconds": 1.0}
+
+    braking = controller.update(
+        marked, observation_id=1, observation_timestamp=1.0,
+        current_speed_kmh=15.0, now=1.0, **options
+    )
+    assert braking["active"] is True
+    assert braking["waiting_for_stop"] is True
+    assert braking["stop_confirmed"] is False
+    assert braking["remaining_seconds"] == pytest.approx(5.0)
+
+    still_moving = controller.update(
+        marked, observation_id=2, observation_timestamp=4.0,
+        current_speed_kmh=3.0, now=4.0, **options
+    )
+    assert still_moving["active"] is True
+    assert still_moving["waiting_for_stop"] is True
+    assert still_moving["remaining_seconds"] == pytest.approx(5.0)
+
+    stopped = controller.update(
+        marked, observation_id=3, observation_timestamp=5.0,
+        current_speed_kmh=0.0, now=5.0, **options
+    )
+    assert stopped["active"] is True
+    assert stopped["waiting_for_stop"] is False
+    assert stopped["stop_confirmed"] is True
+    assert stopped["remaining_seconds"] == pytest.approx(5.0)
+
+    four_seconds_later = controller.update(
+        marked, observation_id=4, observation_timestamp=9.0,
+        current_speed_kmh=0.0, now=9.0, **options
+    )
+    assert four_seconds_later["active"] is True
+    assert four_seconds_later["remaining_seconds"] == pytest.approx(1.0)
+
+    complete = controller.update(
+        marked, observation_id=5, observation_timestamp=10.0,
+        current_speed_kmh=0.0, now=10.0, **options
+    )
+    assert complete["active"] is False
+    assert complete["reason"] == "crosswalk_stop_complete"
+    assert complete["cooldown_remaining_seconds"] == pytest.approx(5.0)
+
+
 def test_city_crosswalk_does_not_retrigger_until_five_second_cooldown_and_clear_evidence():
     controller = AvisCityCrosswalkStopController()
     marked = {"line_present": True, "detected": True, "line": (0, 40, 250, 40), "length_ratio": 0.8}
