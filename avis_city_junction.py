@@ -10,16 +10,15 @@ from typing import Any
 from navigation.junction_trigger import JunctionTriggerLatch
 
 
+DEFAULT_CITY_SIGN_CLASSES = ["right", "left", "straight", "stop", "90r", "90l"]
+DEFAULT_CITY_SIGN_CLASS_ORDER_JSON = json.dumps(DEFAULT_CITY_SIGN_CLASSES)
 DEFAULT_CITY_SIGN_CLASS_MAP = {
-    "LEFT_90": [
-        "left", "left_90", "left90", "left_turn", "left_turn_90",
-        "turn_left", "turn_left_90", "90_left", "junction_left",
-    ],
-    "RIGHT_90": [
-        "right", "right_90", "right90", "right_turn", "right_turn_90",
-        "turn_right", "turn_right_90", "90_right", "junction_right",
-    ],
-    "STOP": ["stop", "stop_sign", "stop_signs", "stop-sign"],
+    "RIGHT": ["right"],
+    "LEFT": ["left"],
+    "STRAIGHT": ["straight"],
+    "STOP": ["stop", "stop_sign", "stop_signs", "stop_signs"],
+    "RIGHT_90": ["90r", "right_90", "right90", "right_turn_90", "turn_right_90", "90_right", "junction_right"],
+    "LEFT_90": ["90l", "left_90", "left90", "left_turn_90", "turn_left_90", "90_left", "junction_left"],
 }
 
 DEFAULT_CITY_SIGN_CLASS_MAP_JSON = json.dumps(
@@ -61,7 +60,7 @@ def parse_city_sign_class_map(value: Any) -> dict[str, set[str]]:
         raise ValueError("Junction sign class mapping must be a JSON object.")
 
     result: dict[str, set[str]] = {}
-    for canonical in ("LEFT_90", "RIGHT_90", "STOP"):
+    for canonical in ("RIGHT", "LEFT", "STRAIGHT", "STOP", "RIGHT_90", "LEFT_90"):
         aliases = raw.get(canonical, [])
         if isinstance(aliases, str):
             aliases = [aliases]
@@ -112,6 +111,299 @@ def parse_city_maneuver_sequences(value: Any) -> dict[str, list[dict[str, float]
             )
         result[maneuver] = normalized_actions
     return result
+
+
+
+
+
+class AvisJunctionSignOnnxClassifier:
+    """ONNX Runtime image classifier for the six AVIS City junction-sign classes.
+
+    The graph's embedded class names take precedence. For exports without class
+    metadata, the explicit class-order setting is used; no class IDs are guessed.
+    """
+
+    DEFAULT_CLASSES = tuple(DEFAULT_CITY_SIGN_CLASSES)
+    DEFAULT_MEAN = (0.485, 0.456, 0.406)
+    DEFAULT_STD = (0.229, 0.224, 0.225)
+
+    def __init__(
+        self,
+        model_path: Path | str,
+        *,
+        class_order: list[str] | tuple[str, ...] | None = None,
+        input_size: int = 224,
+    ) -> None:
+        import ast
+        import numpy as np
+        import onnxruntime as ort
+
+        self.np = np
+        self.ort = ort
+        self.model_path = Path(model_path).expanduser().resolve()
+        if not self.model_path.is_file():
+            raise FileNotFoundError(
+                f"AVIS junction-sign ONNX model was not found: {self.model_path}"
+            )
+
+        configured = [
+            _normalise_class_name(item)
+            for item in (class_order or self.DEFAULT_CLASSES)
+        ]
+        if len(configured) != 6 or len(set(configured)) != 6:
+            raise ValueError(
+                "Junction-sign class order must contain six unique labels: "
+                "right, left, straight, stop, 90r, 90l."
+            )
+        if set(configured) != set(self.DEFAULT_CLASSES):
+            raise ValueError(
+                "Junction-sign class order must contain exactly "
+                "right, left, straight, stop, 90r and 90l."
+            )
+
+        self.providers = self._preferred_providers()
+        self.session = self._create_session(self.providers)
+        metadata = self._metadata()
+        metadata_names = self._parse_names(
+            metadata.get("names")
+            or metadata.get("class_names")
+            or metadata.get("classes")
+        )
+        self.class_names = metadata_names or configured
+        if len(self.class_names) != 6 or set(self.class_names) != set(self.DEFAULT_CLASSES):
+            raise RuntimeError(
+                "The sign ONNX model must expose exactly the six AVIS classes "
+                f"(right, left, straight, stop, 90r, 90l); found {self.class_names!r}."
+            )
+
+        inputs = self.session.get_inputs()
+        if len(inputs) != 1 or inputs[0].type != "tensor(float)":
+            raise RuntimeError(
+                "Junction-sign ONNX must expose exactly one float32 image input."
+            )
+        shape = inputs[0].shape
+        if len(shape) != 4 or shape[1] not in (3, "3"):
+            raise RuntimeError(
+                f"Junction-sign ONNX input must be NCHW RGB; received {shape!r}."
+            )
+        height, width = shape[2], shape[3]
+        static_height = height if isinstance(height, int) and height > 0 else None
+        static_width = width if isinstance(width, int) and width > 0 else None
+        if static_height and static_width and static_height != static_width:
+            raise RuntimeError(
+                "Junction-sign ONNX expects a non-square input, which is not "
+                "supported by the ResNet18 AVIS preprocessing pipeline."
+            )
+        self.input_size = int(static_height or static_width or input_size)
+        if not 32 <= self.input_size <= 2048:
+            raise RuntimeError(f"Invalid junction-sign input size: {self.input_size}.")
+
+        self.input_name = inputs[0].name
+        outputs = self.session.get_outputs()
+        if len(outputs) != 1:
+            raise RuntimeError(
+                f"Junction-sign ONNX must expose one classification output; found {len(outputs)}."
+            )
+        self.output_name = outputs[0].name
+        output_shape = outputs[0].shape
+        if len(output_shape) != 2:
+            raise RuntimeError(
+                f"Junction-sign output must have shape [1, 6]; got {output_shape!r}."
+            )
+        output_classes = output_shape[1]
+        if isinstance(output_classes, int) and output_classes != 6:
+            raise RuntimeError(
+                f"Junction-sign output has {output_classes} classes; expected six."
+            )
+
+        self.mean = self._metadata_vector(
+            metadata.get("normalization_mean"), self.DEFAULT_MEAN
+        )
+        self.std = self._metadata_vector(
+            metadata.get("normalization_std"), self.DEFAULT_STD
+        )
+        if not np.all(np.isfinite(self.mean)) or not np.all(np.isfinite(self.std)):
+            raise RuntimeError("Junction-sign normalization values must be finite.")
+        if np.any(self.std <= 0):
+            raise RuntimeError("Junction-sign normalization std values must be positive.")
+
+        self.providers = list(self.session.get_providers())
+        print(
+            "[AVIS] Junction-sign ResNet18 ONNX loaded: "
+            f"{self.model_path} · input={self.input_size} · "
+            f"classes={self.class_names} · providers={self.providers}"
+        )
+
+    @staticmethod
+    def _parse_names(value: Any) -> list[str]:
+        if value is None:
+            return []
+        parsed = value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                try:
+                    import ast
+                    parsed = ast.literal_eval(value)
+                except (SyntaxError, ValueError):
+                    return []
+        if isinstance(parsed, dict):
+            try:
+                items = sorted(parsed.items(), key=lambda pair: int(pair[0]))
+                parsed = [item[1] for item in items]
+            except (TypeError, ValueError):
+                return []
+        if not isinstance(parsed, (list, tuple)):
+            return []
+        return [_normalise_class_name(item) for item in parsed]
+
+    @staticmethod
+    def _metadata_vector(value: Any, default: tuple[float, float, float]):
+        import numpy as np
+        if value is None:
+            return np.asarray(default, dtype=np.float32).reshape(1, 1, 3)
+        try:
+            values = json.loads(value) if isinstance(value, str) else value
+            result = np.asarray(values, dtype=np.float32)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return np.asarray(default, dtype=np.float32).reshape(1, 1, 3)
+        if result.shape != (3,):
+            return np.asarray(default, dtype=np.float32).reshape(1, 1, 3)
+        return result.reshape(1, 1, 3)
+
+    def _metadata(self) -> dict[str, Any]:
+        try:
+            return dict(self.session.get_modelmeta().custom_metadata_map or {})
+        except Exception:
+            return {}
+
+    def _preferred_providers(self) -> list[str]:
+        available = set(self.ort.get_available_providers())
+        if "CUDAExecutionProvider" not in available:
+            return ["CPUExecutionProvider"]
+        preload_dlls = getattr(self.ort, "preload_dlls", None)
+        if callable(preload_dlls):
+            try:
+                preload_dlls()
+            except Exception as exc:
+                print(
+                    "[AVIS] Junction-sign CUDA DLL preload failed; "
+                    f"using CPU: {type(exc).__name__}: {exc}"
+                )
+                return ["CPUExecutionProvider"]
+        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+    def _create_session(self, providers: list[str]):
+        try:
+            return self.ort.InferenceSession(
+                str(self.model_path), providers=providers
+            )
+        except Exception as exc:
+            if providers == ["CPUExecutionProvider"]:
+                raise
+            print(
+                "[AVIS] Junction-sign CUDA session initialization failed; "
+                f"retrying on CPU: {type(exc).__name__}: {exc}"
+            )
+            return self.ort.InferenceSession(
+                str(self.model_path), providers=["CPUExecutionProvider"]
+            )
+
+    def _preprocess(self, frame_bgr: Any):
+        from PIL import Image
+
+        frame = self.np.asarray(frame_bgr)
+        if frame.ndim != 3 or frame.shape[2] < 3 or frame.size == 0:
+            raise ValueError(
+                f"Junction-sign classifier expects a BGR image; got {frame.shape!r}."
+            )
+        if frame.dtype != self.np.uint8:
+            raise ValueError(
+                f"Junction-sign classifier expects uint8 pixels; got {frame.dtype}."
+            )
+        rgb = self.np.ascontiguousarray(frame[:, :, :3][:, :, ::-1])
+        image = Image.fromarray(rgb, mode="RGB").resize(
+            (self.input_size, self.input_size),
+            resample=Image.Resampling.BILINEAR,
+        )
+        tensor = self.np.asarray(image, dtype=self.np.float32) / 255.0
+        tensor = (tensor - self.mean) / self.std
+        tensor = self.np.transpose(tensor, (2, 0, 1))[None, ...]
+        return self.np.ascontiguousarray(tensor, dtype=self.np.float32)
+
+    def predict(
+        self,
+        frame_bgr: Any,
+        *,
+        confidence_threshold: float = 0.55,
+    ) -> dict[str, Any]:
+        if frame_bgr is None or getattr(frame_bgr, "size", 0) == 0:
+            return {
+                "valid": False, "class_id": None, "class_name": None,
+                "confidence": 0.0, "detections": [],
+                "model_classes": list(self.class_names),
+                "providers": list(self.providers),
+            }
+        tensor = self._preprocess(frame_bgr)
+        try:
+            outputs = self.session.run(
+                [self.output_name], {self.input_name: tensor}
+            )
+        except Exception as exc:
+            if self.providers == ["CPUExecutionProvider"]:
+                raise
+            print(
+                "[AVIS] Junction-sign CUDA inference failed; switching to CPU: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            self.session = self._create_session(["CPUExecutionProvider"])
+            self.providers = list(self.session.get_providers())
+            outputs = self.session.run(
+                [self.output_name], {self.input_name: tensor}
+            )
+
+        values = self.np.asarray(outputs[0], dtype=self.np.float32)
+        if values.shape != (1, 6) or not self.np.all(self.np.isfinite(values)):
+            raise RuntimeError(
+                f"Junction-sign ONNX returned invalid logits with shape {values.shape!r}; "
+                "expected finite [1, 6] values."
+            )
+        scores = values[0]
+        if (
+            self.np.all(scores >= 0.0)
+            and self.np.all(scores <= 1.0)
+            and abs(float(scores.sum()) - 1.0) <= 0.02
+        ):
+            probabilities = scores / max(float(scores.sum()), 1e-12)
+        else:
+            shifted = scores - float(scores.max())
+            exponentials = self.np.exp(shifted)
+            probabilities = exponentials / max(float(exponentials.sum()), 1e-12)
+        class_id = int(self.np.argmax(probabilities))
+        confidence = float(probabilities[class_id])
+        class_name = self.class_names[class_id]
+        try:
+            threshold = min(0.99, max(0.01, float(confidence_threshold)))
+        except (TypeError, ValueError):
+            threshold = 0.55
+        detections = (
+            [{"class_id": class_id, "class_name": class_name, "confidence": confidence}]
+            if confidence >= threshold else []
+        )
+        return {
+            "valid": True,
+            "class_id": class_id,
+            "class_name": class_name,
+            "confidence": confidence,
+            "probabilities": {
+                name: float(probabilities[index])
+                for index, name in enumerate(self.class_names)
+            },
+            "detections": detections,
+            "model_classes": list(self.class_names),
+            "providers": list(self.providers),
+        }
 
 
 class AvisJunctionSignDetector:
@@ -427,8 +719,10 @@ class AvisCityJunctionController:
 
         sequence_key = {
             "STRAIGHT": "STRAIGHT",
-            "LEFT_90": "LEFT",
-            "RIGHT_90": "RIGHT",
+            "LEFT": "LEFT",
+            "RIGHT": "RIGHT",
+            "LEFT_90": "LEFT_90",
+            "RIGHT_90": "RIGHT_90",
         }.get(self._active_route_type or "STRAIGHT", "STRAIGHT")
         self._sequence = list(sequences.get(sequence_key, []))
         self._segment_index = 0
