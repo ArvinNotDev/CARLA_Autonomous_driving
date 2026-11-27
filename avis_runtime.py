@@ -514,6 +514,9 @@ def apply_avis_profile(profile: dict[str, Any], config_module: ModuleType) -> No
             setattr(config_module, key, profile[key])
 
 
+AVIS_BRAKE_MIN_SPEED_KMH = 8.5  # >5 mph (8.05 km/h) plus a safety margin.
+
+
 def normalize_avis_controls(throttle: float, steering: float) -> tuple[int, int]:
     """Convert autonomous throttle [0, 1] and steering [-1, 1] to AVIS commands."""
     throttle_value = float(throttle)
@@ -1594,7 +1597,9 @@ class AvisCombinedVisionProcessor:
 
 
 class AvisCityCrosswalkStopController:
-    """CARLA-style crosswalk event latch and nonblocking stop dwell for AVIS city mode."""
+    """CARLA-style crosswalk event latch, stop dwell, and post-stop cooldown."""
+
+    RESTART_COOLDOWN_SECONDS = 5.0
 
     def __init__(self) -> None:
         from navigation.junction_trigger import JunctionTriggerLatch
@@ -1610,6 +1615,7 @@ class AvisCityCrosswalkStopController:
         self._enabled = False
         self._active = False
         self._started_at: float | None = None
+        self._cooldown_until: float | None = None
         self._last_observation_id: Any = None
         self._line_present = False
         self._detected = False
@@ -1630,6 +1636,11 @@ class AvisCityCrosswalkStopController:
             max(0.0, current - self._started_at)
             if self._active and self._started_at is not None else 0.0
         )
+        cooldown_remaining = (
+            max(0.0, self._cooldown_until - current)
+            if self._cooldown_until is not None else 0.0
+        )
+        cooldown_active = cooldown_remaining > 0.0
         return {
             "enabled": bool(self._enabled),
             "active": bool(self._active),
@@ -1643,6 +1654,8 @@ class AvisCityCrosswalkStopController:
             "length_ratio": float(self._length_ratio),
             "trigger_pending": bool(self._trigger.pending),
             "just_activated": bool(self._just_activated),
+            "cooldown_active": bool(cooldown_active),
+            "cooldown_remaining_seconds": float(cooldown_remaining),
         }
 
     def update(
@@ -1668,6 +1681,10 @@ class AvisCityCrosswalkStopController:
 
         self._enabled = True
         self._trigger.clear_duration = max(0.2, float(rearm_clear_seconds))
+        cooldown_active = (
+            self._cooldown_until is not None and current < self._cooldown_until
+        )
+
         if observation_id is not None and observation_id != self._last_observation_id:
             self._last_observation_id = observation_id
             info = junction_roi if isinstance(junction_roi, dict) else {}
@@ -1687,13 +1704,16 @@ class AvisCityCrosswalkStopController:
             if not math.isfinite(timestamp):
                 timestamp = current
 
+            # Keep the event latch locked throughout the post-stop cooldown.
+            # Clear evidence accumulated during cooldown may rearm only after
+            # the full cooldown has elapsed.
             pending = self._trigger.observe(
                 detected=self._detected and self._line_present,
                 evidence_present=self._line_present,
                 timestamp=timestamp,
-                manager_idle=not self._active,
+                manager_idle=not self._active and not cooldown_active,
             )
-            if pending and not self._active:
+            if pending and not self._active and not cooldown_active:
                 self._trigger.acknowledge()
                 self._active = True
                 self._started_at = current
@@ -1708,9 +1728,15 @@ class AvisCityCrosswalkStopController:
             if elapsed >= required:
                 self._active = False
                 self._started_at = None
+                self._cooldown_until = current + self.RESTART_COOLDOWN_SECONDS
                 self._reason = "crosswalk_stop_complete"
             else:
                 self._reason = "crosswalk_stop_in_progress"
+        elif cooldown_active:
+            self._reason = "crosswalk_restart_cooldown"
+        elif self._cooldown_until is not None:
+            self._cooldown_until = None
+            self._reason = "crosswalk_cooldown_complete"
         elif self._reason not in {"crosswalk_stop_complete"}:
             self._reason = (
                 "crosswalk_evidence_pending" if self._trigger.pending
@@ -2354,8 +2380,29 @@ class AvisEngineClient:
             speed_kmh = 0.0
         return image, max(0.0, speed_kmh), sensors
 
-    def send_control(self, throttle: float, steering: float) -> None:
-        speed_command, steering_command = normalize_avis_controls(throttle, steering)
+    def send_control(
+        self,
+        throttle: float,
+        steering: float,
+        *,
+        brake: bool = False,
+        current_speed_kmh: float | None = None,
+    ) -> None:
+        if brake:
+            try:
+                speed_kmh = float(current_speed_kmh or 0.0)
+            except (TypeError, ValueError):
+                speed_kmh = 0.0
+            if not math.isfinite(speed_kmh):
+                speed_kmh = 0.0
+            # In the AVIS simulator, negative setSpeed input applies wheel
+            # brake torque only above 5 mph. Below that threshold, its vehicle
+            # controller can apply reverse motor torque instead. Never send a
+            # negative command in that low-speed range.
+            speed_command = -100 if speed_kmh >= AVIS_BRAKE_MIN_SPEED_KMH else 0
+            steering_command = 0
+        else:
+            speed_command, steering_command = normalize_avis_controls(throttle, steering)
         if not self.connected:
             return
         try:
@@ -3871,7 +3918,12 @@ def run_avis(args: argparse.Namespace) -> int:
                         remaining = float(city_crosswalk_stop_state.get("remaining_seconds", 0.0))
                         status = f"CITY / CROSSWALK STOP · {remaining:.1f}s"
 
-                    client.send_control(throttle, steering)
+                    client.send_control(
+                        throttle,
+                        steering,
+                        brake=bool(city_crosswalk_stop_state.get("active")),
+                        current_speed_kmh=current_speed,
+                    )
 
                 
                 if not isinstance(debug_data, dict):
