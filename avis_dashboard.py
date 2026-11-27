@@ -1495,7 +1495,7 @@ function renderModelPredictions(history, telemetry) {
     : obstacleLabel === "yes"
       ? (accepted ? "ACCEPTED FOR AVOIDANCE" : "REJECTED · BELOW THRESHOLD") + " · Gate " + thresholdText
       : obstacleLabel === "no" ? "CLEAR · Gate " + thresholdText : "Waiting for confidence gate";
-  $("modelObstacleDecision").className = accepted ? "model-state-no" : obstacleLabel === "yes" ? "model-state-yes" : "";
+  $("modelObstacleDecision").className = accepted ? "model-state-yes" : obstacleLabel === "yes" ? "model-state-no" : "";
 
   const laneValue = $("modelLaneLabel");
   laneValue.textContent = laneLabel ? laneLabel.toUpperCase() : "WAITING";
