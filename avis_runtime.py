@@ -2675,17 +2675,16 @@ class AvisSimulatorHandbrake:
 
         self._held = True
         self.last_error = None
-        # Do not leave AVIS Engine focused throughout the stop. Retain its HWND
-        # so release() can briefly refocus it to send the matching key-up event.
-        self._restore_previous_window(preserve_target=True)
+        # Keep AVIS focused while Space is held so Unity does not clear its
+        # input state on application-focus loss. The scene click above ensures
+        # Space cannot submit the selected Mode toggle.
         return True
 
-    def _restore_previous_window(self, *, preserve_target: bool = False) -> None:
+    def _restore_previous_window(self) -> None:
         previous = self._previous_hwnd
         target = self._target_hwnd
         self._previous_hwnd = 0
-        if not preserve_target:
-            self._target_hwnd = 0
+        self._target_hwnd = 0
         if previous and self.available:
             try:
                 current = int(self._user32.GetForegroundWindow() or 0)
@@ -2699,10 +2698,13 @@ class AvisSimulatorHandbrake:
             self._restore_previous_window()
             return
         try:
-            # Send key-up to the same simulator window that received key-down,
-            # while restoring whichever application the user is currently using.
+            # Normally AVIS is still foreground, so send key-up directly.
+            # If the user changed applications during the stop, briefly return
+            # to the simulator for key-up and then restore that active window.
             if self._target_hwnd and self.available:
-                self._focus_window(self._target_hwnd)
+                current = int(self._user32.GetForegroundWindow() or 0)
+                if current != self._target_hwnd:
+                    self._focus_window(self._target_hwnd)
             self._send_space(key_up=True)
         except Exception as exc:
             self.last_error = f"Could not release the AVIS handbrake key: {exc}"
