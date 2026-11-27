@@ -4574,8 +4574,8 @@ def run_avis(args: argparse.Namespace) -> int:
                     )
                     if city_junction_state.get("maneuver_active"):
                         if (
-                            last_city_maneuver_direction is not None
-                            and maneuver_speed_direction != last_city_maneuver_direction
+                            last_city_maneuver_direction is None
+                            or maneuver_speed_direction != last_city_maneuver_direction
                         ):
                             speed_controller.reset()
                         last_city_maneuver_direction = maneuver_speed_direction
