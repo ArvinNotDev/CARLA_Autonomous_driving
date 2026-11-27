@@ -19,6 +19,18 @@ from werkzeug.serving import BaseWSGIServer, make_server
 
 DEFAULT_AVIS_SETTINGS: dict[str, Any] = {
     "vision_backend": "ultralytics",
+    "auto_mode_default": True,
+    "lane_model_path": "models_and_datasets/Avis_models/lane_and_drivable-area_model_Avis.pt",
+    "obstacle_model_path": "models_and_datasets/Avis_models/obstacle_and_lane_Avis_model.onnx",
+    "model_image_size": 512,
+    "lane_prob_threshold": 0.50,
+    "drivable_prob_threshold": 0.50,
+    "vision_debug": True,
+    "debug_show_rois": True,
+    "debug_show_lane_mask": True,
+    "debug_show_drivable_area": True,
+    "debug_show_text": True,
+    "debug_panel_hz": 40.0,
     "control_loop_hz": 30.0,
     "inference_interval_ms": 25.0,
     "sensor_angle": 40,
@@ -95,6 +107,10 @@ DEFAULT_AVIS_SETTINGS: dict[str, Any] = {
 
 _NUMERIC_LIMITS: dict[str, tuple[float, float, bool]] = {
     "control_loop_hz": (10.0, 60.0, False),
+    "model_image_size": (160.0, 2048.0, True),
+    "lane_prob_threshold": (0.0, 1.0, False),
+    "drivable_prob_threshold": (0.0, 1.0, False),
+    "debug_panel_hz": (1.0, 120.0, False),
     "inference_interval_ms": (10.0, 500.0, False),
     "sensor_angle": (10.0, 90.0, True),
     "min_speed_kmh": (1.0, 60.0, False),
@@ -202,7 +218,18 @@ def validate_avis_settings(
                 raise ValueError("vision_backend must be 'ultralytics' or 'classical'.")
             result[key] = value
             continue
+        if key in {"lane_model_path", "obstacle_model_path"}:
+            if not isinstance(value, str):
+                raise ValueError(f"{key} must be a model path string.")
+            model_path = value.strip().replace("\\", "/")
+            expected_suffix = ".pt" if key == "lane_model_path" else ".onnx"
+            if not model_path or "\\x00" in model_path or not model_path.lower().endswith(expected_suffix):
+                raise ValueError(f"{key} must point to a {expected_suffix} model file.")
+            result[key] = model_path
+            continue
         if key in {
+            "auto_mode_default", "vision_debug", "debug_show_rois",
+            "debug_show_lane_mask", "debug_show_drivable_area", "debug_show_text",
             "yellow_enabled", "obstacle_lane_change_enabled",
             "adaptive_roi_enabled", "drivable_recovery_enabled",
         }:
@@ -270,9 +297,10 @@ class AvisDashboardState:
             self._settings = validate_avis_settings(self._settings, initial_settings)
         self._load_saved_settings()
         self._profiles: dict[str, dict[str, Any]] = {}
+        self._active_profile_name = "AVIS_StableV2"
         self._load_saved_profiles()
         self._settings_revision = 0
-        self._mode = "auto"
+        self._mode = "auto" if self._settings.get("auto_mode_default", True) else "stopped"
         self._manual_throttle = 0.0
         self._manual_steering = 0.0
         self._manual_updated_at = 0.0
@@ -292,6 +320,8 @@ class AvisDashboardState:
             "obstacle_classifier": None,
             "obstacle_model_confirm_frames": 0,
             "obstacle_model_probability": None,
+            "obstacle_model_accepted": False,
+            "obstacle_model_confidence_threshold": self._settings["obstacle_model_confidence_threshold"],
             "obstacle_lane_probability": None,
             "obstacle_lane_prediction": None,
             "obstacle_lane_confidence": None,
@@ -394,9 +424,12 @@ class AvisDashboardState:
 
     def _load_saved_profiles(self) -> None:
         loaded: dict[str, dict[str, Any]] = {}
+        requested_active = "AVIS_StableV2"
         if self.profile_path.is_file():
             try:
                 document = json.loads(self.profile_path.read_text(encoding="utf-8"))
+                if isinstance(document, dict):
+                    requested_active = str(document.get("active_profile") or requested_active)
                 entries = document.get("profiles", []) if isinstance(document, dict) else []
                 if isinstance(entries, list):
                     for entry in entries:
@@ -430,11 +463,16 @@ class AvisDashboardState:
                 "saved_at": None,
             }
         self._profiles = loaded
+        active_key = self._profile_key(requested_active)
+        if active_key not in loaded:
+            active_key = default_key
+        self._active_profile_name = str(loaded[active_key]["name"])
 
     def _persist_profiles_locked(self) -> None:
         self.profile_path.parent.mkdir(parents=True, exist_ok=True)
         document = {
             "schema_version": 1,
+            "active_profile": self._active_profile_name,
             "profiles": sorted(
                 self._profiles.values(),
                 key=lambda item: str(item["name"]).casefold(),
@@ -480,6 +518,7 @@ class AvisDashboardState:
                 "saved_at": time.time(),
             }
             self._profiles[self._profile_key(normalized)] = profile
+            self._active_profile_name = normalized
             self._persist_profiles_locked()
             return json.loads(json.dumps(profile, ensure_ascii=False))
 
@@ -512,9 +551,18 @@ class AvisDashboardState:
     def export_profile(self, name: Any) -> dict[str, Any]:
         return self.get_profile(name)
 
+    def active_profile_name(self) -> str:
+        with self._lock:
+            return self._active_profile_name
+
     def load_profile(self, name: Any) -> dict[str, Any]:
-        profile = self.get_profile(name)
-        return self.update_settings(profile["settings"], persist=True)
+        normalized = self._normalize_profile_name(name)
+        profile = self.get_profile(normalized)
+        settings = self.update_settings(profile["settings"], persist=True)
+        with self._lock:
+            self._active_profile_name = normalized
+            self._persist_profiles_locked()
+        return settings
 
     def delete_profile(self, name: Any) -> None:
         normalized = self._normalize_profile_name(name)
@@ -525,6 +573,8 @@ class AvisDashboardState:
             if key not in self._profiles:
                 raise ValueError(f"AVIS profile '{normalized}' was not found.")
             del self._profiles[key]
+            if self._profile_key(self._active_profile_name) == key:
+                self._active_profile_name = "AVIS_StableV2"
             self._persist_profiles_locked()
 
     def set_mode(self, mode: str) -> str:
@@ -685,6 +735,7 @@ class AvisDashboardState:
             return {
                 "settings": dict(self._settings),
                 "mode": mode,
+                "active_profile": self._active_profile_name,
                 "manual_active": manual_fresh,
                 "telemetry": dict(self._telemetry),
                 "model_prediction_history": [
