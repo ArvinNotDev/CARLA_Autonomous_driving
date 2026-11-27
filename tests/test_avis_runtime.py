@@ -31,6 +31,7 @@ from avis_runtime import (
 from avis_classical_vision import AvisClassicalVisionProcessor
 from avis_adaptive_roi import AvisAdaptiveROIController
 from avis_dashboard import (
+    DASHBOARD_HTML,
     DEFAULT_AVIS_SETTINGS,
     AvisDashboardState,
     create_avis_dashboard_app,
@@ -352,6 +353,96 @@ def test_avis_dashboard_persists_only_avis_settings_and_validates_updates(tmp_pa
             {"min_speed_kmh": 30, "max_speed_kmh": 20},
             persist=False,
         )
+
+
+def test_avis_dashboard_ui_exposes_every_persisted_setting():
+    import re
+
+    ui_keys = set(re.findall(r'data-setting="([^"]+)"', DASHBOARD_HTML))
+    assert ui_keys == set(DEFAULT_AVIS_SETTINGS)
+    # Text path fields must be collected as strings instead of being discarded
+    # by the numeric-only settings serializer.
+    assert 'else if (input.type === "text")' in DASHBOARD_HTML
+    assert 'id="lane_model_path" data-setting="lane_model_path"' in DASHBOARD_HTML
+    assert 'id="obstacle_model_path" data-setting="obstacle_model_path"' in DASHBOARD_HTML
+
+
+def test_avis_dashboard_apply_settings_autosaves_complete_active_profile_to_github(tmp_path):
+    class RecordingGitHubSync:
+        def __init__(self):
+            self.published = []
+
+        def publish_profile(self, profile):
+            self.published.append(json.loads(json.dumps(profile)))
+            return {"html_url": "https://github.com/ArvinNotDev/CARLA_Autonomous_driving"}
+
+        def list_profiles(self):
+            return ["AVIS_StableV2"]
+
+    sync = RecordingGitHubSync()
+    profile_path = tmp_path / "avis_profiles.json"
+    state = AvisDashboardState(
+        settings_path=tmp_path / "avis_settings.json",
+        profile_path=profile_path,
+        github_sync=sync,
+    )
+    client = create_avis_dashboard_app(state).test_client()
+
+    response = client.post(
+        "/api/settings",
+        json={
+            "vision_backend": "classical",
+            "lane_model_path": "models_and_datasets/Avis_models/lane_and_drivable-area_model_Avis.pt",
+            "obstacle_model_path": "models_and_datasets/Avis_models/obstacle_and_lane_Avis_model.onnx",
+            "model_image_size": 640,
+            "lane_prob_threshold": 0.73,
+            "drivable_prob_threshold": 0.61,
+            "obstacle_model_confidence_threshold": 0.97,
+            "ll_top_roi": 0.62,
+            "rl_right_roi": 0.91,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["github_synced"] is True
+    assert data["profile_name"] == "AVIS_StableV2"
+    assert len(sync.published) == 1
+
+    saved_settings = sync.published[0]["settings"]
+    assert set(saved_settings) == set(DEFAULT_AVIS_SETTINGS)
+    assert saved_settings["vision_backend"] == "classical"
+    assert saved_settings["lane_model_path"].endswith("_Avis.pt")
+    assert saved_settings["obstacle_model_path"].endswith("_Avis_model.onnx")
+    assert saved_settings["model_image_size"] == 640
+    assert saved_settings["lane_prob_threshold"] == pytest.approx(0.73)
+    assert saved_settings["drivable_prob_threshold"] == pytest.approx(0.61)
+    assert saved_settings["obstacle_model_confidence_threshold"] == pytest.approx(0.97)
+    assert saved_settings["ll_top_roi"] == pytest.approx(0.62)
+    assert saved_settings["rl_right_roi"] == pytest.approx(0.91)
+
+    local_document = json.loads(profile_path.read_text(encoding="utf-8"))
+    assert local_document["active_profile"] == "AVIS_StableV2"
+    assert local_document["profiles"][0]["settings"] == saved_settings
+
+
+def test_avis_dashboard_profile_validator_keeps_model_paths_and_thresholds():
+    settings = validate_avis_settings(
+        dict(DEFAULT_AVIS_SETTINGS),
+        {
+            "lane_model_path": "models/custom_lane.pt",
+            "obstacle_model_path": "models/custom_classifier.onnx",
+            "obstacle_model_confidence_threshold": 0.96,
+        },
+    )
+    assert settings["lane_model_path"] == "models/custom_lane.pt"
+    assert settings["obstacle_model_path"] == "models/custom_classifier.onnx"
+    assert settings["obstacle_model_confidence_threshold"] == pytest.approx(0.96)
+
+    with pytest.raises(ValueError, match="\.pt"):
+        validate_avis_settings(dict(DEFAULT_AVIS_SETTINGS), {"lane_model_path": "wrong.onnx"})
+    with pytest.raises(ValueError, match="\.onnx"):
+        validate_avis_settings(dict(DEFAULT_AVIS_SETTINGS), {"obstacle_model_path": "wrong.pt"})
 
 
 def test_avis_dashboard_connection_status_preserves_telemetry_and_stops_values(tmp_path):
@@ -2636,6 +2727,66 @@ def test_model_based_obstacle_trigger_requires_repeated_obstacle_yes_predictions
     assert second["phase"] == controller.STEER_LEFT
     assert second["obstacle_trigger_sensor"] == "MODEL"
     assert second["steering_override"] < 0
+
+
+def test_obstacle_model_confidence_threshold_blocks_low_confidence_yes_and_allows_high_confidence():
+    controller = AvisModelObstacleLaneChangeController()
+    settings = dict(DEFAULT_AVIS_SETTINGS)
+    settings["obstacle_model_confirm_frames"] = 1
+    settings["obstacle_model_confidence_threshold"] = 0.96
+
+    below_threshold = controller.update(
+        sensors=[1500, 1500, 1500],
+        speed_kmh=8.0, dt=0.1,
+        left_x=100, right_x=220, settings=settings,
+        classifier_output=_model_obstacle_prediction(obstacle_yes=0.90, lane_left=0.10),
+        observation_id=1, frame_width=320, now=10.0,
+    )
+    assert below_threshold["phase"] == controller.RIGHT_LANE
+    assert below_threshold["obstacle_model_confirm_frames"] == 0
+    assert below_threshold["obstacle_model_accepted"] is False
+    assert below_threshold["obstacle_model_confidence_threshold"] == pytest.approx(0.96)
+    assert below_threshold["steering_override"] is None
+
+    settings["obstacle_model_confidence_threshold"] = 0.85
+    above_threshold = controller.update(
+        sensors=[1500, 1500, 1500],
+        speed_kmh=8.0, dt=0.1,
+        left_x=100, right_x=220, settings=settings,
+        classifier_output=_model_obstacle_prediction(obstacle_yes=0.90, lane_left=0.10),
+        observation_id=2, frame_width=320, now=10.1,
+    )
+    assert above_threshold["phase"] == controller.STEER_LEFT
+    assert above_threshold["obstacle_model_accepted"] is True
+    assert above_threshold["obstacle_model_confidence_threshold"] == pytest.approx(0.85)
+    assert above_threshold["steering_override"] < 0
+
+
+def test_increasing_obstacle_confidence_threshold_resets_pending_confirmations():
+    controller = AvisModelObstacleLaneChangeController()
+    settings = dict(DEFAULT_AVIS_SETTINGS)
+    settings["obstacle_model_confirm_frames"] = 2
+    settings["obstacle_model_confidence_threshold"] = 0.85
+    prediction = _model_obstacle_prediction(obstacle_yes=0.90, lane_left=0.10)
+
+    first = controller.update(
+        sensors=[1500, 1500, 1500], speed_kmh=8.0, dt=0.1,
+        left_x=100, right_x=220, settings=settings,
+        classifier_output=prediction, observation_id=1, frame_width=320, now=10.0,
+    )
+    assert first["obstacle_model_confirm_frames"] == 1
+    assert first["obstacle_model_accepted"] is True
+
+    settings["obstacle_model_confidence_threshold"] = 0.95
+    second = controller.update(
+        sensors=[1500, 1500, 1500], speed_kmh=8.0, dt=0.1,
+        left_x=100, right_x=220, settings=settings,
+        classifier_output=prediction, observation_id=2, frame_width=320, now=10.1,
+    )
+    assert second["phase"] == controller.RIGHT_LANE
+    assert second["obstacle_model_confirm_frames"] == 0
+    assert second["obstacle_model_accepted"] is False
+    assert second["obstacle_model_confidence_threshold"] == pytest.approx(0.95)
 
 
 def test_obstacle_yes_starts_left_change_without_requiring_lane_head_to_say_left():
