@@ -968,7 +968,7 @@ def test_avis_dashboard_ui_exposes_every_persisted_setting():
     assert 'id="obstacle_model_path" data-setting="obstacle_model_path"' in DASHBOARD_HTML
 
 
-def test_avis_dashboard_apply_settings_autosaves_complete_active_profile_to_github(tmp_path):
+def test_avis_dashboard_apply_settings_never_publishes_or_saves_profile(tmp_path):
     class RecordingGitHubSync:
         def __init__(self):
             self.published = []
@@ -1006,28 +1006,15 @@ def test_avis_dashboard_apply_settings_autosaves_complete_active_profile_to_gith
 
     assert response.status_code == 200
     data = response.get_json()
-    assert data["github_synced"] is True
+    assert data["github_synced"] is False
     assert data["profile_name"] == "AVIS_StableV2"
-    assert len(sync.published) == 1
-
-    saved_settings = sync.published[0]["settings"]
-    assert set(saved_settings) == set(DEFAULT_AVIS_SETTINGS)
-    assert saved_settings["vision_backend"] == "classical"
-    assert saved_settings["lane_model_path"].endswith("_Avis.pt")
-    assert saved_settings["obstacle_model_path"].endswith("_Avis_model.onnx")
-    assert saved_settings["model_image_size"] == 640
-    assert saved_settings["lane_prob_threshold"] == pytest.approx(0.73)
-    assert saved_settings["drivable_prob_threshold"] == pytest.approx(0.61)
-    assert saved_settings["obstacle_model_confidence_threshold"] == pytest.approx(0.97)
-    assert saved_settings["ll_top_roi"] == pytest.approx(0.62)
-    assert saved_settings["rl_right_roi"] == pytest.approx(0.91)
-
-    local_document = json.loads(profile_path.read_text(encoding="utf-8"))
-    assert local_document["active_profile"] == "AVIS_StableV2"
-    assert local_document["profiles"][0]["settings"] == saved_settings
+    assert sync.published == []
+    assert not profile_path.exists()
+    assert data["settings"]["vision_backend"] == "classical"
+    assert data["settings"]["ll_top_roi"] == pytest.approx(0.62)
 
 
-def test_avis_roi_local_save_does_not_publish_to_github_until_main_settings_save(tmp_path):
+def test_avis_local_settings_and_roi_save_do_not_publish_or_snapshot_profile(tmp_path):
     class RecordingGitHubSync:
         def __init__(self):
             self.published = []
@@ -1052,33 +1039,32 @@ def test_avis_roi_local_save_does_not_publish_to_github_until_main_settings_save
     assert roi_response.status_code == 200
     roi_data = roi_response.get_json()
     assert roi_data["github_synced"] is False
-    assert roi_data["github_deferred"] is True
+    assert roi_data["github_deferred"] is False
     assert sync.published == []
     assert roi_data["settings"]["cw_top_roi"] == pytest.approx(0.61)
     assert roi_data["settings"]["cw_bottom_roi"] == pytest.approx(0.90)
 
-    local_document = json.loads(profile_path.read_text(encoding="utf-8"))
-    assert local_document["profiles"][0]["settings"]["cw_top_roi"] == pytest.approx(0.61)
-    assert local_document["profiles"][0]["settings"]["cw_bottom_roi"] == pytest.approx(0.90)
+    assert not profile_path.exists()
 
-    # Only the explicit main Settings save publishes the complete profile,
-    # including the locally edited ROI coordinates.
+    # Routine settings application remains local; only Save profile or
+    # Publish selected may write to GitHub.
     settings_response = client.post(
         "/api/settings",
         json={"control_loop_hz": 35},
     )
     assert settings_response.status_code == 200
-    assert settings_response.get_json()["github_synced"] is True
-    assert len(sync.published) == 1
-    published = sync.published[0]["settings"]
-    assert published["cw_top_roi"] == pytest.approx(0.61)
-    assert published["cw_bottom_roi"] == pytest.approx(0.90)
-    assert published["control_loop_hz"] == pytest.approx(35.0)
+    assert settings_response.get_json()["github_synced"] is False
+    assert sync.published == []
+    assert not profile_path.exists()
+    assert settings_response.get_json()["settings"]["cw_top_roi"] == pytest.approx(0.61)
+    assert settings_response.get_json()["settings"]["control_loop_hz"] == pytest.approx(35.0)
 
 
 def test_avis_dashboard_roi_editor_uses_local_save_and_defers_github_sync():
     assert 'postJson("/api/settings/local",payload)' in DASHBOARD_HTML
-    assert "GitHub sync deferred until settings save" in DASHBOARD_HTML
+    assert "publish a profile explicitly to update GitHub" in DASHBOARD_HTML
+    assert 'postJson("/api/maneuvers/apply", updates)' in DASHBOARD_HTML
+    assert '$("settingsForm").requestSubmit()' not in DASHBOARD_HTML
 
 
 def test_avis_dashboard_profile_validator_keeps_model_paths_and_thresholds():
@@ -3124,6 +3110,108 @@ def test_dashboard_state_uses_and_protects_the_selected_mode_baseline(tmp_path):
     )
     with pytest.raises(ValueError, match="baseline"):
         state.delete_profile("AVIS_StableV2-city")
+
+
+@pytest.mark.parametrize(
+    ("mode", "profile_name"),
+    [("city", "AVIS_StableV2-city"), ("road", "AVIS_StableV2-road")],
+)
+def test_mode_startup_ignores_stale_local_settings_and_profile_selection(
+    tmp_path, mode, profile_name
+):
+    local_settings = tmp_path / f"avis_settings_{mode}.json"
+    local_settings.write_text(json.dumps({"min_speed_kmh": 2.0}), encoding="utf-8")
+    profile_path = tmp_path / f"avis_profiles_{mode}_local.json"
+    profile_path.write_text(json.dumps({
+        "active_profile": "Old local profile",
+        "profiles": [{"name": "Old local profile", "settings": {"min_speed_kmh": 3.0}}],
+    }), encoding="utf-8")
+    baseline = load_avis_mode_profile(mode)["settings"]
+    state = AvisDashboardState(
+        initial_settings=baseline,
+        settings_path=local_settings,
+        profile_path=profile_path,
+        default_profile_name=profile_name,
+        load_saved_settings=False,
+    )
+    settings, _ = state.settings_snapshot()
+    assert state.active_profile_name() == profile_name
+    assert settings["min_speed_kmh"] == baseline["min_speed_kmh"]
+    assert settings["min_speed_kmh"] != 2.0
+    assert any(item["name"] == "Old local profile" for item in state.profiles_snapshot())
+
+
+def test_deleting_active_custom_city_profile_restores_city_baseline_settings(tmp_path):
+    baseline = load_avis_mode_profile("city")["settings"]
+    state = AvisDashboardState(
+        initial_settings=baseline,
+        settings_path=tmp_path / "city.json",
+        profile_path=tmp_path / "profiles.json",
+        default_profile_name="AVIS_StableV2-city",
+        load_saved_settings=False,
+    )
+    state.update_settings({"min_speed_kmh": 3.0})
+    state.save_profile("Custom City")
+    state.update_settings({"min_speed_kmh": 2.0})
+    restored = state.delete_profile("Custom City")
+    assert state.active_profile_name() == "AVIS_StableV2-city"
+    assert restored["min_speed_kmh"] == baseline["min_speed_kmh"]
+    assert state.settings_snapshot()[0]["min_speed_kmh"] == baseline["min_speed_kmh"]
+
+
+def test_maneuver_runtime_apply_isolated_and_profile_save_publishes_complete_profile(tmp_path):
+    class RecordingGitHubSync:
+        def __init__(self):
+            self.published = []
+
+        def publish_profile(self, profile):
+            self.published.append(json.loads(json.dumps(profile)))
+            return {"html_url": "https://github.com/example/profile"}
+
+    sync = RecordingGitHubSync()
+    profile_path = tmp_path / "profiles.json"
+    state = AvisDashboardState(
+        settings_path=tmp_path / "settings.json",
+        profile_path=profile_path,
+        github_sync=sync,
+    )
+    client = create_avis_dashboard_app(state).test_client()
+    sequence = {"STRAIGHT": [{"distance_m": -4.0, "steering_value": 1.0}]}
+    response = client.post("/api/maneuvers/apply", json={
+        "city_maneuver_sequences_json": json.dumps(sequence),
+        "city_maneuver_distance_scale": 1.2,
+    })
+    assert response.status_code == 200
+    assert response.get_json()["settings"]["city_maneuver_distance_scale"] == pytest.approx(1.2)
+    assert json.loads(response.get_json()["settings"]["city_maneuver_sequences_json"])["STRAIGHT"][0]["distance_m"] == -4.0
+    assert response.get_json()["profile_saved"] is False
+    assert sync.published == []
+    assert not profile_path.exists()
+
+    save = client.post("/api/profiles/save", json={
+        "name": "Complete City",
+        "settings": response.get_json()["settings"],
+    })
+    assert save.status_code == 200
+    assert save.get_json()["github_synced"] is True
+    assert len(sync.published) == 1
+    published = sync.published[0]
+    assert published["name"] == "Complete City"
+    assert published["maneuvers"]["STRAIGHT"][0]["distance_m"] == -4.0
+    assert json.loads(published["settings"]["city_maneuver_sequences_json"]) == published["maneuvers"]
+
+
+def test_city_steering_skips_rate_limit_for_pid_and_override_while_road_keeps_it():
+    city = AvisSteeringController(steer_limit=1.0, max_steer_step=0.1, rate_limit_enabled=False)
+    assert city.update_override(-1.0) == -1.0
+    assert city.update_override(1.0) == 1.0
+    city.reset()
+    city.kp, city.ki, city.kd = 1.0, 0.0, 0.0
+    assert city.update(10.0) == 1.0
+    assert city.update(-10.0) == -1.0
+
+    road = AvisSteeringController(steer_limit=1.0, max_steer_step=0.1, rate_limit_enabled=True)
+    assert road.update_override(1.0) == pytest.approx(0.1)
 
 
 def test_city_crosswalk_and_obstacle_model_settings_are_validated_and_visible():

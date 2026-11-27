@@ -377,6 +377,7 @@ class AvisDashboardState:
         github_sync: AvisGitHubProfileSync | None = None,
         capture_directory: Path | str | None = None,
         default_profile_name: str = "AVIS_StableV2",
+        load_saved_settings: bool = True,
     ) -> None:
         self._lock = threading.RLock()
         self.settings_path = Path(settings_path)
@@ -396,11 +397,32 @@ class AvisDashboardState:
         self._settings = dict(DEFAULT_AVIS_SETTINGS)
         if initial_settings:
             self._settings = validate_avis_settings(self._settings, initial_settings)
-        self._load_saved_settings()
+        if load_saved_settings:
+            self._load_saved_settings()
         self._profiles: dict[str, dict[str, Any]] = {}
         self._default_profile_name = self._normalize_profile_name(default_profile_name)
         self._active_profile_name = self._default_profile_name
         self._load_saved_profiles()
+        if not load_saved_settings:
+            # Runtime launch passes the committed mode profile as initial_settings.
+            # Local profile history must never replace that startup baseline.
+            baseline_key = self._profile_key(self._default_profile_name)
+            baseline_settings = validate_avis_settings(
+                dict(DEFAULT_AVIS_SETTINGS), self._settings
+            )
+            baseline_maneuvers = _profile_maneuver_sequences(baseline_settings)
+            baseline_settings["city_maneuver_sequences_json"] = json.dumps(
+                baseline_maneuvers, indent=2
+            )
+            self._profiles[baseline_key] = {
+                "schema_version": 1,
+                "name": self._default_profile_name,
+                "settings": baseline_settings,
+                "maneuvers": baseline_maneuvers,
+                "saved_at": None,
+            }
+            self._settings = dict(baseline_settings)
+            self._active_profile_name = self._default_profile_name
         self._settings_revision = 0
         self._mode = "auto" if self._settings.get("auto_mode_default", True) else "stopped"
         self._manual_throttle = 0.0
@@ -546,8 +568,12 @@ class AvisDashboardState:
                             saved_settings.pop("city_pedestrian_stop_enabled", None)
                             saved_settings.pop("city_pedestrian_stop_seconds", None)
                             saved_settings = _migrate_legacy_lane_change_tuning(saved_settings)
+                            known_saved_settings = {
+                                key: value for key, value in saved_settings.items()
+                                if key in DEFAULT_AVIS_SETTINGS
+                            }
                             settings = validate_avis_settings(
-                                dict(DEFAULT_AVIS_SETTINGS), saved_settings
+                                dict(DEFAULT_AVIS_SETTINGS), known_saved_settings
                             )
                             maneuver_fallback = (
                                 entry.get("maneuvers")
@@ -567,10 +593,14 @@ class AvisDashboardState:
                             )
                         except (TypeError, ValueError):
                             continue
+                        # Preserve forward-compatible profile fields through
+                        # local load/export even when this runtime does not use them.
+                        preserved_settings = dict(saved_settings)
+                        preserved_settings.update(settings)
                         loaded[self._profile_key(name)] = {
                             "schema_version": 1,
                             "name": name,
-                            "settings": settings,
+                            "settings": preserved_settings,
                             "maneuvers": maneuvers,
                             "saved_at": entry.get("saved_at"),
                         }
@@ -641,6 +671,14 @@ class AvisDashboardState:
         normalized = self._normalize_profile_name(name)
         with self._lock:
             settings = dict(self._settings)
+            previous = self._profiles.get(self._profile_key(normalized), {})
+            previous_settings = previous.get("settings", {})
+            if isinstance(previous_settings, dict):
+                extras = {
+                    key: value for key, value in previous_settings.items()
+                    if key not in DEFAULT_AVIS_SETTINGS
+                }
+                settings = {**extras, **settings}
             maneuvers = _profile_maneuver_sequences(settings)
             settings["city_maneuver_sequences_json"] = json.dumps(
                 maneuvers, indent=2
@@ -681,9 +719,11 @@ class AvisDashboardState:
                 ),
                 indent=2,
             )
-        validated = validate_avis_settings(
-            dict(DEFAULT_AVIS_SETTINGS), compatible_settings
-        )
+        known_settings = {
+            key: value for key, value in compatible_settings.items()
+            if key in DEFAULT_AVIS_SETTINGS
+        }
+        validated = validate_avis_settings(dict(DEFAULT_AVIS_SETTINGS), known_settings)
         maneuvers = _profile_maneuver_sequences(validated)
         validated["city_maneuver_sequences_json"] = json.dumps(
             maneuvers, indent=2
@@ -691,7 +731,7 @@ class AvisDashboardState:
         profile = {
             "schema_version": 1,
             "name": normalized,
-            "settings": validated,
+            "settings": {**compatible_settings, **validated},
             "maneuvers": maneuvers,
             "saved_at": document.get("saved_at") or time.time(),
         }
@@ -710,7 +750,10 @@ class AvisDashboardState:
     def load_profile(self, name: Any) -> dict[str, Any]:
         normalized = self._normalize_profile_name(name)
         profile = self.get_profile(normalized)
-        profile_settings = dict(profile["settings"])
+        profile_settings = {
+            key: value for key, value in profile["settings"].items()
+            if key in DEFAULT_AVIS_SETTINGS
+        }
         maneuver_fallback = (
             profile.get("maneuvers")
             if "city_maneuver_sequences_json" not in profile_settings
@@ -726,21 +769,34 @@ class AvisDashboardState:
             self._persist_profiles_locked()
         return settings
 
-    def delete_profile(self, name: Any) -> None:
+    def delete_profile(self, name: Any) -> dict[str, Any] | None:
         normalized = self._normalize_profile_name(name)
-        if self._profile_key(normalized) in {
-            self._profile_key("AVIS_StableV2"),
-            self._profile_key(self._default_profile_name),
-        }:
+        if self._profile_key(normalized) == self._profile_key(self._default_profile_name):
             raise ValueError("The AVIS baseline profile for this runtime mode cannot be deleted.")
         with self._lock:
             key = self._profile_key(normalized)
             if key not in self._profiles:
                 raise ValueError(f"AVIS profile '{normalized}' was not found.")
             del self._profiles[key]
-            if self._profile_key(self._active_profile_name) == key:
-                self._active_profile_name = "AVIS_StableV2"
+            deleted_active = self._profile_key(self._active_profile_name) == key
+            if deleted_active:
+                fallback = self._profiles[self._profile_key(self._default_profile_name)]
+                self._active_profile_name = self._default_profile_name
+                fallback_settings = {
+                    field: value for field, value in fallback["settings"].items()
+                    if field in DEFAULT_AVIS_SETTINGS
+                }
+                self._settings = validate_avis_settings(
+                    dict(DEFAULT_AVIS_SETTINGS), fallback_settings
+                )
+                self._settings_revision += 1
+                self.settings_path.parent.mkdir(parents=True, exist_ok=True)
+                self.settings_path.write_text(
+                    json.dumps(self._settings, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
             self._persist_profiles_locked()
+            return dict(self._settings) if deleted_active else None
 
     def set_mode(self, mode: str) -> str:
         if mode not in {"auto", "manual", "stopped"}:
@@ -999,7 +1055,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
   <div class="header-status"><span class="status-pill"><span id="connectionDot" class="dot"></span><span id="connectionText">Connecting to AVIS</span></span><span class="status-pill" id="backendTag">VISION —</span></div>
 </header>
 <main>
-  <div class="topline"><div><div class="eyebrow">Live control / perception</div><h2>Vehicle perception workspace</h2><div class="muted">All AVIS settings, including model paths, model/line selection, confidence thresholds and ROI calibration, are saved with the active profile and synced to GitHub when settings are applied.</div></div><div class="tag">AVIS ONLY</div></div>
+  <div class="topline"><div><div class="eyebrow">Live control / perception</div><h2>Vehicle perception workspace</h2><div class="muted">AVIS settings apply to the current runtime and save locally. Save profile or Publish selected to update GitHub.</div></div><div class="tag">AVIS ONLY</div></div>
   <div class="grid">
     <section class="stack">
       <div class="panel">
@@ -1430,8 +1486,8 @@ async function saveROISelection() {
     keys.forEach(key => $(key).value = data.settings[key]);
     drawROIOverlays();
     $("settingsForm").dataset.dirty = "true";
-    showMessage(selectedROI + " ROI saved locally. Use Apply and save settings to sync GitHub.", false);
-    $("roiCanvasMessage").textContent = selectedROI + " ROI saved locally · GitHub sync deferred until settings save.";
+    showMessage(selectedROI + " ROI saved locally. Publish a profile explicitly to update GitHub.", false);
+    $("roiCanvasMessage").textContent = selectedROI + " ROI saved locally · publish a profile explicitly to update GitHub.";
     $("roiCanvasMessage").style.color = "#68dfa7";
     return true;
   } catch (error) {
@@ -1545,8 +1601,8 @@ if ($("resetRoiButton")) $("resetRoiButton").addEventListener("click",async()=>{
     keys.forEach(key => $(key).value = data.settings[key]);
     drawROIOverlays();
     $("settingsForm").dataset.dirty = "true";
-    showMessage(selectedROI+" ROI reset and saved locally. GitHub sync will happen when settings are saved.",false);
-    $("roiCanvasMessage").textContent = selectedROI + " ROI reset locally · GitHub sync deferred until settings save.";
+    showMessage(selectedROI+" ROI reset and saved locally. Publish a profile explicitly to update GitHub.",false);
+    $("roiCanvasMessage").textContent = selectedROI + " ROI reset locally · publish a profile explicitly to update GitHub.";
     $("roiCanvasMessage").style.color = "#68dfa7";
   } catch(error) {
     showMessage(error.message,true);
@@ -1751,9 +1807,24 @@ $("resetManeuverSequenceButton").addEventListener("click", () => {
   renderManeuverEditor();
   markManeuverSettingsDirty("Reset " + selectedManeuverRoute + " to its default sequence.");
 });
-$("applyManeuversButton").addEventListener("click", () => {
+$("applyManeuversButton").addEventListener("click", async () => {
   syncManeuverSettingField();
-  $("settingsForm").requestSubmit();
+  const keys = new Set(["city_maneuver_sequences_json", "city_maneuver_speed_kmh", "city_maneuver_segment_timeout_seconds", "city_maneuver_distance_scale", "city_maneuver_distance_max_sample_gap_seconds", "city_junction_sign_confidence_threshold", "city_junction_sign_confirm_frames", "city_junction_sign_max_age_seconds", "city_junction_sign_class_order_json"]);
+  const updates = {};
+  settingInputs.filter(input => keys.has(input.dataset.setting)).forEach(input => {
+    const key = input.dataset.setting;
+    if (input.type === "checkbox") updates[key] = input.checked;
+    else if (input.type === "text" || input.tagName === "TEXTAREA") updates[key] = input.value.trim();
+    else { const number = Number(input.value); if (Number.isFinite(number)) updates[key] = number; }
+  });
+  const button = $("applyManeuversButton");
+  button.disabled = true;
+  try {
+    const data = await postJson("/api/maneuvers/apply", updates);
+    if (!$('settingsForm').dataset.dirty) fillSettings(data.settings);
+    showMessage(data.message, false);
+  } catch (error) { showMessage(error.message, true); }
+  finally { button.disabled = false; }
 });
 async function postJson(url, payload) {
   const response = await fetch(url, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
@@ -1774,16 +1845,14 @@ $("settingsForm").addEventListener("submit", async event => {
   showMessage("Applying settings...", false);
   try {
     const data = await postJson("/api/settings", collectSettings());
-    const syncMessage = data.github_synced
-      ? " · GitHub profile " + data.profile_name + " updated"
-      : " · GitHub not synced: " + (data.github_message || "authentication required");
+    const syncMessage = " · Saved locally; publish a profile explicitly to update GitHub.";
     if (settingsEditRevision === submittedRevision) {
       fillSettings(data.settings);
       delete form.dataset.dirty;
-      showMessage("Settings applied and saved locally" + syncMessage + ".", !data.github_synced);
+      showMessage("Settings applied and saved locally" + syncMessage, false);
     } else {
       form.dataset.dirty = "true";
-      showMessage("Settings saved" + syncMessage + ". New edits are still pending; apply again.", !data.github_synced);
+      showMessage("Settings saved" + syncMessage + " New edits are still pending; apply again.", false);
     }
   } catch (error) {
     form.dataset.dirty = "true";
@@ -2045,7 +2114,7 @@ async function refreshLocalProfiles(selectedName) {
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || "Could not read local profiles.");
   const select = $("localProfileSelect");
-  const previous = selectedName || select.value;
+  const previous = selectedName || data.active_profile || select.value;
   select.replaceChildren();
   for (const profile of (data.profiles || [])) {
     const option = document.createElement("option");
@@ -2097,7 +2166,7 @@ $("saveProfileButton").addEventListener("click", async () => {
     await refreshLocalProfiles(name);
     $("profilesMessage").textContent = saved.github_synced
       ? "Profile saved locally and published to GitHub."
-      : "Profile saved locally. GitHub: " + (saved.github_message || "not published.");
+      : "Profile saved locally. GitHub was not published: " + (saved.github_message || "unknown error");
   } catch (error) {
     $("profilesMessage").textContent = error.message;
   }
@@ -2118,8 +2187,13 @@ $("deleteProfileButton").addEventListener("click", async () => {
   const name = $("localProfileSelect").value;
   if (!name || !confirm("Delete profile '" + name + "'?")) return;
   try {
-    await postJson("/api/profiles/delete", {name});
+    const deleted = await postJson("/api/profiles/delete", {name});
     await refreshLocalProfiles();
+    if (deleted.settings) {
+      fillSettings(deleted.settings);
+      delete $("settingsForm").dataset.dirty;
+      settingsEditRevision += 1;
+    }
     $("profilesMessage").textContent = "Deleted profile: " + name;
   } catch (error) { $("profilesMessage").textContent = error.message; }
 });
@@ -2229,7 +2303,10 @@ def create_avis_dashboard_app(state: AvisDashboardState) -> Flask:
 
     @app.get("/api/profiles")
     def profiles():
-        return jsonify({"profiles": state.profiles_snapshot()})
+        return jsonify({
+            "profiles": state.profiles_snapshot(),
+            "active_profile": state.active_profile_name(),
+        })
 
     @app.post("/api/profiles/save")
     def save_profile():
@@ -2273,10 +2350,10 @@ def create_avis_dashboard_app(state: AvisDashboardState) -> Flask:
     def delete_profile():
         payload = request.get_json(silent=True) or {}
         try:
-            state.delete_profile(payload.get("name"))
+            restored_settings = state.delete_profile(payload.get("name"))
         except (TypeError, ValueError, OSError) as exc:
             return jsonify({"error": str(exc)}), 400
-        return jsonify({"deleted": True})
+        return jsonify({"deleted": True, "settings": restored_settings})
 
     @app.post("/api/profiles/import")
     def import_profile():
@@ -2337,15 +2414,15 @@ def create_avis_dashboard_app(state: AvisDashboardState) -> Flask:
         payload = request.get_json(silent=True)
         try:
             updated = state.update_settings(payload)
-            profile = state.save_profile(state.active_profile_name())
+            profile_name = state.active_profile_name()
         except (TypeError, ValueError, OSError) as exc:
             return jsonify({"error": str(exc)}), 400
         return jsonify({
             "settings": updated,
-            "profile_name": profile["name"],
+            "profile_name": profile_name,
             "github_synced": False,
-            "github_deferred": True,
-            "github_message": "Saved locally. GitHub will be updated when you apply and save the full settings.",
+            "github_deferred": False,
+            "github_message": "Saved locally. Publish the profile explicitly to update GitHub.",
         })
 
     @app.post("/api/settings")
@@ -2353,28 +2430,37 @@ def create_avis_dashboard_app(state: AvisDashboardState) -> Flask:
         payload = request.get_json(silent=True)
         try:
             updated = state.update_settings(payload)
-            # This endpoint is reserved for the explicit main Settings save.
-            # It publishes the complete active profile, including all ROI values.
-            profile = state.save_profile(state.active_profile_name())
+            profile_name = state.active_profile_name()
         except (TypeError, ValueError, OSError) as exc:
             return jsonify({"error": str(exc)}), 400
 
-        github_synced = False
-        github_message = "Run 'gh auth login' on this PC, then apply settings again to sync GitHub."
-        if request.remote_addr in {"127.0.0.1", "::1", "localhost"}:
-            try:
-                result = state.github_sync.publish_profile(profile)
-                github_synced = True
-                github_message = str(result.get("html_url") or "Published to GitHub.")
-            except Exception as exc:
-                github_message = str(exc)
-        else:
-            github_message = "Settings were saved locally; GitHub publishing requires a local dashboard connection."
         return jsonify({
             "settings": updated,
-            "profile_name": profile["name"],
-            "github_synced": github_synced,
-            "github_message": github_message,
+            "profile_name": profile_name,
+            "github_synced": False,
+            "github_message": "Settings applied and saved locally. Publish a profile explicitly to update GitHub.",
+        })
+
+    @app.post("/api/maneuvers/apply")
+    def apply_maneuvers():
+        payload = request.get_json(silent=True) or {}
+        allowed = {
+            "city_maneuver_sequences_json", "city_maneuver_speed_kmh",
+            "city_maneuver_segment_timeout_seconds", "city_maneuver_distance_scale",
+            "city_maneuver_distance_max_sample_gap_seconds",
+            "city_junction_sign_confidence_threshold", "city_junction_sign_confirm_frames",
+            "city_junction_sign_max_age_seconds", "city_junction_sign_class_order_json",
+        }
+        updates = {key: value for key, value in payload.items() if key in allowed}
+        try:
+            updated = state.update_settings(updates, persist=False)
+        except (TypeError, ValueError, OSError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({
+            "settings": updated,
+            "github_synced": False,
+            "profile_saved": False,
+            "message": "Maneuver settings applied to the current runtime only; profile not saved.",
         })
 
     @app.post("/api/mode")

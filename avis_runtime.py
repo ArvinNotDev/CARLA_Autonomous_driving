@@ -660,6 +660,7 @@ class AvisSteeringController:
         steer_limit: float = 0.75,
         max_steer_step: float = 0.10,
         integral_limit: float = 3000.0,
+        rate_limit_enabled: bool = True,
     ) -> None:
         self.kp = float(kp)
         self.ki = float(ki)
@@ -667,6 +668,7 @@ class AvisSteeringController:
         self.steer_limit = min(1.0, max(0.0, float(steer_limit)))
         self.max_steer_step = min(1.0, max(0.0, float(max_steer_step)))
         self.integral_limit = abs(float(integral_limit))
+        self.rate_limit_enabled = bool(rate_limit_enabled)
         self.reset()
 
     def configure(
@@ -677,12 +679,15 @@ class AvisSteeringController:
         kd: float,
         steer_limit: float,
         max_steer_step: float,
+        rate_limit_enabled: bool | None = None,
     ) -> None:
         self.kp = float(kp)
         self.ki = float(ki)
         self.kd = float(kd)
         self.steer_limit = min(1.0, max(0.0, float(steer_limit)))
         self.max_steer_step = min(1.0, max(0.0, float(max_steer_step)))
+        if rate_limit_enabled is not None:
+            self.rate_limit_enabled = bool(rate_limit_enabled)
         self.reset()
 
     def reset(self) -> None:
@@ -711,9 +716,9 @@ class AvisSteeringController:
         steer = min(self.steer_limit, max(-self.steer_limit, steer))
 
         delta = steer - self.last_steer
-        if delta > self.max_steer_step:
+        if self.rate_limit_enabled and delta > self.max_steer_step:
             steer = self.last_steer + self.max_steer_step
-        elif delta < -self.max_steer_step:
+        elif self.rate_limit_enabled and delta < -self.max_steer_step:
             steer = self.last_steer - self.max_steer_step
 
         self.last_steer = steer
@@ -737,9 +742,9 @@ class AvisSteeringController:
         self.integral = 0.0
         target = min(self.steer_limit, max(-self.steer_limit, target))
         delta = target - self.last_steer
-        if delta > self.max_steer_step:
+        if self.rate_limit_enabled and delta > self.max_steer_step:
             target = self.last_steer + self.max_steer_step
-        elif delta < -self.max_steer_step:
+        elif self.rate_limit_enabled and delta < -self.max_steer_step:
             target = self.last_steer - self.max_steer_step
         self.last_steer = target
         return float(target)
@@ -3717,6 +3722,7 @@ def run_avis(args: argparse.Namespace) -> int:
             settings_path=PROJECT_ROOT / f"avis_settings_{args.avis_mode}.json",
             profile_path=PROJECT_ROOT / f"avis_profiles_{args.avis_mode}_local.json",
             default_profile_name=mode_profile["name"],
+            load_saved_settings=False,
         )
         settings, settings_revision = dashboard_state.settings_snapshot()
         _apply_avis_roi_settings(conf, settings)
@@ -3827,8 +3833,9 @@ def run_avis(args: argparse.Namespace) -> int:
             kp=float(settings["kp"]),
             ki=float(settings["ki"]),
             kd=float(settings["kd"]),
-            steer_limit=float(settings["steer_limit"]),
+            steer_limit=(1.0 if args.avis_mode == "city" else float(settings["steer_limit"])),
             max_steer_step=float(settings["max_steer_step"]),
+            rate_limit_enabled=args.avis_mode != "city",
         )
         speed_controller = SpeedPIDController(
             acceleration_mps2=float(settings["acceleration_mps2"]),
@@ -4172,8 +4179,9 @@ def run_avis(args: argparse.Namespace) -> int:
                         kp=float(current_settings["kp"]),
                         ki=float(current_settings["ki"]),
                         kd=float(current_settings["kd"]),
-                        steer_limit=float(current_settings["steer_limit"]),
+                        steer_limit=(1.0 if args.avis_mode == "city" else float(current_settings["steer_limit"])),
                         max_steer_step=float(current_settings["max_steer_step"]),
+                        rate_limit_enabled=args.avis_mode != "city",
                     )
                     speed_controller.configure(
                         acceleration_mps2=float(current_settings["acceleration_mps2"]),

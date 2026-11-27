@@ -22,7 +22,8 @@ class AvisGitHubProfileSync:
         timeout_seconds: float = 12.0,
     ) -> None:
         self.repository = repository
-        self.branch = branch
+        # Profile writes are intentionally pinned to the repository's main branch.
+        self.branch = "main"
         self.directory = directory.strip("/")
         self.timeout_seconds = max(2.0, float(timeout_seconds))
 
