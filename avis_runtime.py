@@ -3720,6 +3720,14 @@ def run_avis(args: argparse.Namespace) -> int:
                         ),
                         "obstacle_model_confirm_frames": lane_change_state.get("obstacle_model_confirm_frames", 0),
                         "obstacle_model_probability": lane_change_state.get("obstacle_model_probability"),
+                        "obstacle_model_accepted": lane_change_state.get("obstacle_model_accepted", False),
+                        "obstacle_model_confidence_threshold": lane_change_state.get(
+                            "obstacle_model_confidence_threshold",
+                            current_settings.get("obstacle_model_confidence_threshold", 0.65),
+                        ),
+                        "obstacle_avoidance_enabled": bool(
+                            current_settings.get("obstacle_lane_change_enabled", True)
+                        ),
                         "obstacle_lane_probability": lane_change_state.get("obstacle_lane_probability"),
                         "obstacle_lane_prediction": lane_change_state.get("obstacle_lane_prediction"),
                         "obstacle_lane_confidence": lane_change_state.get("obstacle_lane_confidence"),
