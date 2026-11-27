@@ -225,6 +225,28 @@ def test_city_crosswalk_stop_uses_confirmed_roi_event_and_five_second_dwell():
     assert cooldown_complete["cooldown_active"] is False
 
 
+def test_city_crosswalk_treats_point_three_kmh_as_stopped():
+    controller = AvisCityCrosswalkStopController()
+    marked = {"line_present": True, "detected": True, "line": (0, 40, 250, 40), "length_ratio": 0.8}
+    options = {"enabled": True, "stop_seconds": 5.0, "rearm_clear_seconds": 1.0}
+
+    braking = controller.update(
+        marked, observation_id=1, observation_timestamp=1.0,
+        current_speed_kmh=0.31, now=1.0, **options
+    )
+    assert braking["active"] is True
+    assert braking["waiting_for_stop"] is True
+
+    stopped = controller.update(
+        marked, observation_id=2, observation_timestamp=1.1,
+        current_speed_kmh=0.3, now=1.1, **options
+    )
+    assert stopped["active"] is True
+    assert stopped["waiting_for_stop"] is False
+    assert stopped["stop_confirmed"] is True
+    assert stopped["remaining_seconds"] == pytest.approx(5.0)
+
+
 def test_city_crosswalk_five_second_dwell_starts_only_after_vehicle_stops():
     controller = AvisCityCrosswalkStopController()
     marked = {"line_present": True, "detected": True, "line": (0, 40, 250, 40), "length_ratio": 0.8}
@@ -625,20 +647,24 @@ def test_avis_simulator_handbrake_reports_unavailable_off_windows():
     assert controller.held is False
 
 
-def test_avis_client_uses_native_braking_only_above_safe_speed():
+def test_avis_client_keeps_full_reverse_braking_until_speed_reaches_point_three_kmh():
     api = SimpleNamespace(Car=FakeCar)
     client = AvisEngineClient(api, "127.0.0.1", 25001)
     fake_car = client.car
 
-    client.send_control(0.0, 0.0, brake=True, current_speed_kmh=15.0)
-    assert fake_car.speed_commands[-1] == -100
-    assert fake_car.steering_commands[-1] == 0
+    # Full reverse input is used at all speeds above the stop threshold,
+    # including the low-speed range where AVIS maps it to reverse motor torque.
+    for speed_kmh in (30.0, 15.0, 8.0, 7.0, 1.0, 0.31):
+        client.send_control(0.0, 0.0, brake=True, current_speed_kmh=speed_kmh)
+        assert fake_car.speed_commands[-1] == -100
+        assert fake_car.steering_commands[-1] == 0
 
-    # Below the simulator's 5 mph brake threshold, negative speed means
-    # reverse motor torque, so the adapter must command neutral instead.
-    client.send_control(0.0, 0.0, brake=True, current_speed_kmh=7.0)
-    assert fake_car.speed_commands[-1] == 0
-    assert fake_car.steering_commands[-1] == 0
+    # At 0.3 km/h and below, reverse input is cut immediately to avoid
+    # accelerating backwards; the native handbrake remains held by the caller.
+    for speed_kmh in (0.3, 0.2, 0.0):
+        client.send_control(0.0, 0.0, brake=True, current_speed_kmh=speed_kmh)
+        assert fake_car.speed_commands[-1] == 0
+        assert fake_car.steering_commands[-1] == 0
     client.close()
 
 
