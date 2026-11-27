@@ -3373,9 +3373,17 @@ def run_avis(args: argparse.Namespace) -> int:
                         or int(current_settings["model_image_size"])
                         != int(settings["model_image_size"])
                     )
-                    obstacle_model_changed = (
+                    obstacle_path_changed = (
                         current_settings["obstacle_model_path"]
                         != settings["obstacle_model_path"]
+                    )
+                    obstacle_detection_changed = (
+                        bool(current_settings.get("obstacle_detection_enabled", True))
+                        != bool(settings.get("obstacle_detection_enabled", True))
+                    )
+                    obstacle_processor_changed = obstacle_detection_changed or (
+                        bool(current_settings.get("obstacle_detection_enabled", True))
+                        and obstacle_path_changed
                     )
                     rebuild_lane_processor = (
                         selected_backend != active_backend
@@ -3388,6 +3396,13 @@ def run_avis(args: argparse.Namespace) -> int:
                     _apply_avis_model_settings(conf, current_settings)
                     adaptive_roi_controller.configure(current_settings)
                     _apply_avis_roi_settings(conf, current_settings)
+                    crosswalk_enabled = _apply_avis_city_crosswalk_settings(
+                        conf, current_settings, city_mode=args.avis_mode == "city"
+                    )
+                    if crosswalk_enabled and selected_backend != "ultralytics":
+                        raise ValueError(
+                            "City Crosswalk ROI detection requires the Ultralytics lane processor."
+                        )
 
                     lane_replacement = vision_processor.lane_processor
                     if rebuild_lane_processor:
@@ -3409,17 +3424,22 @@ def run_avis(args: argparse.Namespace) -> int:
                             current_settings["center_smoothing"]
                         )
                         lane_replacement.update_hough_fallback_settings(current_settings)
+                    if hasattr(lane_replacement, "crosswalk_junction_enabled"):
+                        lane_replacement.crosswalk_junction_enabled = crosswalk_enabled
 
                     obstacle_replacement = obstacle_classifier
-                    if obstacle_model_changed:
-                        obstacle_path = _resolve_avis_model_path(
-                            current_settings["obstacle_model_path"],
-                            suffix=".onnx",
-                            setting_name="Obstacle classifier model",
-                        )
-                        obstacle_replacement = AvisObstacleLaneClassifier(obstacle_path)
+                    if obstacle_processor_changed:
+                        if bool(current_settings.get("obstacle_detection_enabled", True)):
+                            obstacle_path = _resolve_avis_model_path(
+                                current_settings["obstacle_model_path"],
+                                suffix=".onnx",
+                                setting_name="Obstacle classifier model",
+                            )
+                            obstacle_replacement = AvisObstacleLaneClassifier(obstacle_path)
+                        else:
+                            obstacle_replacement = None
 
-                    if rebuild_lane_processor or obstacle_model_changed:
+                    if rebuild_lane_processor or obstacle_processor_changed:
                         replacement = AvisCombinedVisionProcessor(
                             lane_replacement, obstacle_replacement
                         )
@@ -3435,11 +3455,14 @@ def run_avis(args: argparse.Namespace) -> int:
                             f"[AVIS] Reloaded lane model: {current_settings['lane_model_path']} "
                             f"(imgsz={current_settings['model_image_size']})."
                         )
-                    if obstacle_model_changed:
-                        print(
-                            f"[AVIS] Reloaded obstacle classifier: "
-                            f"{current_settings['obstacle_model_path']}."
-                        )
+                    if obstacle_processor_changed:
+                        if obstacle_classifier is None:
+                            print("[AVIS] Obstacle ONNX classifier disabled by the active settings.")
+                        else:
+                            print(
+                                f"[AVIS] Activated obstacle classifier: "
+                                f"{current_settings['obstacle_model_path']}."
+                            )
 
                     if int(current_settings["sensor_angle"]) != active_sensor_angle:
                         client.set_sensor_angle(int(current_settings["sensor_angle"]))
