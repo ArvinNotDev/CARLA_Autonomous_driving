@@ -32,10 +32,10 @@
     "hough_threshold": 12,
     "hough_min_line_length_ratio": 0.035,
     "hough_max_line_gap": 24,
-    "ll_top_roi": 0.428,
-    "ll_bottom_roi": 0.584,
-    "ll_left_roi": 0.13,
-    "ll_right_roi": 0.407,
+    "ll_top_roi": 0.603,
+    "ll_bottom_roi": 0.759,
+    "ll_left_roi": 0.128,
+    "ll_right_roi": 0.405,
     "rl_top_roi": 0.575,
     "rl_bottom_roi": 0.732,
     "rl_left_roi": 0.635,
@@ -98,5 +98,5 @@
     "adaptive_roi_recovery_frames": 4,
     "adaptive_roi_restore_step_ratio": 0.01
   },
-  "saved_at": 1795778437.3391557
+  "saved_at": 1795778450.913376
 }
