@@ -231,7 +231,14 @@ def test_right_left_and_straight_wait_five_seconds_after_the_vehicle_stops():
 def test_90_degree_sign_skips_five_second_dwell_and_starts_turn_when_stopped(
     label, expected_route, expected_steer
 ):
-    settings = _settings()
+    settings = _settings(
+        city_maneuver_sequences_json=json.dumps(
+            {
+                "RIGHT_90": [{"distance_m": 0.5, "steering_value": 0.65}],
+                "LEFT_90": [{"distance_m": 0.5, "steering_value": -0.5}],
+            }
+        )
+    )
     controller = AvisCityJunctionController()
     _confirm_sign(controller, label, settings)
 
