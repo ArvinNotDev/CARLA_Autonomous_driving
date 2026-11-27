@@ -2390,6 +2390,14 @@ class AvisSimulatorHandbrake:
                 wintypes.DWORD, wintypes.DWORD, wintypes.BOOL
             ]
             self._user32.AttachThreadInput.restype = wintypes.BOOL
+            self._user32.GetWindowRect.argtypes = [
+                wintypes.HWND, ctypes.POINTER(wintypes.RECT)
+            ]
+            self._user32.GetWindowRect.restype = wintypes.BOOL
+            self._user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+            self._user32.GetCursorPos.restype = wintypes.BOOL
+            self._user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+            self._user32.SetCursorPos.restype = wintypes.BOOL
 
             self._kernel32.GetCurrentThreadId.restype = wintypes.DWORD
             self._kernel32.OpenProcess.argtypes = [
@@ -2514,12 +2522,12 @@ class AvisSimulatorHandbrake:
                 ("data", INPUTUNION),
             ]
 
-        return INPUT, KEYBDINPUT
+        return INPUT, KEYBDINPUT, MOUSEINPUT
 
     def _send_space(self, *, key_up: bool) -> None:
         if not self.available:
             raise RuntimeError(self.last_error or "Windows input API is unavailable.")
-        input_type, keyboard_type = self._keyboard_input_type()
+        input_type, keyboard_type, _mouse_type = self._keyboard_input_type()
         event = input_type()
         event.type = self.INPUT_KEYBOARD
         event.ki = keyboard_type(
@@ -2542,6 +2550,64 @@ class AvisSimulatorHandbrake:
         if sent != 1:
             error = ctypes.get_last_error() if os.name == "nt" else 0
             raise OSError(error, "Windows did not accept the Space-key input event.")
+
+    def _click_scene_to_clear_ui_selection(self, hwnd: int) -> None:
+        """Click a non-UI part of the simulator scene before sending Space.
+
+        In AVIS, Space is also Unity UI's Submit key. If the Mode toggle is the
+        selected UI object, a Space keydown flips the simulator into Manual
+        mode. Clicking the empty scene first clears that selection.
+        """
+        if not self.available:
+            raise RuntimeError(self.last_error or "Windows input API is unavailable.")
+
+        rect = wintypes.RECT()
+        if not self._user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            raise OSError("Could not read the AVIS Engine window bounds.")
+        width = int(rect.right - rect.left)
+        height = int(rect.bottom - rect.top)
+        if width < 100 or height < 100:
+            raise RuntimeError("The AVIS Engine window is too small to target its scene safely.")
+
+        cursor = wintypes.POINT()
+        if not self._user32.GetCursorPos(ctypes.byref(cursor)):
+            raise OSError("Could not read the current Windows cursor position.")
+
+        # The AVIS control panel is docked on the left. This point is inside
+        # the rendered scene, well away from the panel's Mode toggle/buttons.
+        click_x = int(rect.left + width * 0.88)
+        click_y = int(rect.top + height * 0.55)
+        click_x = min(int(rect.right) - 2, max(int(rect.left) + 2, click_x))
+        click_y = min(int(rect.bottom) - 2, max(int(rect.top) + 2, click_y))
+
+        input_type, _keyboard_type, mouse_type = self._keyboard_input_type()
+        events = (input_type * 2)()
+        events[0].type = 0  # INPUT_MOUSE
+        events[0].mi = mouse_type(0, 0, 0, 0x0002, 0, 0)  # LEFTDOWN
+        events[1].type = 0
+        events[1].mi = mouse_type(0, 0, 0, 0x0004, 0, 0)  # LEFTUP
+
+        try:
+            if not self._user32.SetCursorPos(click_x, click_y):
+                raise OSError("Could not move the cursor to the AVIS scene.")
+            if not self._injected_api:
+                self._user32.SendInput.argtypes = [
+                    wintypes.UINT, ctypes.POINTER(input_type), ctypes.c_int
+                ]
+                self._user32.SendInput.restype = wintypes.UINT
+            sent = int(
+                self._user32.SendInput(
+                    2, events, ctypes.sizeof(input_type)
+                )
+            )
+            if sent != 2:
+                error = ctypes.get_last_error() if os.name == "nt" else 0
+                raise OSError(error, "Windows did not accept the AVIS scene click.")
+            # Let Unity process the pointer event and clear EventSystem selection
+            # before Space is delivered as the handbrake input.
+            time.sleep(0.06)
+        finally:
+            self._user32.SetCursorPos(int(cursor.x), int(cursor.y))
 
     def _focus_window(self, hwnd: int) -> None:
         previous = int(self._user32.GetForegroundWindow() or 0)
@@ -2597,17 +2663,21 @@ class AvisSimulatorHandbrake:
             )
             return False
 
+        self._target_hwnd = hwnd
         try:
             self._focus_window(hwnd)
+            self._click_scene_to_clear_ui_selection(hwnd)
             self._send_space(key_up=False)
         except Exception as exc:
             self.last_error = f"Could not engage the AVIS handbrake: {exc}"
             self._restore_previous_window()
             return False
 
-        self._target_hwnd = hwnd
         self._held = True
         self.last_error = None
+        # Keep AVIS focused while Space is held so Unity does not clear its
+        # input state on application-focus loss. The scene click above ensures
+        # Space cannot submit the selected Mode toggle.
         return True
 
     def _restore_previous_window(self) -> None:
@@ -2628,6 +2698,13 @@ class AvisSimulatorHandbrake:
             self._restore_previous_window()
             return
         try:
+            # Normally AVIS is still foreground, so send key-up directly.
+            # If the user changed applications during the stop, briefly return
+            # to the simulator for key-up and then restore that active window.
+            if self._target_hwnd and self.available:
+                current = int(self._user32.GetForegroundWindow() or 0)
+                if current != self._target_hwnd:
+                    self._focus_window(self._target_hwnd)
             self._send_space(key_up=True)
         except Exception as exc:
             self.last_error = f"Could not release the AVIS handbrake key: {exc}"

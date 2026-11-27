@@ -538,7 +538,7 @@ class FakeCar:
         self.stopped = True
 
 
-def test_avis_simulator_handbrake_holds_space_and_restores_previous_window():
+def test_avis_simulator_handbrake_clears_ui_selection_and_restores_focus_while_held():
     class FakeKernel32:
         def GetCurrentThreadId(self):
             return 111
@@ -557,8 +557,12 @@ def test_avis_simulator_handbrake_holds_space_and_restores_previous_window():
         def __init__(self):
             self.foreground = 10
             self.events = []
+            self.focus_history = []
             self.windows = {10: "Browser", 20: "AVIS Engine"}
             self.visible = {10: True, 20: True}
+            self.rect = (100, 100, 1100, 700)
+            self.cursor = (35, 45)
+            self.click_position = None
 
         def EnumWindows(self, callback, parameter):
             for hwnd in self.windows:
@@ -595,6 +599,7 @@ def test_avis_simulator_handbrake_holds_space_and_restores_previous_window():
 
         def SetForegroundWindow(self, hwnd):
             self.foreground = hwnd
+            self.focus_history.append(hwnd)
             return 1
 
         def SetActiveWindow(self, hwnd):
@@ -606,11 +611,31 @@ def test_avis_simulator_handbrake_holds_space_and_restores_previous_window():
         def IsWindow(self, hwnd):
             return hwnd in self.windows
 
+        def GetWindowRect(self, hwnd, rect_ptr):
+            assert hwnd == 20
+            rect = rect_ptr._obj
+            rect.left, rect.top, rect.right, rect.bottom = self.rect
+            return 1
+
+        def GetCursorPos(self, point_ptr):
+            point_ptr._obj.x, point_ptr._obj.y = self.cursor
+            return 1
+
+        def SetCursorPos(self, x, y):
+            self.cursor = (int(x), int(y))
+            return 1
+
         def SendInput(self, count, pointer, _size):
-            event = ctypes.cast(
-                pointer, ctypes.POINTER(AvisSimulatorHandbrake._keyboard_input_type()[0])
-            ).contents
-            self.events.append((event.ki.wVk, event.ki.dwFlags))
+            input_type = AvisSimulatorHandbrake._keyboard_input_type()[0]
+            events = ctypes.cast(pointer, ctypes.POINTER(input_type))
+            for index in range(count):
+                event = events[index]
+                if event.type == AvisSimulatorHandbrake.INPUT_KEYBOARD:
+                    self.events.append(("key", event.ki.wVk, event.ki.dwFlags))
+                else:
+                    self.events.append(("mouse", event.mi.dwFlags))
+                    if event.mi.dwFlags == 0x0002:
+                        self.click_position = self.cursor
             return count
 
     fake_user32 = FakeUser32()
@@ -622,20 +647,36 @@ def test_avis_simulator_handbrake_holds_space_and_restores_previous_window():
     assert controller.available is True
     assert controller.set_active(True) is True
     assert controller.held is True
+    # AVIS receives the Space keydown only after a click in the scene clears
+    # any selected Mode toggle, preventing Unity UI from switching to Manual.
+    assert fake_user32.events == [
+        ("mouse", 0x0002),
+        ("mouse", 0x0004),
+        ("key", AvisSimulatorHandbrake.VK_SPACE, 0),
+    ]
+    assert fake_user32.click_position[0] > fake_user32.rect[0] + 0.8 * (
+        fake_user32.rect[2] - fake_user32.rect[0]
+    )
+    assert fake_user32.cursor == (35, 45)
+    # Keep AVIS focused while Space is held so Unity continues to receive the
+    # handbrake axis; the selected Mode toggle has already been cleared.
     assert fake_user32.foreground == 20
-    assert fake_user32.events == [(AvisSimulatorHandbrake.VK_SPACE, 0)]
 
-    # Repeated control ticks do not generate repeated key presses.
+    # Repeated control ticks do not refocus AVIS or generate repeated key presses.
+    focus_count = len(fake_user32.focus_history)
     assert controller.set_active(True) is True
-    assert fake_user32.events == [(AvisSimulatorHandbrake.VK_SPACE, 0)]
+    assert len(fake_user32.focus_history) == focus_count
+    assert len(fake_user32.events) == 3
 
     controller.release()
     assert controller.held is False
     assert fake_user32.events[-1] == (
-        AvisSimulatorHandbrake.VK_SPACE,
+        "key", AvisSimulatorHandbrake.VK_SPACE,
         AvisSimulatorHandbrake.KEYEVENTF_KEYUP,
     )
+    # The previous application is restored after the matching key-up.
     assert fake_user32.foreground == 10
+    assert fake_user32.focus_history[-1] == 10
 
 
 def test_avis_simulator_handbrake_reports_unavailable_off_windows():
