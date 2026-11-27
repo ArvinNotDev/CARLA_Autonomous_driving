@@ -548,8 +548,8 @@ def normalize_avis_manual_controls(
 class AvisReverseBrakeController:
     """Apply reverse motor torque only until the vehicle reports a full stop."""
 
-    def __init__(self, *, stop_speed_kmh=0.3, reverse_gain=8.0,
-                 min_reverse_command=12, max_reverse_command=100):
+    def __init__(self, *, stop_speed_kmh=0.3, reverse_gain=10.0,
+                 min_reverse_command=1, max_reverse_command=100):
         self.stop_speed_kmh = max(0.0, float(stop_speed_kmh))
         self.reverse_gain = max(0.1, float(reverse_gain))
         self.min_reverse_command = max(1, min(100, int(min_reverse_command)))
@@ -3184,10 +3184,28 @@ def _build_avis_settings(conf: ModuleType, sensor_angle: int) -> dict[str, Any]:
         "city_maneuver_segment_timeout_seconds": 20.0,
         "city_maneuver_sequences_json": json.dumps({
             "STRAIGHT": [{"distance_m": 6.0, "steering_value": 0.0}],
-            "LEFT": [{"distance_m": 20.0, "steering_value": 0.0}, {"distance_m": 4.0, "steering_value": -0.5}],
-            "RIGHT": [{"distance_m": 6.0, "steering_value": 0.0}, {"distance_m": 5.0, "steering_value": 0.65}],
-            "LEFT_90": [{"distance_m": 20.0, "steering_value": 0.0}, {"distance_m": 4.0, "steering_value": -0.5}],
-            "RIGHT_90": [{"distance_m": 6.0, "steering_value": 0.0}, {"distance_m": 5.0, "steering_value": 0.65}],
+            "LEFT": [
+                {"distance_m": 22.0, "steering_value": 0.0},
+                {"distance_m": 5.0, "steering_value": -0.4},
+                {"distance_m": 3.5, "steering_value": -0.5},
+                {"distance_m": 2.5, "steering_value": 0.0},
+            ],
+            "RIGHT": [
+                {"distance_m": 9.5, "steering_value": 0.0},
+                {"distance_m": 8.0, "steering_value": 0.25},
+                {"distance_m": 3.0, "steering_value": 0.7},
+            ],
+            "LEFT_90": [
+                {"distance_m": 22.0, "steering_value": 0.0},
+                {"distance_m": 5.0, "steering_value": -0.4},
+                {"distance_m": 3.5, "steering_value": -0.5},
+                {"distance_m": 2.5, "steering_value": 0.0},
+            ],
+            "RIGHT_90": [
+                {"distance_m": 9.5, "steering_value": 0.0},
+                {"distance_m": 8.0, "steering_value": 0.25},
+                {"distance_m": 3.0, "steering_value": 0.7},
+            ],
         }, indent=2),
         "city_crosswalk_enabled": False,
         "city_crosswalk_stop_seconds": 5.0,
