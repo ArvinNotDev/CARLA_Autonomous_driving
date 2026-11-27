@@ -25,6 +25,7 @@ from avis_runtime import (
     _avis_roi_lock_direction,
     _create_avis_vision_processor,
     _connect_avis_engine,
+    _avis_engine_recvall,
 )
 
 from avis_classical_vision import AvisClassicalVisionProcessor
@@ -244,6 +245,46 @@ def test_avis_client_rejects_failed_connection():
     with pytest.raises(ConnectionError, match="Could not connect"):
         AvisEngineClient(SimpleNamespace(Car=DisconnectedCar), "127.0.0.1", 25001)
 
+
+
+def test_avis_client_uses_a_fresh_socket_when_vendor_socket_is_class_shared():
+    import socket
+
+    shared_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+    class SharedSocketCar(FakeCar):
+        def __init__(self):
+            super().__init__()
+            # Simulate the official AVIS API's class-level Car.sock.
+            del self.sock
+
+    SharedSocketCar.sock = shared_socket
+    client = AvisEngineClient(
+        SimpleNamespace(Car=SharedSocketCar), "127.0.0.1", 25001
+    )
+    try:
+        assert client.car.sock is not shared_socket
+        assert client.connected is True
+        client.close()
+        # Closing this client must not poison the class-level socket used as
+        # the template for a future Car() instance.
+        assert shared_socket.fileno() >= 0
+    finally:
+        client.close()
+        shared_socket.close()
+
+
+def test_avis_engine_recvall_raises_when_server_closes_tcp_stream():
+    import socket
+
+    receiver, peer = socket.socketpair()
+    try:
+        peer.close()
+        with pytest.raises(ConnectionError, match="closed the TCP connection"):
+            _avis_engine_recvall(receiver)
+    finally:
+        receiver.close()
+        peer.close()
 
 
 def test_avis_client_marks_connection_lost_when_control_write_fails():
