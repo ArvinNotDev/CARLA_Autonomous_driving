@@ -225,10 +225,10 @@ class AvisJunctionSignOnnxClassifier:
             )
 
         self.mean = self._metadata_vector(
-            metadata.get("normalization_mean"), self.DEFAULT_MEAN
+            metadata.get("normalization_mean") or metadata.get("mean"), self.DEFAULT_MEAN
         )
         self.std = self._metadata_vector(
-            metadata.get("normalization_std"), self.DEFAULT_STD
+            metadata.get("normalization_std") or metadata.get("std"), self.DEFAULT_STD
         )
         if not np.all(np.isfinite(self.mean)) or not np.all(np.isfinite(self.std)):
             raise RuntimeError("Junction-sign normalization values must be finite.")
@@ -261,7 +261,11 @@ class AvisJunctionSignOnnxClassifier:
                 items = sorted(parsed.items(), key=lambda pair: int(pair[0]))
                 parsed = [item[1] for item in items]
             except (TypeError, ValueError):
-                return []
+                try:
+                    items = sorted(parsed.items(), key=lambda pair: int(pair[1]))
+                    parsed = [item[0] for item in items]
+                except (TypeError, ValueError):
+                    return []
         if not isinstance(parsed, (list, tuple)):
             return []
         return [_normalise_class_name(item) for item in parsed]
