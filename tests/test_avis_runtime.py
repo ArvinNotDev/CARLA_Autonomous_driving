@@ -120,12 +120,14 @@ def test_avis_mode_profiles_are_loaded_independently_from_committed_files():
     assert city["name"] == "AVIS_StableV2-city"
     assert road["name"] == "AVIS_StableV2-road"
     assert city["settings"]["vision_backend"] == "ultralytics"
+    validate_avis_settings(dict(DEFAULT_AVIS_SETTINGS), city["settings"])
     assert city["settings"]["obstacle_detection_enabled"] is False
     assert city["settings"]["obstacle_lane_change_enabled"] is False
     assert city["settings"]["city_crosswalk_enabled"] is True
     assert city["settings"]["city_crosswalk_stop_seconds"] == pytest.approx(5.0)
     assert city["settings"]["cw_top_roi"] == pytest.approx(0.55)
     assert road["settings"]["vision_backend"] == "classical"
+    validate_avis_settings(dict(DEFAULT_AVIS_SETTINGS), road["settings"])
     assert road["settings"]["obstacle_detection_enabled"] is True
     assert road["settings"]["obstacle_lane_change_enabled"] is True
     assert road["settings"]["city_crosswalk_enabled"] is False
@@ -150,6 +152,7 @@ def test_avis_cli_defaults_to_road_and_accepts_city_or_road_flags(monkeypatch):
     assert parser.parse_args(["--avis"]).avis_mode is None
     assert parser.parse_args(["--avis", "--road"]).avis_mode == "road"
     assert parser.parse_args(["--avis", "--city"]).avis_mode == "city"
+    assert parser.parse_args(["--city", "--avis-api-path", "vendor"]).avis_mode == "city"
 
     selected = []
     monkeypatch.setattr(
@@ -159,7 +162,8 @@ def test_avis_cli_defaults_to_road_and_accepts_city_or_road_flags(monkeypatch):
     assert avis_main(["--avis"]) == 0
     assert avis_main(["--road"]) == 0
     assert avis_main(["--city"]) == 0
-    assert selected == [(True, "road"), (True, "road"), (True, "city")]
+    assert avis_main(["--avis-api-path", "vendor"]) == 0
+    assert selected == [(True, "road"), (True, "road"), (True, "city"), (True, "road")]
 
 
 def test_city_crosswalk_stop_uses_confirmed_roi_event_and_five_second_dwell():
