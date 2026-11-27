@@ -37,6 +37,14 @@ DEFAULT_CITY_MANEUVER_SEQUENCES = {
         {"distance_m": 6.0, "steering_value": 0.0},
         {"distance_m": 5.0, "steering_value": 0.65},
     ],
+    "LEFT_90": [
+        {"distance_m": 20.0, "steering_value": 0.0},
+        {"distance_m": 4.0, "steering_value": -0.5},
+    ],
+    "RIGHT_90": [
+        {"distance_m": 6.0, "steering_value": 0.0},
+        {"distance_m": 5.0, "steering_value": 0.65},
+    ],
 }
 
 DEFAULT_CITY_MANEUVER_SEQUENCES_JSON = json.dumps(
