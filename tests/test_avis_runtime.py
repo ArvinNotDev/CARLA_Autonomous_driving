@@ -131,6 +131,18 @@ def test_avis_mode_profiles_are_loaded_independently_from_committed_files():
     assert road["settings"]["city_crosswalk_enabled"] is False
 
 
+def test_main_dispatches_city_mode_before_carla_bootstrap():
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    dispatch_index = source.index("_AVIS_ENTRY_FLAGS")
+    dispatch_exit_index = source.index("raise SystemExit(avis_main(sys.argv[1:]))")
+    carla_bootstrap_index = source.index("configure_carla_api")
+
+    assert dispatch_index < dispatch_exit_index < carla_bootstrap_index
+    assert '"--city"' in source
+    assert '"--avis-api-path"' in source
+    assert 'argument.split("=", 1)[0]' in source
+
+
 def test_avis_cli_defaults_to_road_and_accepts_city_or_road_flags(monkeypatch):
     from avis_runtime import main as avis_main
 
@@ -1869,7 +1881,8 @@ def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     state = AvisDashboardState(settings_path=tmp_path / "avis_settings.json")
     html = create_avis_dashboard_app(state).test_client().get("/").get_data(as_text=True)
     assert 'id="obstacle_lane_change_enabled" type="checkbox" data-setting="obstacle_lane_change_enabled"' in html
-    assert "model predictions remain visible" in html
+    assert 'id="obstacle_detection_enabled" type="checkbox" data-setting="obstacle_detection_enabled"' in html
+    assert "Controls the ONNX classifier itself" in html
     assert 'id="drivable_recovery_enabled" data-setting="drivable_recovery_enabled"' in html
     assert "five-inference median" in html
     assert "1.5-second persistence gate" in html
