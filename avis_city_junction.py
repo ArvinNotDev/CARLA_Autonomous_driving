@@ -609,6 +609,12 @@ class AvisCityJunctionController:
         self._segment_index = 0
         self._segment_distance_m = 0.0
         self._segment_started_at: float | None = None
+        self._distance_last_sample_at: float | None = None
+        self._distance_last_speed_kmh: float | None = None
+        self._distance_sample_interval_seconds = 0.0
+        self._distance_last_increment_m = 0.0
+        self._distance_sample_gap_count = 0
+        self._distance_total_m = 0.0
         self._last_reason = "disabled"
         self._just_activated = False
         self._just_started_maneuver = False
@@ -721,11 +727,98 @@ class AvisCityJunctionController:
             self._pending_sign_confidence = float(confidence)
             self._pending_sign_at = observed_at
 
+    @staticmethod
+    def _valid_distance_sample(speed_kmh: Any, timestamp: Any) -> tuple[float, float] | None:
+        try:
+            speed = float(speed_kmh)
+            sampled_at = float(timestamp)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(speed) or speed < 0.0 or not math.isfinite(sampled_at):
+            return None
+        return speed, sampled_at
+
+    def _seed_distance_sample(self, speed_kmh: Any, timestamp: Any) -> None:
+        sample = self._valid_distance_sample(speed_kmh, timestamp)
+        if sample is None:
+            self._distance_last_sample_at = None
+            self._distance_last_speed_kmh = None
+            self._distance_sample_interval_seconds = 0.0
+            return
+        speed, sampled_at = sample
+        self._distance_last_speed_kmh = speed
+        self._distance_last_sample_at = sampled_at
+        self._distance_sample_interval_seconds = 0.0
+
+    def _integrate_maneuver_distance(
+        self,
+        speed_kmh: Any,
+        timestamp: Any,
+        settings: dict[str, Any],
+    ) -> float:
+        """Integrate speed samples with real timestamps using the trapezoidal rule."""
+        sample = self._valid_distance_sample(speed_kmh, timestamp)
+        self._distance_last_increment_m = 0.0
+        if sample is None:
+            self._distance_last_sample_at = None
+            self._distance_last_speed_kmh = None
+            self._distance_sample_interval_seconds = 0.0
+            return 0.0
+
+        speed, sampled_at = sample
+        if (
+            self._distance_last_sample_at is None
+            or self._distance_last_speed_kmh is None
+        ):
+            self._seed_distance_sample(speed, sampled_at)
+            return 0.0
+
+        elapsed = sampled_at - self._distance_last_sample_at
+        if elapsed <= 0.0:
+            if elapsed < 0.0:
+                self._seed_distance_sample(speed, sampled_at)
+            return 0.0
+
+        previous_speed = self._distance_last_speed_kmh
+        self._distance_last_sample_at = sampled_at
+        self._distance_last_speed_kmh = speed
+        self._distance_sample_interval_seconds = elapsed
+
+        try:
+            max_gap = float(
+                settings.get("city_maneuver_distance_max_sample_gap_seconds", 0.5)
+            )
+        except (TypeError, ValueError):
+            max_gap = 0.5
+        if not math.isfinite(max_gap):
+            max_gap = 0.5
+        max_gap = min(2.0, max(0.1, max_gap))
+        if elapsed > max_gap:
+            self._distance_sample_gap_count += 1
+            return 0.0
+
+        try:
+            scale = float(settings.get("city_maneuver_distance_scale", 1.0))
+        except (TypeError, ValueError):
+            scale = 1.0
+        if not math.isfinite(scale):
+            scale = 1.0
+        scale = min(1.5, max(0.5, scale))
+
+        average_speed_mps = ((previous_speed + speed) * 0.5) / 3.6
+        increment = max(0.0, average_speed_mps * elapsed * scale)
+        self._distance_last_increment_m = increment
+        self._segment_distance_m += increment
+        self._distance_total_m += increment
+        return increment
+
     def _start_maneuver(
         self,
         *,
         settings: dict[str, Any],
         now: float,
+        speed_kmh: float = 0.0,
+        speed_sample_timestamp: float | None = None,
     ) -> None:
         try:
             sequences = parse_city_maneuver_sequences(
@@ -749,7 +842,14 @@ class AvisCityJunctionController:
         self._sequence = list(sequences.get(sequence_key, []))
         self._segment_index = 0
         self._segment_distance_m = 0.0
+        self._distance_total_m = 0.0
+        self._distance_sample_gap_count = 0
+        self._distance_last_increment_m = 0.0
         self._segment_started_at = now
+        self._seed_distance_sample(
+            speed_kmh,
+            now if speed_sample_timestamp is None else speed_sample_timestamp,
+        )
         self._dwell_started_at = None
         self._phase = "MANEUVER"
         self._just_started_maneuver = True
@@ -766,6 +866,10 @@ class AvisCityJunctionController:
         self._sequence = []
         self._segment_index = 0
         self._segment_distance_m = 0.0
+        self._distance_last_sample_at = None
+        self._distance_last_speed_kmh = None
+        self._distance_sample_interval_seconds = 0.0
+        self._distance_last_increment_m = 0.0
         self._cooldown_until = now + self.RESTART_COOLDOWN_SECONDS
         self._just_completed = True
         self._last_reason = "junction_event_complete"
@@ -781,11 +885,20 @@ class AvisCityJunctionController:
         dt: float,
         observation_id: Any = None,
         observation_timestamp: float | None = None,
+        speed_sample_timestamp: float | None = None,
         now: float | None = None,
     ) -> dict[str, Any]:
         current = time.perf_counter() if now is None else float(now)
         if not math.isfinite(current):
             current = time.perf_counter()
+        speed_sample_at = current
+        if speed_sample_timestamp is not None:
+            try:
+                candidate_timestamp = float(speed_sample_timestamp)
+                if math.isfinite(candidate_timestamp):
+                    speed_sample_at = candidate_timestamp
+            except (TypeError, ValueError):
+                pass
         self._just_activated = False
         self._just_started_maneuver = False
         self._just_completed = False
@@ -849,7 +962,12 @@ class AvisCityJunctionController:
 
         if self._phase == "BRAKING" and speed <= self.STOP_SPEED_KMH:
             if self._active_route_type in {"LEFT_90", "RIGHT_90"}:
-                self._start_maneuver(settings=settings, now=current)
+                self._start_maneuver(
+                    settings=settings,
+                    now=current,
+                    speed_kmh=speed,
+                    speed_sample_timestamp=speed_sample_at,
+                )
             else:
                 self._phase = "DWELL"
                 self._dwell_started_at = current
@@ -876,16 +994,21 @@ class AvisCityJunctionController:
                     self._just_completed = True
                     self._last_reason = "stop_sign_terminal_stop"
                 else:
-                    self._start_maneuver(settings=settings, now=current)
+                    self._start_maneuver(
+                        settings=settings,
+                        now=current,
+                        speed_kmh=speed,
+                        speed_sample_timestamp=speed_sample_at,
+                    )
             else:
                 self._last_reason = "crosswalk_stationary_dwell_in_progress"
 
         elif self._phase == "MANEUVER":
-            try:
-                delta = min(0.25, max(0.0, float(dt)))
-            except (TypeError, ValueError):
-                delta = 0.0
-            self._segment_distance_m += (speed / 3.6) * delta
+            self._integrate_maneuver_distance(
+                speed,
+                speed_sample_at,
+                settings,
+            )
             if self._segment_index < len(self._sequence):
                 action = self._sequence[self._segment_index]
                 target_distance = float(action["distance_m"])
@@ -959,7 +1082,21 @@ class AvisCityJunctionController:
             ),
             "segment_index": int(self._segment_index + 1) if action is not None else 0,
             "segment_count": len(self._sequence),
+            "segment_distance_m": float(self._segment_distance_m),
+            "segment_target_distance_m": (
+                float(action["distance_m"]) if action is not None else 0.0
+            ),
             "segment_distance_remaining_m": float(remaining),
+            "maneuver_distance_total_m": float(self._distance_total_m),
+            "distance_sample_interval_seconds": float(
+                self._distance_sample_interval_seconds
+            ),
+            "distance_last_increment_m": float(self._distance_last_increment_m),
+            "distance_sample_gap_count": int(self._distance_sample_gap_count),
+            "distance_scale": min(
+                1.5,
+                max(0.5, float(options.get("city_maneuver_distance_scale", 1.0))),
+            ),
             "line_present": bool(self._line_present),
             "crosswalk_detected": bool(self._crosswalk_detected),
             "detected": bool(self._crosswalk_detected),
