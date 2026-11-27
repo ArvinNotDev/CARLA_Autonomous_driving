@@ -724,6 +724,24 @@ def test_city_reverse_brake_uses_reverse_torque_then_latches_neutral_at_zero():
     assert reset["command"] == 0
 
 
+
+def test_city_brake_uses_forward_torque_to_stop_a_reverse_maneuver():
+    controller = AvisReverseBrakeController()
+
+    fast = controller.update(
+        active=True, speed_kmh=5.0, travel_direction=-1
+    )
+    assert fast["phase"] == "REVERSE_BRAKING"
+    assert fast["command"] == 50
+    assert fast["braking_direction"] == -1
+
+    stopped = controller.update(
+        active=True, speed_kmh=0.3, travel_direction=-1
+    )
+    assert stopped["phase"] == "NEUTRAL_HOLD"
+    assert stopped["command"] == 0
+    assert stopped["stop_confirmed"] is True
+
 def test_city_reverse_brake_fails_safe_when_speed_feedback_is_invalid():
     controller = AvisReverseBrakeController()
     result = controller.update(active=True, speed_kmh=float("nan"))
@@ -749,6 +767,29 @@ def test_avis_client_accepts_only_negative_reverse_commands_during_braking():
     assert fake_car.speed_commands[-1] == 0
     client.close()
 
+
+
+def test_avis_client_sends_signed_speed_for_reverse_maneuver_steps():
+    client = AvisEngineClient(SimpleNamespace(Car=FakeCar), "127.0.0.1", 25001)
+    fake_car = client.car
+
+    client.send_control(0.5, 0.25, speed_direction=-1)
+    assert fake_car.speed_commands[-1] == -50
+    assert fake_car.steering_commands[-1] == 25
+
+    client.send_control(0.4, -0.2, speed_direction=1)
+    assert fake_car.speed_commands[-1] == 40
+    assert fake_car.steering_commands[-1] == -20
+
+    # Reverse-segment timeout braking must be allowed to use forward torque.
+    client.send_control(
+        0.0,
+        0.0,
+        brake=True,
+        directional_brake_command=35,
+    )
+    assert fake_car.speed_commands[-1] == 35
+    client.close()
 
 def test_avis_client_never_commands_reverse_during_crosswalk_braking():
     api = SimpleNamespace(Car=FakeCar)
@@ -908,6 +949,8 @@ def test_avis_dashboard_has_dedicated_step_based_maneuver_editor_tab():
     assert 'data-maneuver-route="RIGHT_90"' in DASHBOARD_HTML
     assert 'id="applyManeuversButton"' in DASHBOARD_HTML
     assert 'id="city_maneuver_sequences_json"' in DASHBOARD_HTML
+    assert 'min="-500" max="500"' in DASHBOARD_HTML
+    assert "negative = reverse" in DASHBOARD_HTML
     assert "function renderManeuverEditor()" in DASHBOARD_HTML
     assert "city_reverse_brake_phase" in DASHBOARD_HTML
     assert "NEUTRAL HOLD" in DASHBOARD_HTML
