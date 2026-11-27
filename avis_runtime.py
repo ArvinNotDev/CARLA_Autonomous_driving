@@ -2994,6 +2994,7 @@ def run_avis(args: argparse.Namespace) -> int:
                     next_tick = last_control_time
                     consecutive_connection_errors = 0
                     last_error_message = None
+                    dashboard_state.set_mode("stopped")
                     dashboard_state.set_connection_status(
                         True, "Reconnected; waiting for camera"
                     )
