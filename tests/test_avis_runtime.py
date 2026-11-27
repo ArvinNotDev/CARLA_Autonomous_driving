@@ -20,6 +20,7 @@ from avis_runtime import (
     AvisObstacleLaneClassifier,
     AvisCityCrosswalkStopController,
     AvisSimulatorHandbrake,
+    AvisReverseBrakeController,
     AvisCombinedVisionProcessor,
     apply_avis_profile,
     build_parser,
@@ -688,17 +689,74 @@ def test_avis_simulator_handbrake_reports_unavailable_off_windows():
     assert controller.held is False
 
 
+def test_city_reverse_brake_uses_reverse_torque_then_latches_neutral_at_zero():
+    controller = AvisReverseBrakeController()
+
+    fast = controller.update(active=True, speed_kmh=15.0)
+    assert fast["phase"] == "REVERSE_BRAKING"
+    assert fast["command"] == -100
+    assert fast["reverse_active"] is True
+    assert fast["stop_confirmed"] is False
+
+    medium = controller.update(active=True, speed_kmh=5.0)
+    assert medium["command"] == -40
+
+    slow = controller.update(active=True, speed_kmh=1.0)
+    assert slow["command"] == -12
+
+    stopped = controller.update(active=True, speed_kmh=0.3)
+    assert stopped["phase"] == "NEUTRAL_HOLD"
+    assert stopped["command"] == 0
+    assert stopped["reverse_active"] is False
+    assert stopped["stop_confirmed"] is True
+
+    # Once stopped, another unsigned speed sample must not re-engage reverse.
+    hold = controller.update(active=True, speed_kmh=2.0)
+    assert hold["phase"] == "NEUTRAL_HOLD"
+    assert hold["command"] == 0
+    assert hold["reverse_active"] is False
+
+    reset = controller.update(active=False, speed_kmh=0.0)
+    assert reset["phase"] == "IDLE"
+    assert reset["command"] == 0
+
+
+def test_city_reverse_brake_fails_safe_when_speed_feedback_is_invalid():
+    controller = AvisReverseBrakeController()
+    result = controller.update(active=True, speed_kmh=float("nan"))
+    assert result["phase"] == "SPEED_UNAVAILABLE"
+    assert result["command"] == 0
+    assert result["stop_confirmed"] is False
+
+
+def test_avis_client_accepts_only_negative_reverse_commands_during_braking():
+    client = AvisEngineClient(SimpleNamespace(Car=FakeCar), "127.0.0.1", 25001)
+    fake_car = client.car
+
+    client.send_control(0.0, 0.0, brake=True, reverse_brake_command=-75)
+    assert fake_car.speed_commands[-1] == -75
+    assert fake_car.steering_commands[-1] == 0
+
+    # Positive torque is never permitted in the braking branch.
+    client.send_control(0.0, 0.0, brake=True, reverse_brake_command=30)
+    assert fake_car.speed_commands[-1] == 0
+    client.send_control(0.0, 0.0, brake=True, reverse_brake_command=-150)
+    assert fake_car.speed_commands[-1] == -100
+    client.send_control(0.0, 0.0, brake=True, reverse_brake_command=0)
+    assert fake_car.speed_commands[-1] == 0
+    client.close()
+
+
 def test_avis_client_never_commands_reverse_during_crosswalk_braking():
     api = SimpleNamespace(Car=FakeCar)
     client = AvisEngineClient(api, "127.0.0.1", 25001)
     fake_car = client.car
 
-    # Crosswalk braking must be independent of speed and dashboard max-speed:
-    # Speed=0 removes motor torque while the native handbrake does the stopping.
+    # Without an explicit reverse-brake output, the client remains neutral.
+    # The state controller owns the negative command and cuts it at zero speed.
     for speed_kmh in (30.0, 15.0, 8.0, 7.0, 1.0, 0.31, 0.3, 0.2, 0.0):
         client.send_control(0.0, 0.0, brake=True, current_speed_kmh=speed_kmh)
         assert fake_car.speed_commands[-1] == 0
-        assert fake_car.speed_commands[-1] >= 0
         assert fake_car.steering_commands[-1] == 0
     client.close()
 
@@ -836,6 +894,18 @@ def test_avis_dashboard_persists_only_avis_settings_and_validates_updates(tmp_pa
             {"min_speed_kmh": 30, "max_speed_kmh": 20},
             persist=False,
         )
+
+
+def test_avis_dashboard_has_dedicated_step_based_maneuver_editor_tab():
+    assert 'data-panel="maneuvers"' in DASHBOARD_HTML
+    assert 'id="panel-maneuvers"' in DASHBOARD_HTML
+    assert 'id="maneuverSteps"' in DASHBOARD_HTML
+    assert 'id="addManeuverStepButton"' in DASHBOARD_HTML
+    assert 'data-maneuver-route="LEFT_90"' in DASHBOARD_HTML
+    assert 'data-maneuver-route="RIGHT_90"' in DASHBOARD_HTML
+    assert 'id="applyManeuversButton"' in DASHBOARD_HTML
+    assert 'id="city_maneuver_sequences_json"' in DASHBOARD_HTML
+    assert "function renderManeuverEditor()" in DASHBOARD_HTML
 
 
 def test_avis_dashboard_ui_exposes_every_persisted_setting():
