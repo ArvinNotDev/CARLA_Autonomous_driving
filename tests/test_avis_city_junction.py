@@ -169,10 +169,10 @@ def test_maneuver_json_accepts_independent_sequences_for_all_turn_types():
 
 
 def test_right_left_and_straight_wait_five_seconds_after_the_vehicle_stops():
-    for label, expected_route in (
-        ("right", "RIGHT"),
-        ("left", "LEFT"),
-        ("straight", "STRAIGHT"),
+    for label, expected_route, expected_segments in (
+        ("right", "RIGHT", 2),
+        ("left", "LEFT", 2),
+        ("straight", "STRAIGHT", 1),
     ):
         settings = _settings()
         controller = AvisCityJunctionController()
@@ -218,7 +218,7 @@ def test_right_left_and_straight_wait_five_seconds_after_the_vehicle_stops():
         )
         assert maneuver["phase"] == "MANEUVER"
         assert maneuver["maneuver_active"] is True
-        assert maneuver["segment_count"] == 2
+        assert maneuver["segment_count"] == expected_segments
 
 
 @pytest.mark.parametrize(
@@ -336,13 +336,23 @@ def test_maneuver_segments_advance_by_distance_and_apply_the_next_steering_value
     assert first["phase"] == "MANEUVER"
     assert first["steering_override"] == pytest.approx(-0.3)
 
+    halfway = controller.update(
+        None, None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=7.2,
+        dt=0.25,
+        now=7.35,
+    )
+    assert halfway["segment_index"] == 1
+
     second = controller.update(
         None, None,
         enabled=True,
         settings=settings,
         current_speed_kmh=7.2,
-        dt=0.5,
-        now=7.6,
+        dt=0.25,
+        now=7.60,
     )
     assert second["phase"] == "MANEUVER"
     assert second["segment_index"] == 2
