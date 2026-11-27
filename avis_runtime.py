@@ -516,7 +516,8 @@ def apply_avis_profile(profile: dict[str, Any], config_module: ModuleType) -> No
             setattr(config_module, key, profile[key])
 
 
-AVIS_BRAKE_MIN_SPEED_KMH = 8.5  # >5 mph (8.05 km/h) plus a safety margin.
+AVIS_CROSSWALK_STOP_SPEED_KMH = 0.3
+AVIS_CROSSWALK_REVERSE_COMMAND = -100  # Full reverse input; independent of the dashboard speed limit.
 
 
 def normalize_avis_controls(throttle: float, steering: float) -> tuple[int, int]:
@@ -1739,7 +1740,7 @@ class AvisCityCrosswalkStopController:
                     speed_kmh = float("inf")
                 if not math.isfinite(speed_kmh):
                     speed_kmh = float("inf")
-                if speed_kmh <= 0.5:
+                if speed_kmh <= AVIS_CROSSWALK_STOP_SPEED_KMH:
                     self._started_at = current
                     self._reason = "crosswalk_vehicle_stopped"
                 else:
@@ -2723,11 +2724,16 @@ class AvisEngineClient:
                 speed_kmh = 0.0
             if not math.isfinite(speed_kmh):
                 speed_kmh = 0.0
-            # In the AVIS simulator, negative setSpeed input applies wheel
-            # brake torque only above 5 mph. Below that threshold, its vehicle
-            # controller can apply reverse motor torque instead. Never send a
-            # negative command in that low-speed range.
-            speed_command = -100 if speed_kmh >= AVIS_BRAKE_MIN_SPEED_KMH else 0
+            # AVIS maps negative Speed to braking while moving forward and
+            # reverse torque near zero. Keep the command at full magnitude
+            # throughout the deceleration phase, independent of the dashboard's
+            # normal max_speed_kmh setting. Cut reverse immediately at 0.3 km/h
+            # so it cannot keep accelerating the car backwards.
+            speed_command = (
+                AVIS_CROSSWALK_REVERSE_COMMAND
+                if speed_kmh > AVIS_CROSSWALK_STOP_SPEED_KMH
+                else 0
+            )
             steering_command = 0
         else:
             speed_command, steering_command = normalize_avis_controls(throttle, steering)
