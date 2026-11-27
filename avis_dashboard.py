@@ -400,6 +400,8 @@ class AvisDashboardState:
                     "lane_width_ratio",
                     "obstacle_return_distance_m",
                     "obstacle_slowdown_start_cm",
+                    "city_pedestrian_stop_enabled",
+                    "city_pedestrian_stop_seconds",
                 ):
                     saved.pop(legacy_key, None)
             saved = _migrate_legacy_lane_change_tuning(saved)
@@ -462,6 +464,8 @@ class AvisDashboardState:
                             name = self._normalize_profile_name(entry.get("name"))
                             saved_settings = dict(entry["settings"])
                             saved_settings.pop("obstacle_slowdown_start_cm", None)
+                            saved_settings.pop("city_pedestrian_stop_enabled", None)
+                            saved_settings.pop("city_pedestrian_stop_seconds", None)
                             saved_settings = _migrate_legacy_lane_change_tuning(saved_settings)
                             settings = validate_avis_settings(
                                 dict(DEFAULT_AVIS_SETTINGS), saved_settings
@@ -556,6 +560,8 @@ class AvisDashboardState:
             raise ValueError("The imported profile does not contain a settings object.")
         compatible_settings = dict(settings)
         compatible_settings.pop("obstacle_slowdown_start_cm", None)
+        compatible_settings.pop("city_pedestrian_stop_enabled", None)
+        compatible_settings.pop("city_pedestrian_stop_seconds", None)
         compatible_settings = _migrate_legacy_lane_change_tuning(compatible_settings)
         validated = validate_avis_settings(
             dict(DEFAULT_AVIS_SETTINGS), compatible_settings
