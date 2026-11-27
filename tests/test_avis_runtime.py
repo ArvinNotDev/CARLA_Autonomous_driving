@@ -2665,22 +2665,34 @@ def test_dashboard_state_uses_and_protects_the_selected_mode_baseline(tmp_path):
         state.delete_profile("AVIS_StableV2-city")
 
 
-def test_city_stop_settings_are_validated_and_visible_in_dashboard():
+def test_city_crosswalk_and_obstacle_model_settings_are_validated_and_visible():
     updated = validate_avis_settings(
         dict(DEFAULT_AVIS_SETTINGS),
         {
-            "city_pedestrian_stop_enabled": True,
-            "city_pedestrian_stop_seconds": 5.0,
+            "obstacle_detection_enabled": False,
+            "city_crosswalk_enabled": True,
+            "city_crosswalk_stop_seconds": 5.0,
+            "city_crosswalk_confirm_frames": 3,
+            "cw_top_roi": 0.52,
         },
     )
-    assert updated["city_pedestrian_stop_enabled"] is True
-    assert updated["city_pedestrian_stop_seconds"] == pytest.approx(5.0)
-    assert 'data-setting="city_pedestrian_stop_enabled"' in DASHBOARD_HTML
-    assert 'data-setting="city_pedestrian_stop_seconds"' in DASHBOARD_HTML
-    with pytest.raises(ValueError, match="city_pedestrian_stop_seconds"):
+    assert updated["obstacle_detection_enabled"] is False
+    assert updated["city_crosswalk_enabled"] is True
+    assert updated["city_crosswalk_stop_seconds"] == pytest.approx(5.0)
+    assert updated["city_crosswalk_confirm_frames"] == 3
+    assert updated["cw_top_roi"] == pytest.approx(0.52)
+    for key in (
+        "obstacle_detection_enabled",
+        "city_crosswalk_enabled",
+        "city_crosswalk_stop_seconds",
+        "city_crosswalk_confirm_frames",
+        "cw_top_roi", "cw_bottom_roi", "cw_left_roi", "cw_right_roi",
+    ):
+        assert f'data-setting="{key}"' in DASHBOARD_HTML
+    with pytest.raises(ValueError, match="city_crosswalk_stop_seconds"):
         validate_avis_settings(
             dict(DEFAULT_AVIS_SETTINGS),
-            {"city_pedestrian_stop_seconds": 0.1},
+            {"city_crosswalk_stop_seconds": 0.1},
         )
 
 
