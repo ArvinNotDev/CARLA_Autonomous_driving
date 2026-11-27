@@ -431,6 +431,60 @@ def test_maneuver_segments_advance_by_distance_and_apply_the_next_steering_value
     assert second["steering_override"] == pytest.approx(0.2)
 
 
+def test_crosswalk_is_ignored_for_two_seconds_after_maneuver_completion():
+    settings = _settings()
+    controller = AvisCityJunctionController()
+    controller._trigger.acknowledge()
+    controller._finish(10.0)
+
+    ignored = controller.update(
+        _crosswalk(), None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=8.0,
+        dt=0.05,
+        observation_id=20,
+        observation_timestamp=11.9,
+        now=11.9,
+    )
+    assert ignored["phase"] == "IDLE"
+    assert ignored["just_activated"] is False
+    assert ignored["cooldown_remaining_seconds"] == pytest.approx(0.1)
+
+    controller.update(
+        None, None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=8.0,
+        dt=0.05,
+        observation_id=21,
+        observation_timestamp=12.0,
+        now=12.0,
+    )
+    controller.update(
+        None, None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=8.0,
+        dt=0.05,
+        observation_id=22,
+        observation_timestamp=13.0,
+        now=13.0,
+    )
+    accepted = controller.update(
+        _crosswalk(), None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=8.0,
+        dt=0.05,
+        observation_id=23,
+        observation_timestamp=13.1,
+        now=13.1,
+    )
+    assert accepted["phase"] == "BRAKING"
+    assert accepted["just_activated"] is True
+
+
 
 def _start_left_maneuver_for_distance_test(settings):
     controller = AvisCityJunctionController()

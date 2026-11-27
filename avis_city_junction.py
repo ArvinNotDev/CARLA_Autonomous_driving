@@ -583,7 +583,7 @@ class AvisCityJunctionController:
     """Crosswalk stop, upcoming sign latch and configurable post-stop maneuvers."""
 
     STOP_SPEED_KMH = 0.3
-    RESTART_COOLDOWN_SECONDS = 5.0
+    POST_MANEUVER_CROSSWALK_IGNORE_SECONDS = 2.0
 
     def __init__(self) -> None:
         self._trigger = JunctionTriggerLatch(clear_duration=1.0)
@@ -872,7 +872,7 @@ class AvisCityJunctionController:
         self._distance_last_speed_kmh = None
         self._distance_sample_interval_seconds = 0.0
         self._distance_last_increment_m = 0.0
-        self._cooldown_until = now + self.RESTART_COOLDOWN_SECONDS
+        self._cooldown_until = now + self.POST_MANEUVER_CROSSWALK_IGNORE_SECONDS
         self._just_completed = True
         self._last_reason = "junction_event_complete"
 
