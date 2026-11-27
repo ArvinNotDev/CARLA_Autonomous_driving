@@ -14,6 +14,11 @@ from typing import Any
 from flask import Flask, Response, jsonify, request
 
 from avis_profiles import AvisGitHubProfileSync
+from avis_city_junction import (
+    DEFAULT_CITY_MANEUVER_SEQUENCES,
+    DEFAULT_CITY_SIGN_CLASSES,
+    parse_city_maneuver_sequences,
+)
 from werkzeug.serving import BaseWSGIServer, make_server
 
 
@@ -72,6 +77,16 @@ DEFAULT_AVIS_SETTINGS: dict[str, Any] = {
     "obstacle_detection_enabled": True,
     "obstacle_lane_change_enabled": True,
     "city_crosswalk_enabled": False,
+    "junction_sign_model_path": "models_and_datasets/Avis_models/sign_detector_deadlock.onnx",
+    "city_junction_sign_enabled": False,
+    "city_junction_sign_confidence_threshold": 0.55,
+    "city_junction_sign_confirm_frames": 2,
+    "city_junction_sign_max_age_seconds": 20.0,
+    "city_junction_sign_input_size": 224,
+    "city_junction_sign_class_order_json": json.dumps(DEFAULT_CITY_SIGN_CLASSES),
+    "city_maneuver_speed_kmh": 6.0,
+    "city_maneuver_segment_timeout_seconds": 20.0,
+    "city_maneuver_sequences_json": json.dumps(DEFAULT_CITY_MANEUVER_SEQUENCES, indent=2),
     "city_crosswalk_stop_seconds": 5.0,
     "city_crosswalk_rearm_clear_seconds": 1.0,
     "city_crosswalk_min_line_length_ratio": 0.35,
@@ -163,6 +178,12 @@ _NUMERIC_LIMITS: dict[str, tuple[float, float, bool]] = {
     "cw_left_roi": (0.0, 0.98, False),
     "cw_right_roi": (0.02, 1.0, False),
     "city_crosswalk_stop_seconds": (0.5, 120.0, False),
+    "city_junction_sign_confidence_threshold": (0.01, 0.99, False),
+    "city_junction_sign_confirm_frames": (1.0, 10.0, True),
+    "city_junction_sign_max_age_seconds": (0.5, 120.0, False),
+    "city_junction_sign_input_size": (32.0, 2048.0, True),
+    "city_maneuver_speed_kmh": (1.0, 40.0, False),
+    "city_maneuver_segment_timeout_seconds": (1.0, 120.0, False),
     "city_crosswalk_rearm_clear_seconds": (0.2, 30.0, False),
     "city_crosswalk_min_line_length_ratio": (0.10, 0.95, False),
     "city_crosswalk_max_line_angle_deg": (1.0, 30.0, False),
@@ -238,7 +259,7 @@ def validate_avis_settings(
                 raise ValueError("vision_backend must be 'ultralytics' or 'classical'.")
             result[key] = value
             continue
-        if key in {"lane_model_path", "obstacle_model_path"}:
+        if key in {"lane_model_path", "obstacle_model_path", "junction_sign_model_path"}:
             if not isinstance(value, str):
                 raise ValueError(f"{key} must be a model path string.")
             model_path = value.strip().replace("\\", "/")
@@ -246,6 +267,36 @@ def validate_avis_settings(
             if not model_path or chr(0) in model_path or not model_path.lower().endswith(expected_suffix):
                 raise ValueError(f"{key} must point to a {expected_suffix} model file.")
             result[key] = model_path
+            continue
+        if key == "city_junction_sign_class_order_json":
+            if not isinstance(value, str):
+                raise ValueError("city_junction_sign_class_order_json must be a JSON array.")
+            try:
+                labels = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise ValueError("Junction-sign class order must be valid JSON.") from exc
+            expected = set(DEFAULT_CITY_SIGN_CLASSES)
+            normalized = [str(item).strip().casefold() for item in labels] if isinstance(labels, list) else []
+            if len(normalized) != 6 or len(set(normalized)) != 6 or set(normalized) != expected:
+                raise ValueError(
+                    "Junction-sign class order must contain right, left, straight, stop, 90r and 90l exactly once."
+                )
+            result[key] = json.dumps(normalized)
+            continue
+        if key == "city_maneuver_sequences_json":
+            if not isinstance(value, str):
+                raise ValueError("city_maneuver_sequences_json must be a JSON object.")
+            try:
+                sequences = parse_city_maneuver_sequences(value)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ValueError(f"Invalid city maneuver sequences: {exc}") from exc
+            allowed = {"STRAIGHT", "LEFT", "RIGHT", "LEFT_90", "RIGHT_90"}
+            unknown_sequences = sorted(set(sequences) - allowed)
+            if unknown_sequences:
+                raise ValueError(
+                    "Unsupported city maneuver sequence(s): " + ", ".join(unknown_sequences)
+                )
+            result[key] = json.dumps(sequences, indent=2)
             continue
         if key in {
             "auto_mode_default", "vision_debug", "debug_show_rois",
@@ -989,6 +1040,20 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
           <div class="field"><label for="city_crosswalk_confirm_frames">Confirmation frames (out of 3)</label><input id="city_crosswalk_confirm_frames" data-setting="city_crosswalk_confirm_frames" type="number" min="1" max="3" step="1"></div>
           <div class="field full"><div class="hint">Edit the Crosswalk ROI in ROI tools. One confirmed marking starts one stop interval; the detector re-arms after the marking disappears for the configured clear time, preventing repeated stops on the same crosswalk.</div></div>
         </div>
+        <div class="section-label">Junction sign recognition and turn sequences</div>
+        <div class="fields">
+          <div class="field full checkbox-field"><label for="city_junction_sign_enabled"><input id="city_junction_sign_enabled" type="checkbox" data-setting="city_junction_sign_enabled"><span>Enable ResNet18 junction-sign ONNX classifier in City mode</span></label></div>
+          <div class="field full"><label for="junction_sign_model_path">Junction-sign ONNX model path</label><input id="junction_sign_model_path" type="text" data-setting="junction_sign_model_path" spellcheck="false"></div>
+          <div class="field"><label for="city_junction_sign_confidence_threshold">Sign confidence threshold</label><input id="city_junction_sign_confidence_threshold" data-setting="city_junction_sign_confidence_threshold" type="number" min=".01" max=".99" step=".01"></div>
+          <div class="field"><label for="city_junction_sign_confirm_frames">Consecutive sign confirmations</label><input id="city_junction_sign_confirm_frames" data-setting="city_junction_sign_confirm_frames" type="number" min="1" max="10" step="1"></div>
+          <div class="field"><label for="city_junction_sign_max_age_seconds">Maximum remembered sign age (s)</label><input id="city_junction_sign_max_age_seconds" data-setting="city_junction_sign_max_age_seconds" type="number" min=".5" max="120" step=".5"></div>
+          <div class="field"><label for="city_junction_sign_input_size">Input size for dynamic ONNX input</label><input id="city_junction_sign_input_size" data-setting="city_junction_sign_input_size" type="number" min="32" max="2048" step="1"></div>
+          <div class="field"><label for="city_maneuver_speed_kmh">Maneuver speed (km/h)</label><input id="city_maneuver_speed_kmh" data-setting="city_maneuver_speed_kmh" type="number" min="1" max="40" step=".5"></div>
+          <div class="field"><label for="city_maneuver_segment_timeout_seconds">Per-segment timeout (s)</label><input id="city_maneuver_segment_timeout_seconds" data-setting="city_maneuver_segment_timeout_seconds" type="number" min="1" max="120" step="1"></div>
+          <div class="field full"><label for="city_junction_sign_class_order_json">Class order when ONNX has no embedded class names</label><textarea id="city_junction_sign_class_order_json" data-setting="city_junction_sign_class_order_json" rows="2" spellcheck="false"></textarea></div>
+          <div class="field full"><label for="city_maneuver_sequences_json">Maneuver sequences (JSON editor)</label><textarea id="city_maneuver_sequences_json" data-setting="city_maneuver_sequences_json" rows="16" spellcheck="false"></textarea></div>
+          <div class="field full"><div class="hint">Each sequence is an ordered list of distance_m and steering_value steps. Add, remove or reorder JSON entries to customize RIGHT, LEFT, STRAIGHT, RIGHT_90 and LEFT_90 independently. Values use CARLA's normalized steering range: negative = left, positive = right. STOP never runs a maneuver. RIGHT/LEFT/STRAIGHT wait for the configured crosswalk dwell; 90R/90L brake as soon as the crosswalk is detected and start their own sequence immediately after the vehicle stops.</div></div>
+        </div>
         <div class="section-label">Return to the right lane</div>
         <div class="hint">After the model confirms the vehicle has entered the left lane, AVIS travels exactly 4 metres, then starts the right-lane change. The return uses the same model-confirmed steering pulse, pause, and gentler retry sequence as the initial move to the left. Right-side sensor readings and sensor timeouts do not control this return.</div>
         <div class="section-label">Additional obstacle and lane-change tuning</div>
@@ -1379,9 +1444,8 @@ function collectSettings() {
     if (input.type === "checkbox") result[key] = input.checked;
     else if (input.tagName === "SELECT" && key === "vision_backend") result[key] = input.value;
     else if (input.tagName === "SELECT" && (key === "yellow_enabled" || key === "adaptive_roi_enabled" || key === "drivable_recovery_enabled")) result[key] = input.value === "true";
-    else if (input.type === "text") {
-      const raw = input.value.trim();
-      if (raw !== "") result[key] = raw;
+    else if (input.type === "text" || input.tagName === "TEXTAREA") {
+      result[key] = input.value.trim();
     } else {
       const raw = input.value.trim();
       if (raw === "") return;
