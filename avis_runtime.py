@@ -4168,7 +4168,7 @@ def run_avis(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.avis_mode is not None:
+    if args.avis_mode is not None or args.avis_api_path is not None:
         args.avis = True
     args.avis_mode = args.avis_mode or "road"
     if not args.avis:
