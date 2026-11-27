@@ -2915,6 +2915,7 @@ def run_avis(args: argparse.Namespace) -> int:
         last_model_prediction_request_id = 0
         last_dashboard_publish = 0.0
         frame_id = 0
+        minimum_vision_frame_id = 0
         last_error_message = None
         consecutive_connection_errors = 0
         last_control_time = time.perf_counter()
@@ -2985,7 +2986,7 @@ def run_avis(args: argparse.Namespace) -> int:
                     obstacle_lane_change = AvisModelObstacleLaneChangeController()
                     drivable_recovery_controller = AvisDrivableAreaRecoveryController()
                     last_vision_result = None
-                    last_model_prediction_request_id = 0
+                    minimum_vision_frame_id = frame_id
                     last_inference_submit = 0.0
                     last_dashboard_publish = 0.0
                     recovery_steering = 0.0
@@ -2996,6 +2997,7 @@ def run_avis(args: argparse.Namespace) -> int:
                     dashboard_state.set_connection_status(
                         True, "Reconnected; waiting for camera"
                     )
+                    time.sleep(max(0.0, float(args.avis_startup_delay)))
                     print(
                         f"[AVIS] Reconnected to {args.avis_host}:{args.avis_port}. "
                         "Driving remains stopped for safety."
@@ -3114,7 +3116,11 @@ def run_avis(args: argparse.Namespace) -> int:
                 vision_snapshot, vision_busy, vision_error, _ = (
                     inference_worker.vision_snapshot()
                 )
-                if vision_snapshot is not None and vision_snapshot.valid:
+                if (
+                    vision_snapshot is not None
+                    and vision_snapshot.valid
+                    and int(vision_snapshot.source_frame_id) > minimum_vision_frame_id
+                ):
                     last_vision_result = vision_snapshot
                     completed_at = float(vision_snapshot.completed_at)
                     if completed_at != last_inference_fps_timestamp:
