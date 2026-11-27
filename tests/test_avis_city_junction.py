@@ -177,8 +177,8 @@ def test_maneuver_json_accepts_independent_sequences_for_all_turn_types():
 
 def test_right_left_and_straight_wait_five_seconds_after_the_vehicle_stops():
     for label, expected_route, expected_segments in (
-        ("right", "RIGHT", 2),
-        ("left", "LEFT", 2),
+        ("right", "RIGHT", 3),
+        ("left", "LEFT", 4),
         ("straight", "STRAIGHT", 1),
     ):
         settings = _settings()
