@@ -131,6 +131,29 @@ DEFAULT_AVIS_SETTINGS: dict[str, Any] = {
 }
 
 
+def _profile_maneuver_sequences(
+    settings: dict[str, Any],
+    explicit_sequences: Any = None,
+) -> dict[str, list[dict[str, float]]]:
+    """Return a complete, validated maneuver set owned by one AVIS profile."""
+    source = (
+        explicit_sequences
+        if explicit_sequences is not None
+        else settings.get(
+            "city_maneuver_sequences_json",
+            DEFAULT_AVIS_SETTINGS["city_maneuver_sequences_json"],
+        )
+    )
+    sequences = parse_city_maneuver_sequences(source)
+    defaults = parse_city_maneuver_sequences(DEFAULT_CITY_MANEUVER_SEQUENCES)
+    unsupported = sorted(set(sequences) - set(defaults))
+    if unsupported:
+        raise ValueError(
+            "Unsupported city maneuver sequence(s): " + ", ".join(unsupported)
+        )
+    return {route: sequences.get(route, defaults[route]) for route in defaults}
+
+
 _NUMERIC_LIMITS: dict[str, tuple[float, float, bool]] = {
     "control_loop_hz": (10.0, 60.0, False),
     "model_image_size": (160.0, 2048.0, True),
@@ -522,12 +545,24 @@ class AvisDashboardState:
                             settings = validate_avis_settings(
                                 dict(DEFAULT_AVIS_SETTINGS), saved_settings
                             )
+                            maneuvers = _profile_maneuver_sequences(
+                                settings, entry.get("maneuvers")
+                            )
+                            settings = validate_avis_settings(
+                                settings,
+                                {
+                                    "city_maneuver_sequences_json": json.dumps(
+                                        maneuvers, indent=2
+                                    )
+                                },
+                            )
                         except (TypeError, ValueError):
                             continue
                         loaded[self._profile_key(name)] = {
                             "schema_version": 1,
                             "name": name,
                             "settings": settings,
+                            "maneuvers": maneuvers,
                             "saved_at": entry.get("saved_at"),
                         }
             except (OSError, json.JSONDecodeError, TypeError) as exc:
@@ -535,10 +570,16 @@ class AvisDashboardState:
 
         default_key = self._profile_key(self._default_profile_name)
         if default_key not in loaded:
+            default_settings = dict(self._settings)
+            default_maneuvers = _profile_maneuver_sequences(default_settings)
+            default_settings["city_maneuver_sequences_json"] = json.dumps(
+                default_maneuvers, indent=2
+            )
             loaded[default_key] = {
                 "schema_version": 1,
                 "name": self._default_profile_name,
-                "settings": dict(self._settings),
+                "settings": default_settings,
+                "maneuvers": default_maneuvers,
                 "saved_at": None,
             }
         self._profiles = loaded
@@ -590,10 +631,16 @@ class AvisDashboardState:
     def save_profile(self, name: Any) -> dict[str, Any]:
         normalized = self._normalize_profile_name(name)
         with self._lock:
+            settings = dict(self._settings)
+            maneuvers = _profile_maneuver_sequences(settings)
+            settings["city_maneuver_sequences_json"] = json.dumps(
+                maneuvers, indent=2
+            )
             profile = {
                 "schema_version": 1,
                 "name": normalized,
-                "settings": dict(self._settings),
+                "settings": settings,
+                "maneuvers": maneuvers,
                 "saved_at": time.time(),
             }
             self._profiles[self._profile_key(normalized)] = profile
@@ -615,13 +662,25 @@ class AvisDashboardState:
         compatible_settings.pop("city_pedestrian_stop_enabled", None)
         compatible_settings.pop("city_pedestrian_stop_seconds", None)
         compatible_settings = _migrate_legacy_lane_change_tuning(compatible_settings)
+        if document.get("maneuvers") is not None:
+            compatible_settings["city_maneuver_sequences_json"] = json.dumps(
+                _profile_maneuver_sequences(
+                    compatible_settings, document.get("maneuvers")
+                ),
+                indent=2,
+            )
         validated = validate_avis_settings(
             dict(DEFAULT_AVIS_SETTINGS), compatible_settings
+        )
+        maneuvers = _profile_maneuver_sequences(validated)
+        validated["city_maneuver_sequences_json"] = json.dumps(
+            maneuvers, indent=2
         )
         profile = {
             "schema_version": 1,
             "name": normalized,
             "settings": validated,
+            "maneuvers": maneuvers,
             "saved_at": document.get("saved_at") or time.time(),
         }
         with self._lock:
@@ -639,7 +698,14 @@ class AvisDashboardState:
     def load_profile(self, name: Any) -> dict[str, Any]:
         normalized = self._normalize_profile_name(name)
         profile = self.get_profile(normalized)
-        settings = self.update_settings(profile["settings"], persist=True)
+        profile_settings = dict(profile["settings"])
+        profile_settings["city_maneuver_sequences_json"] = json.dumps(
+            _profile_maneuver_sequences(
+                profile_settings, profile.get("maneuvers")
+            ),
+            indent=2,
+        )
+        settings = self.update_settings(profile_settings, persist=True)
         with self._lock:
             self._active_profile_name = normalized
             self._persist_profiles_locked()
