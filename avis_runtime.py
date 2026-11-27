@@ -4596,7 +4596,9 @@ def run_avis(args: argparse.Namespace) -> int:
                         target_speed = 0.0
                         coasting = False
                         remaining = float(city_junction_state.get("dwell_remaining_seconds", 0.0))
-                        if city_junction_state.get("phase") == "STOPPED":
+                        if city_junction_state.get("phase") == "MANEUVER_TIMEOUT":
+                            status = "CITY / MANEUVER DISTANCE TIMEOUT · STOPPING"
+                        elif city_junction_state.get("phase") == "STOPPED":
                             status = "CITY / STOP SIGN · TERMINAL STOP"
                         elif city_junction_state.get("waiting_for_stop"):
                             status = (
