@@ -855,7 +855,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
 .header-status{display:flex;justify-content:flex-end;align-items:center;gap:8px;flex-wrap:wrap}
 .status-pill{display:inline-flex;align-items:center;gap:8px;border:1px solid #2a4059;background:#102137;border-radius:999px;padding:7px 11px;color:#b5c9dc;font-size:10px}
 .right-panel{min-width:0;position:sticky;top:90px;max-height:calc(100vh - 106px);overflow:auto;scrollbar-width:thin;scrollbar-color:#35516d transparent}
-.panel-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;padding:6px;background:#0b1726;border:1px solid #263b52;border-radius:12px;margin-bottom:12px;position:sticky;top:0;z-index:3}
+.panel-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;padding:6px;background:#0b1726;border:1px solid #263b52;border-radius:12px;margin-bottom:12px;position:sticky;top:0;z-index:3}
 .panel-tab{min-width:0;border:1px solid transparent;border-radius:8px;background:transparent;color:#91a8bf;padding:10px 7px;font:650 11px inherit;cursor:pointer}
 .panel-tab:hover{color:#e9f1fb;background:#172b41}
 .panel-tab.active{color:#b9efff;background:#123b54;border-color:#42a9d4}
@@ -867,7 +867,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
 .roi-editor-wrap{background:#030812}
 .roi-editor-wrap canvas{outline:0}
 @media(max-width:980px){.grid{grid-template-columns:1fr}.topline{align-items:start;flex-direction:column}.metrics{grid-template-columns:repeat(2,1fr)}.right-panel{position:static;max-height:none;overflow:visible}}
-@media(max-width:560px){header{padding:13px 14px}.brand h1{font-size:14px}.status{font-size:10px}.header-status{justify-content:flex-start}.views{grid-template-columns:1fr}.manual-grid,.fields{grid-template-columns:1fr}.panel{padding:13px}.metric strong{font-size:17px}.panel-tabs{position:static}}
+@media(max-width:560px){header{padding:13px 14px}.brand h1{font-size:14px}.status{font-size:10px}.header-status{justify-content:flex-start}.views{grid-template-columns:1fr}.manual-grid,.fields{grid-template-columns:1fr}.panel{padding:13px}.metric strong{font-size:17px}.panel-tabs{position:static;grid-template-columns:repeat(2,minmax(0,1fr))}}
 /* AVIS performance telemetry */
 .fps-metrics{grid-template-columns:repeat(3,minmax(0,1fr));margin-top:-6px}
 .fps-metrics .metric{padding:9px 11px}
@@ -886,6 +886,28 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
 .model-history-row span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .model-history-row .history-obstacle-yes{color:#ff7b8e}.model-history-row .history-obstacle-no{color:#68dfa7}
 .model-history-row .history-lane-left{color:#80e4ff}.model-history-row .history-lane-right{color:#f2c879}
+.maneuver-route-tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:7px;margin:12px 0}
+.maneuver-route-tab{border:1px solid #304761;border-radius:9px;background:#0b1726;color:#9bb1c7;padding:10px 5px;font:700 10px inherit;cursor:pointer}
+.maneuver-route-tab.active{background:#123b54;border-color:#42bde9;color:#c3f2ff}
+.maneuver-route-tab small{display:block;font-size:9px;font-weight:500;color:inherit;opacity:.75;margin-top:3px}
+.maneuver-editor-summary{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:12px;border:1px solid #28415a;border-radius:11px;background:#0b1726;margin:12px 0}
+.maneuver-editor-summary strong{font-size:13px;color:#d9e9f8}
+.maneuver-editor-summary span{font-size:10px;color:#91a8bf}
+.maneuver-steps{display:grid;gap:9px;margin-top:12px}
+.maneuver-step{display:grid;grid-template-columns:42px minmax(90px,.85fr) minmax(180px,1.4fr) auto;gap:10px;align-items:center;padding:12px;border:1px solid #2a4059;border-radius:11px;background:#0a1421}
+.maneuver-step-index{font-size:11px;font-weight:800;color:#8faecb;text-align:center}
+.maneuver-step-distance label,.maneuver-step-steering label{display:block;color:#9cb2c8;font-size:10px;margin-bottom:6px}
+.maneuver-step-distance input,.maneuver-step-steering input[type=number]{width:100%;background:#07111e;border:1px solid #2b4058;border-radius:8px;padding:8px;color:#eaf3fb;font:12px inherit}
+.maneuver-step-steering{display:grid;grid-template-columns:minmax(0,1fr) 76px;gap:9px;align-items:center}
+.maneuver-step-steering input[type=range]{width:100%;accent-color:#43b7e4}
+.maneuver-step-actions{display:flex;gap:4px;align-items:center}
+.maneuver-step-actions button{width:29px;height:29px;border:1px solid #304761;border-radius:7px;background:#15263a;color:#c3d7e8;cursor:pointer}
+.maneuver-step-actions button:disabled{opacity:.3;cursor:not-allowed}
+.maneuver-step-actions .remove{color:#ff9cac;border-color:#6e3948}
+.maneuver-add-step{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.maneuver-editor-footer{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:15px}
+.maneuver-editor-message{font-size:11px;color:#78d9a8;min-height:16px}
+@media(max-width:640px){.maneuver-route-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}.maneuver-step{grid-template-columns:30px 1fr;gap:9px}.maneuver-step-steering{grid-column:2;grid-template-columns:minmax(0,1fr) 70px}.maneuver-step-actions{grid-column:2;justify-content:flex-end}}
 .model-history-empty{padding:12px;border:1px dashed #30455e;border-radius:9px;color:#8198b2;font-size:12px;text-align:center}
 @media(max-width:560px){.model-prediction-grid{grid-template-columns:1fr 1fr}.model-prediction-card:last-child{grid-column:1/-1}.model-history-row{grid-template-columns:.6fr 1fr 1fr}.model-history-row span:last-child{display:none}}
 </style>
@@ -914,6 +936,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
       <nav class="panel-tabs" aria-label="AVIS runtime workspace">
         <button type="button" class="panel-tab active" data-panel="live">Live monitor</button>
         <button type="button" class="panel-tab" data-panel="settings">Settings</button>
+        <button type="button" class="panel-tab" data-panel="maneuvers">Maneuvers</button>
         <button type="button" class="panel-tab" data-panel="roi">ROI tools</button>
       </nav>
       <section class="panel-content active" id="panel-live">
@@ -1052,8 +1075,8 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
           <div class="field"><label for="city_maneuver_speed_kmh">Maneuver speed (km/h)</label><input id="city_maneuver_speed_kmh" data-setting="city_maneuver_speed_kmh" type="number" min="1" max="40" step=".5"></div>
           <div class="field"><label for="city_maneuver_segment_timeout_seconds">Per-segment timeout (s)</label><input id="city_maneuver_segment_timeout_seconds" data-setting="city_maneuver_segment_timeout_seconds" type="number" min="1" max="120" step="1"></div>
           <div class="field full"><label for="city_junction_sign_class_order_json">Class order when ONNX has no embedded class names</label><textarea id="city_junction_sign_class_order_json" data-setting="city_junction_sign_class_order_json" rows="2" spellcheck="false"></textarea></div>
-          <div class="field full"><label for="city_maneuver_sequences_json">Maneuver sequences (JSON editor)</label><textarea id="city_maneuver_sequences_json" data-setting="city_maneuver_sequences_json" rows="16" spellcheck="false"></textarea></div>
-          <div class="field full"><div class="hint">Each sequence is an ordered list of distance_m and steering_value steps. Add, remove or reorder JSON entries to customize RIGHT, LEFT, STRAIGHT, RIGHT_90 and LEFT_90 independently. Values use CARLA's normalized steering range: negative = left, positive = right. STOP never runs a maneuver. RIGHT/LEFT/STRAIGHT wait for the configured crosswalk dwell; 90R/90L brake as soon as the crosswalk is detected and start their own sequence immediately after the vehicle stops.</div></div>
+          <textarea id="city_maneuver_sequences_json" data-setting="city_maneuver_sequences_json" hidden></textarea>
+          <div class="field full"><div class="hint">Edit each route's ordered distance and steering steps in the dedicated Maneuvers tab. STOP is a terminal hold and has no movement sequence.</div></div>
         </div>
         <div class="section-label">Return to the right lane</div>
         <div class="hint">After the model confirms the vehicle has entered the left lane, AVIS travels exactly 4 metres, then starts the right-lane change. The return uses the same model-confirmed steering pulse, pause, and gentler retry sequence as the initial move to the left. Right-side sensor readings and sensor timeouts do not control this return.</div>
@@ -1127,6 +1150,33 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
         <div class="actions"><button class="btn save" type="submit">Apply and save settings</button><span class="message" id="settingsMessage"></span></div>
       </form>
       </section>
+      <section class="panel-content" id="panel-maneuvers">
+        <div class="panel">
+          <div class="panel-head"><h3>City junction maneuver editor</h3><span class="tag">Distance · steering · sequence</span></div>
+          <div class="hint">Create the exact ordered movement for each sign type. Each step keeps its steering command until the configured distance has been travelled, then advances to the next step. Use the arrows to reorder steps; the same sequences are saved in AVIS local/GitHub profiles.</div>
+          <div class="maneuver-route-tabs" id="maneuverRouteTabs" role="tablist" aria-label="Maneuver type">
+            <button type="button" class="maneuver-route-tab" data-maneuver-route="STRAIGHT">STRAIGHT<small>Go ahead</small></button>
+            <button type="button" class="maneuver-route-tab" data-maneuver-route="LEFT">LEFT<small>Normal left</small></button>
+            <button type="button" class="maneuver-route-tab" data-maneuver-route="RIGHT">RIGHT<small>Normal right</small></button>
+            <button type="button" class="maneuver-route-tab" data-maneuver-route="LEFT_90">LEFT 90°<small>Sharp left</small></button>
+            <button type="button" class="maneuver-route-tab" data-maneuver-route="RIGHT_90">RIGHT 90°<small>Sharp right</small></button>
+          </div>
+          <div class="maneuver-editor-summary">
+            <div><strong id="maneuverRouteTitle">STRAIGHT</strong><div><span id="maneuverRouteDescription">Straight-through sequence</span></div></div>
+            <span id="maneuverStepCount">1 step</span>
+          </div>
+          <div class="maneuver-steps" id="maneuverSteps" aria-live="polite"></div>
+          <div class="maneuver-add-step">
+            <button class="btn save" type="button" id="addManeuverStepButton">＋ Add step</button>
+            <button class="btn" type="button" id="resetManeuverSequenceButton">Reset this route</button>
+          </div>
+          <div class="maneuver-editor-footer">
+            <span class="hint">Steering: −1.00 = full left · 0.00 = straight · +1.00 = full right. Distance is measured from AVIS speed × elapsed time.</span>
+            <button class="btn save" type="button" id="applyManeuversButton">Apply &amp; save maneuver settings</button>
+            <span class="maneuver-editor-message" id="maneuverEditorMessage" aria-live="polite"></span>
+          </div>
+        </div>
+      </section>
       <section class="panel-content" id="panel-roi">
         <div class="panel">
           <div class="panel-head"><h3>Lane ROI calibration</h3><span class="tag">LL / RL</span></div>
@@ -1161,6 +1211,22 @@ let currentMode = "auto";
 let manualThrottle = 0;
 let manualSteering = 0;
 const settingInputs = Array.from(document.querySelectorAll("[data-setting]"));
+const DEFAULT_MANEUVER_SEQUENCES = {
+  STRAIGHT: [{distance_m:6.0,steering_value:0.0}],
+  LEFT: [{distance_m:20.0,steering_value:0.0},{distance_m:4.0,steering_value:-0.5}],
+  RIGHT: [{distance_m:6.0,steering_value:0.0},{distance_m:5.0,steering_value:0.65}],
+  LEFT_90: [{distance_m:20.0,steering_value:0.0},{distance_m:4.0,steering_value:-0.5}],
+  RIGHT_90: [{distance_m:6.0,steering_value:0.0},{distance_m:5.0,steering_value:0.65}]
+};
+const MANEUVER_ROUTE_DESCRIPTIONS = {
+  STRAIGHT:"Straight-through sequence",
+  LEFT:"Normal left turn",
+  RIGHT:"Normal right turn",
+  LEFT_90:"Sharp 90-degree left turn",
+  RIGHT_90:"Sharp 90-degree right turn"
+};
+let maneuverSequences = JSON.parse(JSON.stringify(DEFAULT_MANEUVER_SEQUENCES));
+let selectedManeuverRoute = "STRAIGHT";
 const roiCanvas = $("roiCanvas");
 const roiSource = $("roiSource");
 const roiContext = roiCanvas ? roiCanvas.getContext("2d") : null;
@@ -1406,6 +1472,7 @@ Object.values(ROI_GROUPS).flatMap(group=>group.keys).forEach(key=>{
 window.addEventListener("resize",drawROIOverlays);
 setInterval(drawROIOverlays,120);
 selectROI("LL");
+renderManeuverEditor();
 function showMessage(text, isError) {
   $("settingsMessage").textContent = text;
   $("settingsMessage").style.color = isError ? "#ff8a9d" : "#68dfa7";
@@ -1436,7 +1503,75 @@ function fillSettings(settings) {
     }
   });
   updateBackendVisibility(settings.vision_backend);
+  loadManeuverSequences(settings.city_maneuver_sequences_json);
   drawROIOverlays();
+}
+function normalizeManeuverSequences(raw) {
+  const result = {};
+  for (const route of Object.keys(DEFAULT_MANEUVER_SEQUENCES)) {
+    const source = Array.isArray(raw?.[route]) ? raw[route] : DEFAULT_MANEUVER_SEQUENCES[route];
+    result[route] = source.filter(step => step && Number.isFinite(Number(step.distance_m)) && Number(step.distance_m) > 0)
+      .map(step => ({
+        distance_m: Number(step.distance_m),
+        steering_value: Math.max(-1, Math.min(1, Number(step.steering_value) || 0))
+      }));
+    if (!result[route].length) result[route] = JSON.parse(JSON.stringify(DEFAULT_MANEUVER_SEQUENCES[route]));
+  }
+  return result;
+}
+function loadManeuverSequences(raw) {
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    maneuverSequences = normalizeManeuverSequences(parsed);
+  } catch (_) {
+    maneuverSequences = JSON.parse(JSON.stringify(DEFAULT_MANEUVER_SEQUENCES));
+  }
+  syncManeuverSettingField();
+  renderManeuverEditor();
+}
+function syncManeuverSettingField() {
+  const field = $("city_maneuver_sequences_json");
+  if (field) field.value = JSON.stringify(maneuverSequences, null, 2);
+}
+function markManeuverSettingsDirty(message = "Maneuver edits not saved yet.") {
+  settingsEditRevision += 1;
+  $("settingsForm").dataset.dirty = "true";
+  $("maneuverEditorMessage").textContent = message;
+  $("maneuverEditorMessage").style.color = "#f0c875";
+}
+function renderManeuverEditor() {
+  const list = $("maneuverSteps");
+  if (!list) return;
+  document.querySelectorAll("[data-maneuver-route]").forEach(button =>
+    button.classList.toggle("active", button.dataset.maneuverRoute === selectedManeuverRoute)
+  );
+  const steps = maneuverSequences[selectedManeuverRoute] || [];
+  $("maneuverRouteTitle").textContent = selectedManeuverRoute.replace("_", " ");
+  $("maneuverRouteDescription").textContent = MANEUVER_ROUTE_DESCRIPTIONS[selectedManeuverRoute];
+  $("maneuverStepCount").textContent = steps.length + (steps.length === 1 ? " step" : " steps");
+  list.replaceChildren();
+  steps.forEach((step, index) => {
+    const row = document.createElement("div");
+    row.className = "maneuver-step";
+    row.innerHTML = `
+      <div class="maneuver-step-index">#${index + 1}</div>
+      <div class="maneuver-step-distance">
+        <label for="maneuverDistance${index}">Distance (m)</label>
+        <input id="maneuverDistance${index}" type="number" min="0.1" max="500" step="0.1" value="${Number(step.distance_m).toFixed(1)}" data-maneuver-field="distance_m" data-maneuver-index="${index}">
+      </div>
+      <div class="maneuver-step-steering">
+        <div><label for="maneuverSteeringRange${index}">Steering value</label>
+          <input id="maneuverSteeringRange${index}" type="range" min="-1" max="1" step="0.01" value="${Number(step.steering_value).toFixed(2)}" data-maneuver-field="steering_value" data-maneuver-index="${index}">
+        </div>
+        <input aria-label="Steering value as a number" type="number" min="-1" max="1" step="0.01" value="${Number(step.steering_value).toFixed(2)}" data-maneuver-field="steering_value" data-maneuver-index="${index}">
+      </div>
+      <div class="maneuver-step-actions">
+        <button type="button" title="Move step up" aria-label="Move step up" data-maneuver-action="up" data-maneuver-index="${index}" ${index===0?"disabled":""}>↑</button>
+        <button type="button" title="Move step down" aria-label="Move step down" data-maneuver-action="down" data-maneuver-index="${index}" ${index===steps.length-1?"disabled":""}>↓</button>
+        <button class="remove" type="button" title="Remove step" aria-label="Remove step" data-maneuver-action="remove" data-maneuver-index="${index}" ${steps.length===1?"disabled":""}>×</button>
+      </div>`;
+    list.appendChild(row);
+  });
 }
 function collectSettings() {
   const result = {};
@@ -1459,6 +1594,72 @@ function collectSettings() {
   });
   return result;
 }
+const maneuverRouteTabs = $("maneuverRouteTabs");
+if (maneuverRouteTabs) maneuverRouteTabs.addEventListener("click", event => {
+  const button = event.target.closest("[data-maneuver-route]");
+  if (!button) return;
+  selectedManeuverRoute = button.dataset.maneuverRoute;
+  renderManeuverEditor();
+});
+$("maneuverSteps").addEventListener("input", event => {
+  const input = event.target.closest("[data-maneuver-field]");
+  if (!input) return;
+  const index = Number(input.dataset.maneuverIndex);
+  const field = input.dataset.maneuverField;
+  const value = Number(input.value);
+  if (!Number.isFinite(value)) return;
+  if (field === "distance_m") {
+    maneuverSequences[selectedManeuverRoute][index].distance_m = Math.max(0.1, Math.min(500, value));
+  } else {
+    const clamped = Math.max(-1, Math.min(1, value));
+    maneuverSequences[selectedManeuverRoute][index].steering_value = clamped;
+    $("maneuverSteps").querySelectorAll(`[data-maneuver-field="steering_value"][data-maneuver-index="${index}"]`).forEach(peer => {
+      if (peer !== input) peer.value = clamped.toFixed(2);
+    });
+  }
+  syncManeuverSettingField();
+  markManeuverSettingsDirty();
+});
+$("maneuverSteps").addEventListener("click", event => {
+  const button = event.target.closest("[data-maneuver-action]");
+  if (!button || button.disabled) return;
+  const index = Number(button.dataset.maneuverIndex);
+  const steps = maneuverSequences[selectedManeuverRoute];
+  const action = button.dataset.maneuverAction;
+  if (action === "remove") {
+    if (steps.length <= 1) return;
+    steps.splice(index, 1);
+  } else if (action === "up" && index > 0) {
+    [steps[index - 1], steps[index]] = [steps[index], steps[index - 1]];
+  } else if (action === "down" && index < steps.length - 1) {
+    [steps[index + 1], steps[index]] = [steps[index], steps[index + 1]];
+  }
+  syncManeuverSettingField();
+  renderManeuverEditor();
+  markManeuverSettingsDirty();
+});
+$("addManeuverStepButton").addEventListener("click", () => {
+  const steps = maneuverSequences[selectedManeuverRoute];
+  steps.push({
+    distance_m: 2.0,
+    steering_value: steps.length ? steps[steps.length - 1].steering_value : 0.0
+  });
+  syncManeuverSettingField();
+  renderManeuverEditor();
+  markManeuverSettingsDirty("New maneuver step added.");
+});
+$("resetManeuverSequenceButton").addEventListener("click", () => {
+  maneuverSequences[selectedManeuverRoute] = JSON.parse(
+    JSON.stringify(DEFAULT_MANEUVER_SEQUENCES[selectedManeuverRoute])
+  );
+  syncManeuverSettingField();
+  renderManeuverEditor();
+  markManeuverSettingsDirty("Reset " + selectedManeuverRoute + " to its default sequence.");
+});
+$("applyManeuversButton").addEventListener("click", () => {
+  syncManeuverSettingField();
+  $("settingsForm").requestSubmit();
+});
 async function postJson(url, payload) {
   const response = await fetch(url, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
   const data = await response.json();
