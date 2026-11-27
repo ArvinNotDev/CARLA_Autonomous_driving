@@ -481,6 +481,33 @@ def load_avis_profile(path: Path | str | None = None) -> dict[str, Any]:
     return selected
 
 
+def load_avis_mode_profile(mode: str) -> dict[str, Any]:
+    """Load the committed, mode-specific AVIS profile from avis_profiles/."""
+    selected_mode = str(mode or "road").strip().lower()
+    if selected_mode not in {"road", "city"}:
+        raise ValueError("AVIS mode must be either 'road' or 'city'.")
+
+    profile_name = f"{AVIS_PROFILE_NAME}-{selected_mode}"
+    profile_path = PROJECT_ROOT / "avis_profiles" / f"{profile_name}.json"
+    try:
+        document = json.loads(profile_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"Could not read the AVIS {selected_mode} profile: {profile_path}"
+        ) from exc
+
+    if not isinstance(document, dict) or document.get("schema_version", 1) != 1:
+        raise RuntimeError(f"AVIS profile '{profile_name}' has an unsupported schema.")
+    if str(document.get("name", "")).strip() != profile_name:
+        raise RuntimeError(
+            f"AVIS profile '{profile_name}' has an unexpected or missing profile name."
+        )
+    settings = document.get("settings")
+    if not isinstance(settings, dict) or not settings:
+        raise RuntimeError(f"AVIS profile '{profile_name}' has no settings object.")
+    return {"name": profile_name, "settings": dict(settings)}
+
+
 def apply_avis_profile(profile: dict[str, Any], config_module: ModuleType) -> None:
     for key in AVIS_PROFILE_FIELDS:
         if key in profile:
@@ -1565,6 +1592,142 @@ class AvisCombinedVisionProcessor:
         return combined
 
 
+class AvisCityPedestrianStopController:
+    """Stop for a confirmed obstacle, hold for a minimum dwell, then require clear frames."""
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self._enabled = False
+        self._active = False
+        self._started_at: float | None = None
+        self._last_observation_id: Any = None
+        self._confirm_frames = 0
+        self._clear_frames = 0
+        self._last_probability: float | None = None
+        self._last_label: str | None = None
+        self._reason = "disabled"
+        self._just_activated = False
+
+    def snapshot(self, *, now: float | None = None, hold_seconds: float = 5.0) -> dict[str, Any]:
+        current = time.perf_counter() if now is None else float(now)
+        required = max(0.0, float(hold_seconds))
+        elapsed = (
+            max(0.0, current - self._started_at)
+            if self._active and self._started_at is not None else 0.0
+        )
+        return {
+            "enabled": bool(self._enabled),
+            "active": bool(self._active),
+            "reason": self._reason,
+            "elapsed_seconds": float(elapsed),
+            "required_seconds": float(required),
+            "remaining_seconds": float(max(0.0, required - elapsed)) if self._active else 0.0,
+            "confirm_frames": int(self._confirm_frames),
+            "clear_frames": int(self._clear_frames),
+            "obstacle_probability": self._last_probability,
+            "obstacle_label": self._last_label,
+            "just_activated": bool(self._just_activated),
+        }
+
+    def update(
+        self,
+        classifier_output: dict[str, Any] | None,
+        *,
+        enabled: bool,
+        hold_seconds: float = 5.0,
+        confidence_threshold: float = 0.90,
+        confirm_frames: int = 3,
+        clear_frames: int = 3,
+        observation_id: Any = None,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        current = time.perf_counter() if now is None else float(now)
+        if not math.isfinite(current):
+            current = time.perf_counter()
+        self._just_activated = False
+        required_seconds = max(0.0, float(hold_seconds))
+
+        if not enabled:
+            self.reset()
+            return self.snapshot(now=current, hold_seconds=required_seconds)
+
+        self._enabled = True
+        threshold = min(1.0, max(0.0, float(confidence_threshold)))
+        required_confirm = max(1, int(confirm_frames))
+        required_clear = max(1, int(clear_frames))
+
+        if observation_id is not None and observation_id != self._last_observation_id:
+            self._last_observation_id = observation_id
+            obstacle = (
+                classifier_output.get("obstacle_ahead", {})
+                if isinstance(classifier_output, dict) else {}
+            )
+            probabilities = (
+                obstacle.get("probabilities", {})
+                if isinstance(obstacle, dict) else {}
+            )
+            try:
+                yes_probability = float(probabilities.get("yes", 0.0))
+                no_probability = float(probabilities.get("no", 0.0))
+            except (TypeError, ValueError):
+                yes_probability = no_probability = float("nan")
+            label = str(obstacle.get("label", "")).strip().lower() if isinstance(obstacle, dict) else ""
+            valid = (
+                bool(classifier_output.get("valid"))
+                and math.isfinite(yes_probability)
+                and math.isfinite(no_probability)
+                and 0.0 <= yes_probability <= 1.0
+                and 0.0 <= no_probability <= 1.0
+                and label in {"yes", "no"}
+            )
+
+            if valid:
+                self._last_probability = yes_probability
+                self._last_label = label
+                if label == "yes" and yes_probability >= threshold:
+                    self._confirm_frames += 1
+                    self._clear_frames = 0
+                    if not self._active and self._confirm_frames >= required_confirm:
+                        self._active = True
+                        self._started_at = current
+                        self._just_activated = True
+                        self._reason = "obstacle_confirmed_minimum_wait_started"
+                elif label == "no" and no_probability >= threshold:
+                    self._confirm_frames = 0
+                    if self._active:
+                        self._clear_frames += 1
+                    else:
+                        self._clear_frames = 0
+                else:
+                    # Ambiguous/low-confidence output is neither a positive nor
+                    # a confirmed clear observation; do not release the vehicle.
+                    self._confirm_frames = 0
+
+        if self._active:
+            elapsed = (
+                max(0.0, current - self._started_at)
+                if self._started_at is not None else 0.0
+            )
+            if elapsed >= required_seconds and self._clear_frames >= required_clear:
+                self._active = False
+                self._started_at = None
+                self._confirm_frames = 0
+                self._clear_frames = 0
+                self._reason = "obstacle_cleared_after_minimum_wait"
+            elif elapsed < required_seconds:
+                self._reason = "minimum_wait_in_progress"
+            else:
+                self._reason = "waiting_for_confirmed_clear"
+        elif self._confirm_frames:
+            self._reason = "obstacle_confirmation_pending"
+        else:
+            self._reason = "clear"
+
+        return self.snapshot(now=current, hold_seconds=required_seconds)
+
+
 class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
     """Model-triggered lane changes with a fixed 4 m return distance."""
 
@@ -2291,6 +2454,15 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run the existing StableV2 vision/PID driving pipeline on AVIS Engine."
     )
     parser.add_argument("--avis", action="store_true", help="Select the AVIS Engine runtime.")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--road", dest="avis_mode", action="store_const", const="road",
+        help="Run AVIS with the independent road profile (the default).",
+    )
+    mode_group.add_argument(
+        "--city", dest="avis_mode", action="store_const", const="city",
+        help="Run AVIS with the independent city profile.",
+    )
     parser.add_argument(
         "--avis-host",
         default=os.environ.get("AVIS_HOST", "127.0.0.1"),
@@ -2882,6 +3054,7 @@ def run_avis(args: argparse.Namespace) -> int:
 
         profile = load_avis_profile()
         apply_avis_profile(profile, conf)
+        mode_profile = load_avis_mode_profile(args.avis_mode)
 
         # Load the vendor API before project modules that may use a local
         # package with the same top-level utility-module name.
@@ -2893,11 +3066,17 @@ def run_avis(args: argparse.Namespace) -> int:
         from trajectory.worker import InferenceWorker
 
         cv2_module = cv2
-        print(f"[AVIS] Loading AVIS-specific profile: {AVIS_PROFILE_NAME}")
-
+        print(
+            f"[AVIS] Mode: {args.avis_mode.upper()} · "
+            f"profile: {mode_profile['name']}"
+        )
+        initial_settings = _build_avis_settings(conf, args.avis_sensor_angle)
+        initial_settings.update(mode_profile["settings"])
         dashboard_state = AvisDashboardState(
-            initial_settings=_build_avis_settings(conf, args.avis_sensor_angle),
-            settings_path=PROJECT_ROOT / "avis_settings.json",
+            initial_settings=initial_settings,
+            settings_path=PROJECT_ROOT / f"avis_settings_{args.avis_mode}.json",
+            profile_path=PROJECT_ROOT / f"avis_profiles_{args.avis_mode}_local.json",
+            default_profile_name=mode_profile["name"],
         )
         settings, settings_revision = dashboard_state.settings_snapshot()
         _apply_avis_roi_settings(conf, settings)
@@ -2921,8 +3100,11 @@ def run_avis(args: argparse.Namespace) -> int:
                 adaptive_roi_controller=adaptive_roi_controller,
             )
         except (FileNotFoundError, ImportError, OSError) as exc:
-            if settings["vision_backend"] != "ultralytics":
-                raise
+            if settings["vision_backend"] != "ultralytics" or args.avis_mode == "city":
+                raise RuntimeError(
+                    "City mode requires its configured Ultralytics lane model; "
+                    "it will not silently switch to classical line detection."
+                ) from exc
             print(
                 "[AVIS] Ultralytics lane model is unavailable "
                 "(including a possible Windows CUDA/cuDNN DLL error); "
@@ -2969,6 +3151,7 @@ def run_avis(args: argparse.Namespace) -> int:
             max_speed_kmh=float(settings["max_speed_kmh"]),
         )
         obstacle_lane_change = AvisModelObstacleLaneChangeController()
+        city_pedestrian_stop_controller = AvisCityPedestrianStopController()
         drivable_recovery_controller = AvisDrivableAreaRecoveryController()
 
         if not bool(settings["auto_mode_default"]):
@@ -3343,8 +3526,11 @@ def run_avis(args: argparse.Namespace) -> int:
                     debug_data = {}
                 lane_change_state = obstacle_lane_change.snapshot(sensors)
                 drivable_recovery_state = drivable_recovery_controller.snapshot()
+                city_pedestrian_stop_state = city_pedestrian_stop_controller.snapshot()
 
                 if drive_mode == "manual":
+                    city_pedestrian_stop_controller.reset()
+                    city_pedestrian_stop_state = city_pedestrian_stop_controller.snapshot()
                     drivable_recovery_state = drivable_recovery_controller.update(
                         None,
                         observation_id=None,
@@ -3362,6 +3548,8 @@ def run_avis(args: argparse.Namespace) -> int:
                         else "MANUAL / INPUT TIMED OUT - ZERO THROTTLE"
                     )
                 elif drive_mode == "stopped":
+                    city_pedestrian_stop_controller.reset()
+                    city_pedestrian_stop_state = city_pedestrian_stop_controller.snapshot()
                     drivable_recovery_state = drivable_recovery_controller.update(
                         None,
                         observation_id=None,
@@ -3382,6 +3570,21 @@ def run_avis(args: argparse.Namespace) -> int:
                         result_fresh = result_age <= max(
                             0.75, inference_interval * 8.0
                         )
+
+                    city_pedestrian_stop_state = city_pedestrian_stop_controller.update(
+                        vision_data.get("obstacle_classifier") if result_fresh else None,
+                        enabled=bool(current_settings.get("city_pedestrian_stop_enabled", False)),
+                        hold_seconds=float(current_settings.get("city_pedestrian_stop_seconds", 5.0)),
+                        confidence_threshold=float(
+                            current_settings.get("obstacle_model_confidence_threshold", 0.90)
+                        ),
+                        confirm_frames=int(current_settings.get("obstacle_model_confirm_frames", 3)),
+                        clear_frames=int(current_settings.get("obstacle_model_rearm_frames", 3)),
+                        observation_id=(
+                            last_vision_result.request_id if result_fresh else None
+                        ),
+                        now=time.perf_counter(),
+                    )
 
                     lane_valid = bool(
                         result_fresh
@@ -3569,6 +3772,25 @@ def run_avis(args: argparse.Namespace) -> int:
                             status = "DRIVABLE AREA RECOVERY / LEFT CORRECTION"
                         else:
                             status = "AUTO / COAST" if coasting else "AUTO"
+
+                    if city_pedestrian_stop_state.get("active"):
+                        if city_pedestrian_stop_state.get("just_activated"):
+                            steering_controller.reset()
+                        drivable_recovery_state = drivable_recovery_controller.update(
+                            None,
+                            observation_id=None,
+                            observation_timestamp=None,
+                            enabled=False,
+                            allow_recovery=False,
+                            now=time.perf_counter(),
+                        )
+                        throttle = 0.0
+                        steering = 0.0
+                        target_speed = 0.0
+                        coasting = False
+                        remaining = float(city_pedestrian_stop_state.get("remaining_seconds", 0.0))
+                        status = f"CITY / PEDESTRIAN STOP · {remaining:.1f}s"
+
                     client.send_control(throttle, steering)
 
                 
@@ -3736,6 +3958,19 @@ def run_avis(args: argparse.Namespace) -> int:
                         "obstacle_avoidance_enabled": bool(
                             current_settings.get("obstacle_lane_change_enabled", True)
                         ),
+                        "city_pedestrian_stop_enabled": bool(
+                            current_settings.get("city_pedestrian_stop_enabled", False)
+                        ),
+                        "city_pedestrian_stop_active": bool(
+                            city_pedestrian_stop_state.get("active", False)
+                        ),
+                        "city_pedestrian_stop_reason": city_pedestrian_stop_state.get("reason"),
+                        "city_pedestrian_stop_elapsed_seconds": round(
+                            float(city_pedestrian_stop_state.get("elapsed_seconds", 0.0)), 2
+                        ),
+                        "city_pedestrian_stop_remaining_seconds": round(
+                            float(city_pedestrian_stop_state.get("remaining_seconds", 0.0)), 2
+                        ),
                         "obstacle_lane_probability": lane_change_state.get("obstacle_lane_probability"),
                         "obstacle_lane_prediction": lane_change_state.get("obstacle_lane_prediction"),
                         "obstacle_lane_confidence": lane_change_state.get("obstacle_lane_confidence"),
@@ -3840,8 +4075,11 @@ def run_avis(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.avis_mode is not None:
+        args.avis = True
+    args.avis_mode = args.avis_mode or "road"
     if not args.avis:
-        print("AVIS mode requires --avis.")
+        print("AVIS mode requires --avis (or an explicit --road / --city mode).")
         return 2
     if not 1 <= args.avis_port <= 65535:
         print("[AVIS] Port must be between 1 and 65535.")
