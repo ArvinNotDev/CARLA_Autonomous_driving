@@ -2,7 +2,7 @@
   "schema_version": 1,
   "name": "AVIS_StableV2",
   "settings": {
-    "vision_backend": "classical",
+    "vision_backend": "ultralytics",
     "auto_mode_default": true,
     "lane_model_path": "models_and_datasets/Avis_models/lane_and_drivable-area_model_Avis.pt",
     "obstacle_model_path": "models_and_datasets/Avis_models/obstacle_and_lane_Avis_model.onnx",
@@ -87,5 +87,5 @@
     "adaptive_roi_recovery_frames": 4,
     "adaptive_roi_restore_step_ratio": 0.01
   },
-  "saved_at": 1795764523.4890437
+  "saved_at": 1795768053.1440308
 }
