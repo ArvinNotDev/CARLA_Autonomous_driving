@@ -24,6 +24,7 @@ from avis_runtime import (
     select_avis_lane_change_speed,
     _avis_roi_lock_direction,
     _create_avis_vision_processor,
+    _connect_avis_engine,
 )
 
 from avis_classical_vision import AvisClassicalVisionProcessor
@@ -245,6 +246,46 @@ def test_avis_client_rejects_failed_connection():
 
 
 
+def test_avis_client_marks_connection_lost_when_control_write_fails():
+    class BrokenControlCar(FakeCar):
+        def setSpeed(self, value):
+            raise OSError("AVIS Engine server stopped")
+
+    client = AvisEngineClient(SimpleNamespace(Car=BrokenControlCar), "127.0.0.1", 25001)
+
+    # A failed write is recorded as a disconnected state instead of escaping
+    # into run_avis and terminating the application.
+    client.send_control(0.0, 0.0)
+    assert client.connected is False
+    with pytest.raises(RuntimeError, match="not active"):
+        client.read_data()
+    client.close()
+
+
+def test_avis_client_marks_connection_lost_when_data_read_fails():
+    class BrokenReadCar(FakeCar):
+        def getData(self):
+            raise OSError("AVIS Engine server stopped")
+
+    client = AvisEngineClient(SimpleNamespace(Car=BrokenReadCar), "127.0.0.1", 25001)
+
+    with pytest.raises(OSError, match="server stopped"):
+        client.read_data()
+    assert client.connected is False
+    client.close()
+
+
+def test_connect_avis_engine_initializes_controls_and_sensor_angle():
+    api = SimpleNamespace(Car=FakeCar)
+    client = _connect_avis_engine(api, "127.0.0.1", 25001, 35)
+
+    assert client.connected is True
+    assert client.car.sensor_angle == 35
+    assert client.car.speed_commands == [0]
+    assert client.car.steering_commands == [0]
+    client.close()
+
+
 def test_normalize_avis_manual_controls_supports_forward_and_reverse():
     assert normalize_avis_manual_controls(0.5, -0.25) == (50, -25)
     assert normalize_avis_manual_controls(-0.4, 0.6) == (-40, 60)
@@ -270,6 +311,32 @@ def test_avis_dashboard_persists_only_avis_settings_and_validates_updates(tmp_pa
             {"min_speed_kmh": 30, "max_speed_kmh": 20},
             persist=False,
         )
+
+
+def test_avis_dashboard_connection_status_preserves_telemetry_and_stops_values(tmp_path):
+    state = AvisDashboardState(settings_path=tmp_path / "avis_settings.json")
+    state.publish_telemetry(
+        {
+            "connected": True,
+            "status": "AUTO",
+            "speed_kmh": 12.0,
+            "target_speed_kmh": 18.0,
+            "throttle": 0.4,
+            "steering": -0.2,
+            "lane_valid": True,
+        }
+    )
+
+    state.set_connection_status(False, "AVIS Engine disconnected / reconnecting")
+    telemetry = state.snapshot()["telemetry"]
+
+    assert telemetry["connected"] is False
+    assert telemetry["status"] == "AVIS Engine disconnected / reconnecting"
+    assert telemetry["speed_kmh"] == 0.0
+    assert telemetry["target_speed_kmh"] == 0.0
+    assert telemetry["throttle"] == 0.0
+    assert telemetry["steering"] == 0.0
+    assert telemetry["lane_valid"] is False
 
 
 def test_avis_dashboard_manual_api_accepts_reverse_and_emergency_stop(tmp_path):
