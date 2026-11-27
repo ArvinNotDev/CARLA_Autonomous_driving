@@ -3900,6 +3900,7 @@ def run_avis(args: argparse.Namespace) -> int:
             control_loop_fps.record()
             try:
                 frame, current_speed, sensors = client.read_data()
+                speed_sample_timestamp = time.perf_counter()
                 if isinstance(frame, np.ndarray) and frame.size > 0:
                     frame_read_fps.record()
                 consecutive_connection_errors = 0
@@ -4351,6 +4352,7 @@ def run_avis(args: argparse.Namespace) -> int:
                         observation_timestamp=(
                             last_vision_result.completed_at if result_fresh else None
                         ),
+                        speed_sample_timestamp=speed_sample_timestamp,
                         now=time.perf_counter(),
                     )
 
@@ -4846,6 +4848,14 @@ def run_avis(args: argparse.Namespace) -> int:
                         "city_junction_maneuver_active": bool(city_junction_state.get("maneuver_active")),
                         "city_junction_maneuver_segment": city_junction_state.get("segment_index", 0),
                         "city_junction_maneuver_segments": city_junction_state.get("segment_count", 0),
+                        "city_junction_segment_distance_m": city_junction_state.get("segment_distance_m", 0.0),
+                        "city_junction_segment_target_distance_m": city_junction_state.get("segment_target_distance_m", 0.0),
+                        "city_junction_segment_distance_remaining_m": city_junction_state.get("segment_distance_remaining_m", 0.0),
+                        "city_junction_maneuver_distance_total_m": city_junction_state.get("maneuver_distance_total_m", 0.0),
+                        "city_junction_distance_sample_interval_seconds": city_junction_state.get("distance_sample_interval_seconds", 0.0),
+                        "city_junction_distance_last_increment_m": city_junction_state.get("distance_last_increment_m", 0.0),
+                        "city_junction_distance_sample_gap_count": city_junction_state.get("distance_sample_gap_count", 0),
+                        "city_junction_distance_scale": city_junction_state.get("distance_scale", current_settings.get("city_maneuver_distance_scale", 1.0)),
                         "city_junction_steering_override": city_junction_state.get("steering_override"),
                         "city_crosswalk_line_present": bool(
                             city_junction_state.get("line_present", False)
