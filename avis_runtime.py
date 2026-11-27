@@ -2965,9 +2965,7 @@ def run_avis(args: argparse.Namespace) -> int:
                                 avis_api,
                                 args.avis_host,
                                 args.avis_port,
-                                int(current_settings["sensor_angle"])
-                                if "current_settings" in locals()
-                                else int(settings["sensor_angle"]),
+                                int(active_sensor_angle),
                             )
                         except KeyboardInterrupt:
                             raise
@@ -2993,11 +2991,6 @@ def run_avis(args: argparse.Namespace) -> int:
                     recovery_steering = 0.0
                     last_control_time = time.perf_counter()
                     next_tick = last_control_time
-                    active_sensor_angle = (
-                        int(current_settings["sensor_angle"])
-                        if "current_settings" in locals()
-                        else int(settings["sensor_angle"])
-                    )
                     consecutive_connection_errors = 0
                     last_error_message = None
                     dashboard_state.set_connection_status(
