@@ -1240,7 +1240,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
             <div class="field"><label for="city_maneuver_distance_scale">Distance scale (0.50–1.50)</label><input id="city_maneuver_distance_scale" data-setting="city_maneuver_distance_scale" type="number" min="0.5" max="1.5" step="0.01"></div>
             <div class="field"><label for="city_maneuver_distance_max_sample_gap_seconds">Maximum speed-sample gap (s)</label><input id="city_maneuver_distance_max_sample_gap_seconds" data-setting="city_maneuver_distance_max_sample_gap_seconds" type="number" min="0.1" max="2" step="0.05"></div>
           </div>
-          <div class="hint">Increase the distance scale when AVIS physically travels farther than the configured distance before changing step; decrease it when AVIS changes step too early. A speed-sample gap longer than the configured limit is ignored instead of creating a false distance jump. A segment that reaches its timeout before the target distance now triggers a safe stop instead of silently skipping the unfinished distance.</div>
+          <div class="hint">Positive distances drive forward; negative distances command reverse. Increase the distance scale when AVIS physically travels farther than the configured distance before changing step; decrease it when AVIS changes step too early. A speed-sample gap longer than the configured limit is ignored. A segment that reaches its timeout before the target distance triggers a safe stop.</div>
           <div class="maneuver-route-tabs" id="maneuverRouteTabs" role="tablist" aria-label="Maneuver type">
             <button type="button" class="maneuver-route-tab" data-maneuver-route="STRAIGHT">STRAIGHT<small>Go ahead</small></button>
             <button type="button" class="maneuver-route-tab" data-maneuver-route="LEFT">LEFT<small>Normal left</small></button>
@@ -1258,7 +1258,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
             <button class="btn" type="button" id="resetManeuverSequenceButton">Reset this route</button>
           </div>
           <div class="maneuver-editor-footer">
-            <span class="hint">Steering: −1.00 = full left · 0.00 = straight · +1.00 = full right. Distance uses trapezoidal integration of timestamped speed samples.</span>
+            <span class="hint">Distance: positive = forward · negative = reverse (for example, −3.5 m drives backwards 3.5 m). Steering: −1.00 = full left · 0.00 = straight · +1.00 = full right.</span>
             <button class="btn save" type="button" id="applyManeuversButton">Apply &amp; save maneuver settings</button>
             <span class="maneuver-editor-message" id="maneuverEditorMessage" aria-live="polite"></span>
           </div>
@@ -1597,7 +1597,7 @@ function normalizeManeuverSequences(raw) {
   const result = {};
   for (const route of Object.keys(DEFAULT_MANEUVER_SEQUENCES)) {
     const source = Array.isArray(raw?.[route]) ? raw[route] : DEFAULT_MANEUVER_SEQUENCES[route];
-    result[route] = source.filter(step => step && Number.isFinite(Number(step.distance_m)) && Number(step.distance_m) > 0)
+    result[route] = source.filter(step => step && Number.isFinite(Number(step.distance_m)) && Number(step.distance_m) !== 0 && Math.abs(Number(step.distance_m)) <= 500)
       .map(step => ({
         distance_m: Number(step.distance_m),
         steering_value: Math.max(-1, Math.min(1, Number(step.steering_value) || 0))
@@ -1643,8 +1643,8 @@ function renderManeuverEditor() {
     row.innerHTML = `
       <div class="maneuver-step-index">#${index + 1}</div>
       <div class="maneuver-step-distance">
-        <label for="maneuverDistance${index}">Distance (m)</label>
-        <input id="maneuverDistance${index}" type="number" min="0.1" max="500" step="0.1" value="${Number(step.distance_m).toFixed(1)}" data-maneuver-field="distance_m" data-maneuver-index="${index}">
+        <label for="maneuverDistance${index}">Distance (m) · ${Number(step.distance_m) < 0 ? "REVERSE" : "FORWARD"}</label>
+        <input id="maneuverDistance${index}" type="number" min="-500" max="500" step="0.1" value="${Number(step.distance_m).toFixed(1)}" data-maneuver-field="distance_m" data-maneuver-index="${index}">
       </div>
       <div class="maneuver-step-steering">
         <div><label for="maneuverSteeringRange${index}">Steering value</label>
@@ -1696,7 +1696,15 @@ $("maneuverSteps").addEventListener("input", event => {
   const value = Number(input.value);
   if (!Number.isFinite(value)) return;
   if (field === "distance_m") {
-    maneuverSequences[selectedManeuverRoute][index].distance_m = Math.max(0.1, Math.min(500, value));
+    const previous = Number(maneuverSequences[selectedManeuverRoute][index].distance_m) || 2.0;
+    const clamped = Math.max(-500, Math.min(500, value));
+    const signedDistance = clamped === 0
+      ? (previous < 0 ? -0.1 : 0.1)
+      : clamped;
+    maneuverSequences[selectedManeuverRoute][index].distance_m = signedDistance;
+    input.value = signedDistance.toFixed(1);
+    const label = input.parentElement.querySelector("label");
+    if (label) label.textContent = "Distance (m) · " + (signedDistance < 0 ? "REVERSE" : "FORWARD");
   } else {
     const clamped = Math.max(-1, Math.min(1, value));
     maneuverSequences[selectedManeuverRoute][index].steering_value = clamped;
