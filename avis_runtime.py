@@ -517,7 +517,6 @@ def apply_avis_profile(profile: dict[str, Any], config_module: ModuleType) -> No
 
 
 AVIS_CROSSWALK_STOP_SPEED_KMH = 0.3
-AVIS_CROSSWALK_REVERSE_COMMAND = -100  # Full reverse input; independent of the dashboard speed limit.
 
 
 def normalize_avis_controls(throttle: float, steering: float) -> tuple[int, int]:
@@ -2718,22 +2717,12 @@ class AvisEngineClient:
         current_speed_kmh: float | None = None,
     ) -> None:
         if brake:
-            try:
-                speed_kmh = float(current_speed_kmh or 0.0)
-            except (TypeError, ValueError):
-                speed_kmh = 0.0
-            if not math.isfinite(speed_kmh):
-                speed_kmh = 0.0
-            # AVIS maps negative Speed to braking while moving forward and
-            # reverse torque near zero. Keep the command at full magnitude
-            # throughout the deceleration phase, independent of the dashboard's
-            # normal max_speed_kmh setting. Cut reverse immediately at 0.3 km/h
-            # so it cannot keep accelerating the car backwards.
-            speed_command = (
-                AVIS_CROSSWALK_REVERSE_COMMAND
-                if speed_kmh > AVIS_CROSSWALK_STOP_SPEED_KMH
-                else 0
-            )
+            # Never send a negative Speed command for crosswalk braking.
+            # AVIS maps negative Speed to reverse motor torque at low speed,
+            # which can make the vehicle drive backwards instead of stopping.
+            # The City crosswalk controller holds the simulator's native
+            # Space-key handbrake; Speed=0 removes all drive/reverse torque.
+            speed_command = 0
             steering_command = 0
         else:
             speed_command, steering_command = normalize_avis_controls(throttle, steering)
