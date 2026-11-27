@@ -4518,7 +4518,9 @@ def run_avis(args: argparse.Namespace) -> int:
                         target_speed = 0.0
                         coasting = False
                         remaining = float(city_junction_state.get("dwell_remaining_seconds", 0.0))
-                        if city_junction_state.get("waiting_for_stop"):
+                        if city_junction_state.get("phase") == "STOPPED":
+                            status = "CITY / STOP SIGN · TERMINAL STOP"
+                        elif city_junction_state.get("waiting_for_stop"):
                             status = (
                                 f"CITY / BRAKING TO STOP · {current_speed:.1f} km/h"
                             )
@@ -4611,6 +4613,43 @@ def run_avis(args: argparse.Namespace) -> int:
                     1,
                     cv2.LINE_AA,
                 )
+                if args.avis_mode == "city":
+                    sign_label = city_junction_state.get("sign_class") or "--"
+                    sign_confidence = city_junction_state.get("sign_confidence")
+                    sign_conf_text = (
+                        f"{float(sign_confidence) * 100:.0f}%"
+                        if sign_confidence is not None else "--"
+                    )
+                    cv2.putText(
+                        display,
+                        (
+                            f"Junction: {city_junction_state.get('phase', 'IDLE')} | "
+                            f"Sign: {sign_label} {sign_conf_text} | "
+                            f"Route: {city_junction_state.get('route_type') or '--'}"
+                        ),
+                        (12, 148),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.36,
+                        (255, 255, 255),
+                        1,
+                        cv2.LINE_AA,
+                    )
+                    if city_junction_state.get("maneuver_active"):
+                        cv2.putText(
+                            display,
+                            (
+                                f"Maneuver: {city_junction_state.get('segment_index', 0)}/"
+                                f"{city_junction_state.get('segment_count', 0)} | "
+                                f"Steer: {city_junction_state.get('steering_override', 0.0):+.2f} | "
+                                f"Remaining: {city_junction_state.get('segment_distance_remaining_m', 0.0):.1f}m"
+                            ),
+                            (12, 169),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.34,
+                            (0, 220, 255),
+                            1,
+                            cv2.LINE_AA,
+                        )
 
                 now = time.perf_counter()
                 if now - last_dashboard_publish >= 0.10:
