@@ -146,7 +146,7 @@ def test_sign_class_order_validation_requires_exactly_the_six_model_labels():
         )
 
 
-def test_avIs_default_normal_turn_sequences_match_active_carla_stable_v2_profile():
+def test_avis_default_normal_turn_sequences_match_active_carla_stable_v2_profile():
     root = Path(__file__).resolve().parents[1]
     carla_profiles = json.loads(
         (root / "runtime_profiles.json").read_text(encoding="utf-8")
