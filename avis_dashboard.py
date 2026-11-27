@@ -1240,7 +1240,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
             <div class="field"><label for="city_maneuver_distance_scale">Distance scale (0.50–1.50)</label><input id="city_maneuver_distance_scale" data-setting="city_maneuver_distance_scale" type="number" min="0.5" max="1.5" step="0.01"></div>
             <div class="field"><label for="city_maneuver_distance_max_sample_gap_seconds">Maximum speed-sample gap (s)</label><input id="city_maneuver_distance_max_sample_gap_seconds" data-setting="city_maneuver_distance_max_sample_gap_seconds" type="number" min="0.1" max="2" step="0.05"></div>
           </div>
-          <div class="hint">Increase the distance scale when AVIS physically travels farther than the configured distance before changing step; decrease it when AVIS changes step too early. A speed-sample gap longer than the configured limit is ignored instead of creating a false distance jump.</div>
+          <div class="hint">Increase the distance scale when AVIS physically travels farther than the configured distance before changing step; decrease it when AVIS changes step too early. A speed-sample gap longer than the configured limit is ignored instead of creating a false distance jump. A segment that reaches its timeout before the target distance now triggers a safe stop instead of silently skipping the unfinished distance.</div>
           <div class="maneuver-route-tabs" id="maneuverRouteTabs" role="tablist" aria-label="Maneuver type">
             <button type="button" class="maneuver-route-tab" data-maneuver-route="STRAIGHT">STRAIGHT<small>Go ahead</small></button>
             <button type="button" class="maneuver-route-tab" data-maneuver-route="LEFT">LEFT<small>Normal left</small></button>
@@ -2006,7 +2006,7 @@ async function refreshStatus() {
        " · Junction: " + String(t.city_junction_phase || "IDLE") +
        " · Sign: " + String(t.city_junction_sign_class || "--") + (t.city_junction_sign_confidence == null ? "" : " " + (Number(t.city_junction_sign_confidence) * 100).toFixed(0) + "%") +
        " · Route: " + String(t.city_junction_route_type || t.city_junction_pending_sign || "--") +
-       (t.city_junction_maneuver_active ? " · Maneuver: " + String(t.city_junction_maneuver_segment) + "/" + String(t.city_junction_maneuver_segments) + " · Distance: " + Number(t.city_junction_segment_distance_m || 0).toFixed(2) + "/" + Number(t.city_junction_segment_target_distance_m || 0).toFixed(2) + " m" : "") +
+       (t.city_junction_maneuver_active || t.city_junction_phase === "MANEUVER_TIMEOUT" ? " · Maneuver: " + String(t.city_junction_maneuver_segment) + "/" + String(t.city_junction_maneuver_segments) + " · Distance: " + Number(t.city_junction_segment_distance_m || 0).toFixed(2) + "/" + Number(t.city_junction_segment_target_distance_m || 0).toFixed(2) + " m" : "") +
        " · Distance scale: x" + Number(t.city_junction_distance_scale ?? data.settings.city_maneuver_distance_scale ?? 1).toFixed(2) +
        (Number(t.city_junction_distance_sample_gap_count || 0) > 0 ? " · Ignored speed gaps: " + String(t.city_junction_distance_sample_gap_count) : "") +
        " · Avoidance gate: " + (t.obstacle_avoidance_enabled === false ? "DISABLED" : t.obstacle_model_accepted ? "ACCEPTED" : "REJECTED") +
