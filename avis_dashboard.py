@@ -86,6 +86,8 @@ DEFAULT_AVIS_SETTINGS: dict[str, Any] = {
     "city_junction_sign_class_order_json": json.dumps(DEFAULT_CITY_SIGN_CLASSES),
     "city_maneuver_speed_kmh": 6.0,
     "city_maneuver_segment_timeout_seconds": 20.0,
+    "city_maneuver_distance_scale": 1.0,
+    "city_maneuver_distance_max_sample_gap_seconds": 0.5,
     "city_maneuver_sequences_json": json.dumps(DEFAULT_CITY_MANEUVER_SEQUENCES, indent=2),
     "city_crosswalk_stop_seconds": 5.0,
     "city_crosswalk_rearm_clear_seconds": 1.0,
@@ -207,6 +209,8 @@ _NUMERIC_LIMITS: dict[str, tuple[float, float, bool]] = {
     "city_junction_sign_input_size": (32.0, 2048.0, True),
     "city_maneuver_speed_kmh": (1.0, 40.0, False),
     "city_maneuver_segment_timeout_seconds": (1.0, 120.0, False),
+    "city_maneuver_distance_scale": (0.5, 1.5, False),
+    "city_maneuver_distance_max_sample_gap_seconds": (0.1, 2.0, False),
     "city_crosswalk_rearm_clear_seconds": (0.2, 30.0, False),
     "city_crosswalk_min_line_length_ratio": (0.10, 0.95, False),
     "city_crosswalk_max_line_angle_deg": (1.0, 30.0, False),
@@ -1231,6 +1235,12 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
         <div class="panel">
           <div class="panel-head"><h3>City junction maneuver editor</h3><span class="tag">Distance · steering · sequence</span></div>
           <div class="hint">Create the exact ordered movement for each sign type. Each step keeps its steering command until the configured distance has been travelled, then advances to the next step. Use the arrows to reorder steps; the same sequences are saved in AVIS local/GitHub profiles.</div>
+          <div class="section-label">Distance measurement calibration</div>
+          <div class="fields">
+            <div class="field"><label for="city_maneuver_distance_scale">Distance scale (0.50–1.50)</label><input id="city_maneuver_distance_scale" data-setting="city_maneuver_distance_scale" type="number" min="0.5" max="1.5" step="0.01"></div>
+            <div class="field"><label for="city_maneuver_distance_max_sample_gap_seconds">Maximum speed-sample gap (s)</label><input id="city_maneuver_distance_max_sample_gap_seconds" data-setting="city_maneuver_distance_max_sample_gap_seconds" type="number" min="0.1" max="2" step="0.05"></div>
+          </div>
+          <div class="hint">Increase the distance scale when AVIS physically travels farther than the configured distance before changing step; decrease it when AVIS changes step too early. A speed-sample gap longer than the configured limit is ignored instead of creating a false distance jump.</div>
           <div class="maneuver-route-tabs" id="maneuverRouteTabs" role="tablist" aria-label="Maneuver type">
             <button type="button" class="maneuver-route-tab" data-maneuver-route="STRAIGHT">STRAIGHT<small>Go ahead</small></button>
             <button type="button" class="maneuver-route-tab" data-maneuver-route="LEFT">LEFT<small>Normal left</small></button>
@@ -1248,7 +1258,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
             <button class="btn" type="button" id="resetManeuverSequenceButton">Reset this route</button>
           </div>
           <div class="maneuver-editor-footer">
-            <span class="hint">Steering: −1.00 = full left · 0.00 = straight · +1.00 = full right. Distance is measured from AVIS speed × elapsed time.</span>
+            <span class="hint">Steering: −1.00 = full left · 0.00 = straight · +1.00 = full right. Distance uses trapezoidal integration of timestamped speed samples.</span>
             <button class="btn save" type="button" id="applyManeuversButton">Apply &amp; save maneuver settings</button>
             <span class="maneuver-editor-message" id="maneuverEditorMessage" aria-live="polite"></span>
           </div>
