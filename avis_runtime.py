@@ -1568,11 +1568,23 @@ class AvisObstacleLaneClassifier:
 
 
 class AvisCombinedVisionProcessor:
-    """Keep lane-line geometry and AVIS classification in one worker request."""
+    """Keep lane geometry and independent AVIS classifiers in one worker request."""
 
-    def __init__(self, lane_processor, obstacle_classifier: AvisObstacleLaneClassifier | None = None):
+    def __init__(
+        self,
+        lane_processor,
+        obstacle_classifier: AvisObstacleLaneClassifier | None = None,
+        junction_sign_classifier=None,
+        junction_sign_confidence_threshold: float = 0.55,
+    ):
         object.__setattr__(self, "lane_processor", lane_processor)
         object.__setattr__(self, "obstacle_classifier", obstacle_classifier)
+        object.__setattr__(self, "junction_sign_classifier", junction_sign_classifier)
+        object.__setattr__(
+            self,
+            "junction_sign_confidence_threshold",
+            float(junction_sign_confidence_threshold),
+        )
 
     def __getattr__(self, name):
         return getattr(self.lane_processor, name)
@@ -1590,11 +1602,26 @@ class AvisCombinedVisionProcessor:
             raise TypeError("AVIS lane-line processor returned a non-dict result.")
         combined = dict(result)
         camera_frame = rgb_frame if rgb_frame is not None else semantic_frame
+        debug = combined.get("debug")
+        if not isinstance(debug, dict):
+            debug = {}
+            combined["debug"] = debug
+
         if self.obstacle_classifier is not None:
             combined["obstacle_classifier"] = self.obstacle_classifier.predict(camera_frame)
-            debug = combined.get("debug")
-            if isinstance(debug, dict):
-                debug["obstacle_classifier"] = combined["obstacle_classifier"]
+            debug["obstacle_classifier"] = combined["obstacle_classifier"]
+
+        if self.junction_sign_classifier is not None:
+            sign_prediction = self.junction_sign_classifier.predict(
+                camera_frame,
+                confidence_threshold=self.junction_sign_confidence_threshold,
+            )
+            sign_prediction["observed_at"] = time.perf_counter()
+            combined["junction_sign"] = sign_prediction
+            debug["junction_sign"] = sign_prediction
+        else:
+            combined["junction_sign"] = None
+
         return combined
 
 
@@ -3025,6 +3052,12 @@ def _apply_avis_model_settings(conf: ModuleType, settings: dict[str, Any]) -> No
             suffix=".onnx",
             setting_name="Obstacle classifier model",
         )
+    if bool(settings.get("city_junction_sign_enabled", False)):
+        _resolve_avis_model_path(
+            settings["junction_sign_model_path"],
+            suffix=".onnx",
+            setting_name="Junction-sign classifier model",
+        )
     conf.MODEL_PATH = str(lane_model)
     conf.MODEL_IMAGE_SIZE = int(settings["model_image_size"])
     conf.LANE_PROB_THRESHOLD = float(settings["lane_prob_threshold"])
@@ -3080,6 +3113,24 @@ def _build_avis_settings(conf: ModuleType, sensor_angle: int) -> dict[str, Any]:
             PROJECT_ROOT
         ).as_posix(),
         "obstacle_detection_enabled": True,
+        "junction_sign_model_path": "models_and_datasets/Avis_models/sign_detector_deadlock.onnx",
+        "city_junction_sign_enabled": False,
+        "city_junction_sign_confidence_threshold": 0.55,
+        "city_junction_sign_confirm_frames": 2,
+        "city_junction_sign_max_age_seconds": 20.0,
+        "city_junction_sign_input_size": 224,
+        "city_junction_sign_class_order_json": json.dumps(
+            ["right", "left", "straight", "stop", "90r", "90l"]
+        ),
+        "city_maneuver_speed_kmh": 6.0,
+        "city_maneuver_segment_timeout_seconds": 20.0,
+        "city_maneuver_sequences_json": json.dumps({
+            "STRAIGHT": [{"distance_m": 6.0, "steering_value": 0.0}],
+            "LEFT": [{"distance_m": 20.0, "steering_value": 0.0}, {"distance_m": 4.0, "steering_value": -0.5}],
+            "RIGHT": [{"distance_m": 6.0, "steering_value": 0.0}, {"distance_m": 5.0, "steering_value": 0.65}],
+            "LEFT_90": [{"distance_m": 20.0, "steering_value": 0.0}, {"distance_m": 4.0, "steering_value": -0.5}],
+            "RIGHT_90": [{"distance_m": 6.0, "steering_value": 0.0}, {"distance_m": 5.0, "steering_value": 0.65}],
+        }, indent=2),
         "city_crosswalk_enabled": False,
         "city_crosswalk_stop_seconds": 5.0,
         "city_crosswalk_rearm_clear_seconds": 1.0,
@@ -3536,6 +3587,10 @@ def run_avis(args: argparse.Namespace) -> int:
         import config_city as conf
 
         from avis_dashboard import AvisDashboardServer, AvisDashboardState
+        from avis_city_junction import (
+            AvisCityJunctionController,
+            AvisJunctionSignOnnxClassifier,
+        )
 
         profile = load_avis_profile()
         apply_avis_profile(profile, conf)
@@ -3632,8 +3687,38 @@ def run_avis(args: argparse.Namespace) -> int:
         else:
             print("[AVIS] Obstacle classifier initialization skipped for this mode.")
 
+        junction_sign_classifier = None
+        if (
+            args.avis_mode == "city"
+            and bool(settings.get("city_junction_sign_enabled", False))
+        ):
+            junction_sign_model_path = _resolve_avis_model_path(
+                settings["junction_sign_model_path"],
+                suffix=".onnx",
+                setting_name="Junction-sign classifier model",
+            )
+            try:
+                class_order = json.loads(
+                    settings.get(
+                        "city_junction_sign_class_order_json",
+                        '["right","left","straight","stop","90r","90l"]',
+                    )
+                )
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("Junction-sign class order is not valid JSON.") from exc
+            junction_sign_classifier = AvisJunctionSignOnnxClassifier(
+                junction_sign_model_path,
+                class_order=class_order,
+                input_size=int(settings.get("city_junction_sign_input_size", 224)),
+            )
+        elif args.avis_mode == "city":
+            print("[AVIS] Junction-sign classifier is disabled; unlabelled junctions default to STRAIGHT.")
+
         vision_processor = AvisCombinedVisionProcessor(
-            lane_vision_processor, obstacle_classifier
+            lane_vision_processor,
+            obstacle_classifier,
+            junction_sign_classifier,
+            float(settings.get("city_junction_sign_confidence_threshold", 0.55)),
         )
         inference_worker = InferenceWorker(vision_processor=vision_processor)
         inference_worker.start()
@@ -3651,7 +3736,7 @@ def run_avis(args: argparse.Namespace) -> int:
             max_speed_kmh=float(settings["max_speed_kmh"]),
         )
         obstacle_lane_change = AvisModelObstacleLaneChangeController()
-        city_crosswalk_stop_controller = AvisCityCrosswalkStopController()
+        city_junction_controller = AvisCityJunctionController()
         city_crosswalk_handbrake = AvisSimulatorHandbrake()
         drivable_recovery_controller = AvisDrivableAreaRecoveryController()
         if args.avis_mode == "city" and not city_crosswalk_handbrake.available:
@@ -3760,7 +3845,7 @@ def run_avis(args: argparse.Namespace) -> int:
                         "Stopping drive commands and waiting for the server to return."
                     )
                     city_crosswalk_handbrake.release()
-                    city_crosswalk_stop_controller.reset()
+                    city_junction_controller.reset()
                     try:
                         client.close()
                     except Exception:
@@ -4058,12 +4143,16 @@ def run_avis(args: argparse.Namespace) -> int:
                     debug_data = {}
                 lane_change_state = obstacle_lane_change.snapshot(sensors)
                 drivable_recovery_state = drivable_recovery_controller.snapshot()
-                city_crosswalk_stop_state = city_crosswalk_stop_controller.snapshot()
+                city_junction_state = city_junction_controller.snapshot(
+                    now=time.perf_counter(), settings=current_settings
+                )
 
                 if drive_mode == "manual":
                     city_crosswalk_handbrake.release()
-                    city_crosswalk_stop_controller.reset()
-                    city_crosswalk_stop_state = city_crosswalk_stop_controller.snapshot()
+                    city_junction_controller.reset()
+                    city_junction_state = city_junction_controller.snapshot(
+                        now=time.perf_counter(), settings=current_settings
+                    )
                     drivable_recovery_state = drivable_recovery_controller.update(
                         None,
                         observation_id=None,
@@ -4082,8 +4171,10 @@ def run_avis(args: argparse.Namespace) -> int:
                     )
                 elif drive_mode == "stopped":
                     city_crosswalk_handbrake.release()
-                    city_crosswalk_stop_controller.reset()
-                    city_crosswalk_stop_state = city_crosswalk_stop_controller.snapshot()
+                    city_junction_controller.reset()
+                    city_junction_state = city_junction_controller.snapshot(
+                        now=time.perf_counter(), settings=current_settings
+                    )
                     drivable_recovery_state = drivable_recovery_controller.update(
                         None,
                         observation_id=None,
@@ -4105,23 +4196,22 @@ def run_avis(args: argparse.Namespace) -> int:
                             0.75, inference_interval * 8.0
                         )
 
-                    city_crosswalk_stop_state = city_crosswalk_stop_controller.update(
+                    city_junction_state = city_junction_controller.update(
                         vision_data.get("junction_roi") if result_fresh else None,
+                        vision_data.get("junction_sign") if result_fresh else None,
                         enabled=(
                             args.avis_mode == "city"
                             and bool(current_settings.get("city_crosswalk_enabled", False))
                         ),
-                        stop_seconds=float(current_settings.get("city_crosswalk_stop_seconds", 5.0)),
-                        rearm_clear_seconds=float(
-                            current_settings.get("city_crosswalk_rearm_clear_seconds", 1.0)
-                        ),
+                        settings=current_settings,
+                        current_speed_kmh=current_speed,
+                        dt=min(0.1, max(0.005, time.perf_counter() - last_control_time)),
                         observation_id=(
                             last_vision_result.request_id if result_fresh else None
                         ),
                         observation_timestamp=(
                             last_vision_result.completed_at if result_fresh else None
                         ),
-                        current_speed_kmh=current_speed,
                         now=time.perf_counter(),
                     )
 
@@ -4312,7 +4402,37 @@ def run_avis(args: argparse.Namespace) -> int:
                         else:
                             status = "AUTO / COAST" if coasting else "AUTO"
 
-                    if city_crosswalk_stop_state.get("active"):
+                    if city_junction_state.get("maneuver_active"):
+                        maneuver_steering = city_junction_state.get("steering_override")
+                        if maneuver_steering is not None:
+                            steering = steering_controller.update_override(
+                                float(maneuver_steering)
+                            )
+                        target_speed = float(
+                            current_settings.get("city_maneuver_speed_kmh", minimum_speed)
+                        )
+                        throttle, requested_brake = speed_controller.update(
+                            current_speed, target_speed, dt=control_dt
+                        )
+                        coasting = requested_brake > 0.0
+                        if coasting:
+                            throttle = 0.0
+                        status = (
+                            "CITY / "
+                            f"{city_junction_state.get('route_type', 'MANEUVER')} "
+                            f"MANEUVER {city_junction_state.get('segment_index', 0)}/"
+                            f"{city_junction_state.get('segment_count', 0)}"
+                        )
+                        drivable_recovery_state = drivable_recovery_controller.update(
+                            None,
+                            observation_id=None,
+                            observation_timestamp=None,
+                            enabled=False,
+                            allow_recovery=False,
+                            now=time.perf_counter(),
+                        )
+
+                    if city_junction_state.get("braking"):
                         handbrake_engaged = city_crosswalk_handbrake.set_active(True)
                         if not handbrake_engaged and not crosswalk_handbrake_warning_sent:
                             print(
@@ -4320,7 +4440,7 @@ def run_avis(args: argparse.Namespace) -> int:
                                 f"{city_crosswalk_handbrake.last_error or 'Unknown Windows input error'}"
                             )
                             crosswalk_handbrake_warning_sent = True
-                        if city_crosswalk_stop_state.get("just_activated"):
+                        if city_junction_state.get("just_activated"):
                             steering_controller.reset()
                         drivable_recovery_state = drivable_recovery_controller.update(
                             None,
@@ -4334,8 +4454,8 @@ def run_avis(args: argparse.Namespace) -> int:
                         steering = 0.0
                         target_speed = 0.0
                         coasting = False
-                        remaining = float(city_crosswalk_stop_state.get("remaining_seconds", 0.0))
-                        if city_crosswalk_stop_state.get("waiting_for_stop"):
+                        remaining = float(city_junction_state.get("dwell_remaining_seconds", 0.0))
+                        if city_junction_state.get("waiting_for_stop"):
                             status = (
                                 f"CITY / BRAKING TO STOP · {current_speed:.1f} km/h"
                             )
@@ -4353,7 +4473,7 @@ def run_avis(args: argparse.Namespace) -> int:
                     client.send_control(
                         throttle,
                         steering,
-                        brake=bool(city_crosswalk_stop_state.get("active")),
+                        brake=bool(city_junction_state.get("braking")),
                         current_speed_kmh=current_speed,
                     )
 
@@ -4530,26 +4650,35 @@ def run_avis(args: argparse.Namespace) -> int:
                             and current_settings.get("city_crosswalk_enabled", False)
                         ),
                         "city_crosswalk_stop_active": bool(
-                            city_crosswalk_stop_state.get("active", False)
+                            city_junction_state.get("braking", False)
                         ),
-                        "city_crosswalk_stop_reason": city_crosswalk_stop_state.get("reason"),
+                        "city_crosswalk_stop_reason": city_junction_state.get("reason"),
                         "city_crosswalk_stop_elapsed_seconds": round(
-                            float(city_crosswalk_stop_state.get("elapsed_seconds", 0.0)), 2
+                            float(city_junction_state.get("dwell_elapsed_seconds", 0.0)), 2
                         ),
                         "city_crosswalk_stop_remaining_seconds": round(
-                            float(city_crosswalk_stop_state.get("remaining_seconds", 0.0)), 2
+                            float(city_junction_state.get("dwell_remaining_seconds", 0.0)), 2
                         ),
+                        "city_junction_phase": city_junction_state.get("phase", "IDLE"),
+                        "city_junction_route_type": city_junction_state.get("route_type"),
+                        "city_junction_pending_sign": city_junction_state.get("pending_sign_type"),
+                        "city_junction_sign_class": city_junction_state.get("sign_class"),
+                        "city_junction_sign_confidence": city_junction_state.get("sign_confidence"),
+                        "city_junction_maneuver_active": bool(city_junction_state.get("maneuver_active")),
+                        "city_junction_maneuver_segment": city_junction_state.get("segment_index", 0),
+                        "city_junction_maneuver_segments": city_junction_state.get("segment_count", 0),
+                        "city_junction_steering_override": city_junction_state.get("steering_override"),
                         "city_crosswalk_line_present": bool(
-                            city_crosswalk_stop_state.get("line_present", False)
+                            city_junction_state.get("line_present", False)
                         ),
                         "city_crosswalk_detected": bool(
-                            city_crosswalk_stop_state.get("detected", False)
+                            city_junction_state.get("detected", False)
                         ),
                         "city_crosswalk_handbrake_active": bool(
                             city_crosswalk_handbrake.held
                         ),
                         "city_crosswalk_length_ratio": float(
-                            city_crosswalk_stop_state.get("length_ratio", 0.0)
+                            city_junction_state.get("length_ratio", 0.0)
                         ),
                         "obstacle_lane_probability": lane_change_state.get("obstacle_lane_probability"),
                         "obstacle_lane_prediction": lane_change_state.get("obstacle_lane_prediction"),
