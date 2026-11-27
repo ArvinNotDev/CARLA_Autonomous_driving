@@ -167,6 +167,29 @@ def test_avis_default_normal_turn_sequences_match_active_carla_stable_v2_profile
     assert avis_sequences["RIGHT_90"] == avis_sequences["RIGHT"]
 
 
+
+def test_maneuver_distance_calibration_settings_are_validated_and_profile_ready():
+    validated = validate_avis_settings(
+        dict(DEFAULT_AVIS_SETTINGS),
+        {
+            "city_maneuver_distance_scale": 1.15,
+            "city_maneuver_distance_max_sample_gap_seconds": 0.4,
+        },
+    )
+    assert validated["city_maneuver_distance_scale"] == pytest.approx(1.15)
+    assert validated["city_maneuver_distance_max_sample_gap_seconds"] == pytest.approx(0.4)
+
+    with pytest.raises(ValueError, match="between 0.5 and 1.5"):
+        validate_avis_settings(
+            dict(DEFAULT_AVIS_SETTINGS),
+            {"city_maneuver_distance_scale": 1.6},
+        )
+    with pytest.raises(ValueError, match="between 0.1 and 2"):
+        validate_avis_settings(
+            dict(DEFAULT_AVIS_SETTINGS),
+            {"city_maneuver_distance_max_sample_gap_seconds": 0.05},
+        )
+
 def test_maneuver_json_accepts_independent_sequences_for_all_turn_types():
     sequences = {
         "STRAIGHT": [{"distance_m": 4.0, "steering_value": 0.0}],
@@ -337,7 +360,7 @@ def test_maneuver_segments_advance_by_distance_and_apply_the_next_steering_value
     settings = _settings(
         city_maneuver_sequences_json=json.dumps(
             {"LEFT": [
-                {"distance_m": 1.0, "steering_value": -0.3},
+                {"distance_m": 0.7, "steering_value": -0.3},
                 {"distance_m": 0.5, "steering_value": 0.2},
             ]}
         )
@@ -386,6 +409,165 @@ def test_maneuver_segments_advance_by_distance_and_apply_the_next_steering_value
     assert second["segment_index"] == 2
     assert second["steering_override"] == pytest.approx(0.2)
 
+
+
+def _start_left_maneuver_for_distance_test(settings):
+    controller = AvisCityJunctionController()
+    _confirm_sign(controller, "left", settings)
+    _trigger_crosswalk(controller, settings)
+    controller.update(
+        None, None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=0.2,
+        dt=0.05,
+        now=2.1,
+    )
+    started = controller.update(
+        None, None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=0.0,
+        dt=0.05,
+        now=7.1,
+    )
+    assert started["phase"] == "MANEUVER"
+    return controller
+
+
+def test_maneuver_distance_uses_trapezoidal_speed_samples_and_real_timestamps():
+    settings = _settings(
+        city_maneuver_sequences_json=json.dumps(
+            {"LEFT": [{"distance_m": 100.0, "steering_value": -0.3}]}
+        )
+    )
+    controller = _start_left_maneuver_for_distance_test(settings)
+
+    accelerating = controller.update(
+        None, None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=6.0,
+        dt=0.9,
+        now=7.2,
+    )
+    assert accelerating["segment_distance_m"] == pytest.approx(
+        (0.0 + 6.0) / 2.0 / 3.6 * 0.1
+    )
+    assert accelerating["distance_sample_interval_seconds"] == pytest.approx(0.1)
+
+    steady = controller.update(
+        None, None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=6.0,
+        dt=0.005,
+        now=7.3,
+    )
+    assert steady["segment_distance_m"] == pytest.approx(0.25)
+    assert steady["distance_last_increment_m"] == pytest.approx(6.0 / 3.6 * 0.1)
+
+
+def test_maneuver_distance_scale_calibrates_the_integrated_distance():
+    settings = _settings(
+        city_maneuver_distance_scale=1.2,
+        city_maneuver_sequences_json=json.dumps(
+            {"LEFT": [{"distance_m": 100.0, "steering_value": -0.3}]}
+        ),
+    )
+    controller = _start_left_maneuver_for_distance_test(settings)
+    controller.update(
+        None, None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=6.0,
+        dt=0.1,
+        now=7.2,
+    )
+    measured = controller.update(
+        None, None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=6.0,
+        dt=0.1,
+        now=7.3,
+    )
+    assert measured["segment_distance_m"] == pytest.approx(0.3)
+    assert measured["distance_scale"] == pytest.approx(1.2)
+
+
+def test_long_maneuver_speed_sample_gap_is_ignored_and_reseeded():
+    settings = _settings(
+        city_maneuver_distance_max_sample_gap_seconds=0.2,
+        city_maneuver_sequences_json=json.dumps(
+            {"LEFT": [{"distance_m": 100.0, "steering_value": -0.3}]}
+        ),
+    )
+    controller = _start_left_maneuver_for_distance_test(settings)
+
+    after_gap = controller.update(
+        None, None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=12.0,
+        dt=0.5,
+        now=7.6,
+    )
+    assert after_gap["segment_distance_m"] == pytest.approx(0.0)
+    assert after_gap["distance_sample_interval_seconds"] == pytest.approx(0.5)
+    assert after_gap["distance_sample_gap_count"] == 1
+
+    next_sample = controller.update(
+        None, None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=12.0,
+        dt=0.1,
+        now=7.7,
+    )
+    assert next_sample["segment_distance_m"] == pytest.approx(12.0 / 3.6 * 0.1)
+    assert next_sample["distance_sample_gap_count"] == 1
+
+
+def test_duplicate_speed_sample_timestamp_does_not_add_distance_twice():
+    settings = _settings(
+        city_maneuver_sequences_json=json.dumps(
+            {"LEFT": [{"distance_m": 100.0, "steering_value": -0.3}]}
+        )
+    )
+    controller = _start_left_maneuver_for_distance_test(settings)
+
+    first = controller.update(
+        None, None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=8.0,
+        dt=0.1,
+        now=7.2,
+    )
+    duplicate = controller.update(
+        None, None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=30.0,
+        dt=0.1,
+        now=7.2,
+    )
+    assert duplicate["segment_distance_m"] == pytest.approx(
+        first["segment_distance_m"]
+    )
+
+    next_sample = controller.update(
+        None, None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=8.0,
+        dt=0.1,
+        now=7.3,
+    )
+    assert next_sample["segment_distance_m"] == pytest.approx(
+        (8.0 / 3.6 * 0.1) * 1.5
+    )
 
 def test_combined_vision_processor_publishes_timestamped_junction_sign_output():
     class LaneProcessor:
@@ -489,6 +671,8 @@ def test_dashboard_exposes_sign_model_and_editable_maneuver_sequences():
     assert "junction_sign_model_path" in DASHBOARD_HTML
     assert "city_junction_sign_class_order_json" in DASHBOARD_HTML
     assert "city_maneuver_sequences_json" in DASHBOARD_HTML
+    assert "city_maneuver_distance_scale" in DASHBOARD_HTML
+    assert "city_maneuver_distance_max_sample_gap_seconds" in DASHBOARD_HTML
     assert "RIGHT_90" in DEFAULT_AVIS_SETTINGS["city_maneuver_sequences_json"]
 
 def test_maneuver_sequences_are_persisted_and_restored_per_profile(tmp_path):
