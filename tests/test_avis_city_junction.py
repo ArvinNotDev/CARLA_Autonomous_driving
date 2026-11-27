@@ -160,7 +160,7 @@ def test_normal_left_right_selection_uses_only_the_last_five_sign_frames():
         selected = _observe_sign(controller, settings, "right", timestamp)
 
     assert selected["selected_sign_type"] == "RIGHT"
-    assert controller._pending_far_turn_type == "LEFT"
+    assert controller._pending_far_route_type == "LEFT"
 
     crosswalk = controller.update(
         _crosswalk(), None,
@@ -175,16 +175,30 @@ def test_normal_left_right_selection_uses_only_the_last_five_sign_frames():
     assert crosswalk["route_type"] == "RIGHT"
 
 
-def test_long_voting_remains_authoritative_until_left_or_right_is_selected():
+def test_stable_far_straight_ignores_a_three_frame_near_right_outlier():
     settings = _settings()
     controller = AvisCityJunctionController()
     for timestamp in (1.0, 1.1, 1.2, 1.3, 1.4):
         _observe_sign(controller, settings, "straight", timestamp)
-    _observe_sign(controller, settings, "right", 1.5)
+    for timestamp in (1.5, 1.6, 1.7):
+        _observe_sign(controller, settings, "right", timestamp)
 
-    assert controller._pending_long_sign_type == "STRAIGHT"
-    crosswalk = _trigger_crosswalk(controller, settings, now=2.0)
+    assert controller._pending_far_route_type == "STRAIGHT"
+    crosswalk = _trigger_crosswalk(controller, settings, now=1.8)
     assert crosswalk["route_type"] == "STRAIGHT"
+
+
+def test_near_left_corrects_a_stable_far_right_decision():
+    settings = _settings()
+    controller = AvisCityJunctionController()
+    for timestamp in (1.0, 1.1, 1.2, 1.3, 1.4):
+        _observe_sign(controller, settings, "right", timestamp)
+    for timestamp in (1.5, 1.6, 1.7):
+        _observe_sign(controller, settings, "left", timestamp)
+
+    assert controller._pending_far_route_type == "RIGHT"
+    crosswalk = _trigger_crosswalk(controller, settings, now=1.8)
+    assert crosswalk["route_type"] == "LEFT"
 
 
 def test_sign_vote_window_resets_when_a_maneuver_finishes():

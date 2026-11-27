@@ -594,13 +594,13 @@ class AvisCityJunctionController:
         self._phase = "IDLE"
         self._pending_sign_type: str | None = None
         self._pending_long_sign_type: str | None = None
-        self._pending_far_turn_type: str | None = None
+        self._pending_far_route_type: str | None = None
         self._pending_sign_confidence = 0.0
         self._pending_sign_at: float | None = None
-        # Keep long-range votes for standard non-turn routes separately from
-        # the persistent far LEFT/RIGHT choice and its final-frame refinement.
+        # Track long-range route selection separately from the final-frame
+        # evidence used to refine an established LEFT/RIGHT/STRAIGHT choice.
         self._sign_votes: dict[str, tuple[int, float]] = {}
-        self._far_turn_votes: dict[str, tuple[int, float]] = {}
+        self._far_route_votes: dict[str, tuple[int, float]] = {}
         self._recent_sign_votes: deque[tuple[str | None, float]] = deque(maxlen=5)
         self._last_sign_vote_at: float | None = None
         self._last_sign_observed_at: float | None = None
@@ -690,11 +690,11 @@ class AvisCityJunctionController:
         if self._last_sign_vote_at is not None and now - self._last_sign_vote_at > max_age:
             self._pending_sign_type = None
             self._pending_long_sign_type = None
-            self._pending_far_turn_type = None
+            self._pending_far_route_type = None
             self._pending_sign_confidence = 0.0
             self._pending_sign_at = None
             self._sign_votes.clear()
-            self._far_turn_votes.clear()
+            self._far_route_votes.clear()
             self._recent_sign_votes.clear()
             self._last_sign_vote_at = None
 
@@ -721,10 +721,10 @@ class AvisCityJunctionController:
                     self._sign_locked_until_clear = False
                     self._sign_clear_frames = 0
                     self._sign_votes.clear()
-                    self._far_turn_votes.clear()
+                    self._far_route_votes.clear()
                     self._pending_sign_type = None
                     self._pending_long_sign_type = None
-                    self._pending_far_turn_type = None
+                    self._pending_far_route_type = None
                     self._pending_sign_confidence = 0.0
                     self._pending_sign_at = None
                     self._last_sign_vote_at = None
@@ -735,12 +735,12 @@ class AvisCityJunctionController:
 
         self._recent_sign_votes.append((canonical, float(confidence)))
 
-        recent_turn = self._recent_ordinary_turn(settings)
-        if recent_turn is not None:
-            self._pending_sign_type = recent_turn
-            self._pending_sign_confidence = self._recent_turn_confidence(recent_turn)
+        recent_route, _ = self._recent_route_candidate(settings)
+        if recent_route is not None:
+            self._pending_sign_type = recent_route
+            self._pending_sign_confidence = self._recent_route_confidence(recent_route)
             self._pending_sign_at = observed_at
-        elif self._pending_sign_type in {"LEFT", "RIGHT"}:
+        elif self._pending_sign_type in {"LEFT", "RIGHT", "STRAIGHT"}:
             self._pending_sign_type = None
             self._pending_sign_confidence = 0.0
             self._pending_sign_at = None
@@ -751,30 +751,31 @@ class AvisCityJunctionController:
         confirm_frames = max(
             1, min(10, int(settings.get("city_junction_sign_confirm_frames", 2)))
         )
-        if canonical in {"LEFT", "RIGHT"}:
-            count, confidence_total = self._far_turn_votes.get(canonical, (0, 0.0))
-            self._far_turn_votes[canonical] = (
+        if canonical in {"LEFT", "RIGHT", "STRAIGHT"}:
+            count, confidence_total = self._far_route_votes.get(canonical, (0, 0.0))
+            self._far_route_votes[canonical] = (
                 count + 1,
                 confidence_total + float(confidence),
             )
             self._last_sign_vote_at = observed_at
-            ranked_turns = sorted(
-                self._far_turn_votes,
-                key=lambda vote: self._far_turn_votes[vote],
+            ranked_routes = sorted(
+                self._far_route_votes,
+                key=lambda vote: self._far_route_votes[vote],
                 reverse=True,
             )
-            leader_turn = ranked_turns[0]
-            leader_turn_count = self._far_turn_votes[leader_turn][0]
-            runner_up_turn_count = (
-                self._far_turn_votes[ranked_turns[1]][0]
-                if len(ranked_turns) > 1 else 0
+            leader_route = ranked_routes[0]
+            leader_route_count = self._far_route_votes[leader_route][0]
+            incumbent_count = (
+                self._far_route_votes.get(self._pending_far_route_type, (0, 0.0))[0]
+                if self._pending_far_route_type is not None else 0
             )
-            if leader_turn_count >= confirm_frames and (
-                self._pending_far_turn_type is None
-                or leader_turn == self._pending_far_turn_type
-                or leader_turn_count - runner_up_turn_count >= 2
-            ):
-                self._pending_far_turn_type = leader_turn
+            if leader_route_count >= confirm_frames:
+                if self._pending_far_route_type is None or leader_route == self._pending_far_route_type:
+                    self._pending_far_route_type = leader_route
+                else:
+                    switch_margin = 4 if self._pending_far_route_type == "STRAIGHT" else 2
+                    if leader_route_count - incumbent_count >= switch_margin:
+                        self._pending_far_route_type = leader_route
             return
 
         count, confidence_total = self._sign_votes.get(canonical, (0, 0.0))
@@ -796,7 +797,7 @@ class AvisCityJunctionController:
             or has_clear_margin
         ):
             self._pending_long_sign_type = leader
-            if self._pending_sign_type not in {"LEFT", "RIGHT"}:
+            if self._pending_sign_type not in {"LEFT", "RIGHT", "STRAIGHT"}:
                 self._pending_sign_type = leader
                 self._pending_sign_confidence = (
                     leader_confidence_total / leader_count
@@ -950,11 +951,11 @@ class AvisCityJunctionController:
         # crosswalk; no sign seen during the completed maneuver carries over.
         self._pending_sign_type = None
         self._pending_long_sign_type = None
-        self._pending_far_turn_type = None
+        self._pending_far_route_type = None
         self._pending_sign_confidence = 0.0
         self._pending_sign_at = None
         self._sign_votes.clear()
-        self._far_turn_votes.clear()
+        self._far_route_votes.clear()
         self._recent_sign_votes.clear()
         self._last_sign_vote_at = None
         self._sign_locked_until_clear = False
@@ -1031,18 +1032,28 @@ class AvisCityJunctionController:
             )
             if pending and self._phase == "IDLE" and not cooldown_active:
                 self._trigger.acknowledge()
-                recent_turn = self._recent_ordinary_turn(settings)
                 if self._pending_long_sign_type == "STOP":
                     self._active_route_type = "STOP"
                 elif self._pending_long_sign_type in {"LEFT_90", "RIGHT_90"}:
                     self._active_route_type = self._pending_long_sign_type
-                elif self._pending_far_turn_type in {"LEFT", "RIGHT"}:
-                    self._active_route_type = recent_turn or self._pending_far_turn_type
                 else:
-                    self._active_route_type = self._pending_long_sign_type or "STRAIGHT"
+                    far_route = self._pending_far_route_type
+                    recent_route, recent_count = self._recent_route_candidate(settings)
+                    if far_route is None:
+                        self._active_route_type = self._pending_long_sign_type or "STRAIGHT"
+                    elif recent_route is None or recent_route == far_route:
+                        self._active_route_type = far_route
+                    else:
+                        switch_count = (
+                            4 if far_route == "STRAIGHT" and recent_route in {"LEFT", "RIGHT"}
+                            else 3
+                        )
+                        self._active_route_type = (
+                            recent_route if recent_count >= switch_count else far_route
+                        )
                 self._pending_sign_type = None
                 self._pending_long_sign_type = None
-                self._pending_far_turn_type = None
+                self._pending_far_route_type = None
                 self._pending_sign_confidence = 0.0
                 self._pending_sign_at = None
                 self._sign_locked_until_clear = True
@@ -1149,14 +1160,14 @@ class AvisCityJunctionController:
 
         return self.snapshot(now=current, settings=settings)
 
-    def _recent_ordinary_turn(self, settings: dict[str, Any]) -> str | None:
-        """Select LEFT/RIGHT from only the final five sign model frames."""
+    def _recent_route_candidate(self, settings: dict[str, Any]) -> tuple[str | None, int]:
+        """Return the most common route class among the final five model frames."""
         confirm_frames = max(
             1, min(5, int(settings.get("city_junction_sign_confirm_frames", 2)))
         )
         counts: dict[str, tuple[int, float, int]] = {}
         for index, (kind, confidence) in enumerate(self._recent_sign_votes):
-            if kind not in {"LEFT", "RIGHT"}:
+            if kind not in {"LEFT", "RIGHT", "STRAIGHT"}:
                 continue
             count, confidence_total, _ = counts.get(kind, (0, 0.0, -1))
             counts[kind] = (count + 1, confidence_total + confidence, index)
@@ -1166,10 +1177,10 @@ class AvisCityJunctionController:
             default=None,
         )
         if winner is None or counts[winner][0] < confirm_frames:
-            return None
-        return winner
+            return None, 0
+        return winner, counts[winner][0]
 
-    def _recent_turn_confidence(self, route_type: str) -> float:
+    def _recent_route_confidence(self, route_type: str) -> float:
         confidences = [
             confidence
             for kind, confidence in self._recent_sign_votes
