@@ -216,10 +216,12 @@ def test_maneuver_json_accepts_independent_sequences_for_all_turn_types():
     assert parsed["LEFT"][0]["steering_value"] == pytest.approx(-0.25)
     assert parsed["RIGHT_90"][0]["distance_m"] == pytest.approx(8.0)
     assert parsed["RIGHT"][0]["distance_m"] == pytest.approx(-6.0)
-    assert validate_avis_settings(
+    validated = validate_avis_settings(
         dict(DEFAULT_AVIS_SETTINGS),
         {"city_maneuver_sequences_json": json.dumps(sequences)},
-    )["city_maneuver_sequences_json"]
+    )
+    validated_sequences = json.loads(validated["city_maneuver_sequences_json"])
+    assert validated_sequences["RIGHT"][0]["distance_m"] == pytest.approx(-6.0)
 
     validated = validate_avis_settings(
         dict(DEFAULT_AVIS_SETTINGS),
