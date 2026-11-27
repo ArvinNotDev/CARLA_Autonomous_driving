@@ -2361,6 +2361,14 @@ AVIS_SHARED_VISION_CONFIG_KEYS = {
 }
 
 
+def _apply_avis_roi_settings(conf: ModuleType, settings: dict[str, Any]) -> None:
+    """Apply AVIS-only ROI and shared lane-geometry settings to config_city."""
+    for mapping in (AVIS_ROI_CONFIG_KEYS, AVIS_SHARED_VISION_CONFIG_KEYS):
+        for setting_key, config_key in mapping.items():
+            if setting_key in settings:
+                setattr(conf, config_key, float(settings[setting_key]))
+
+
 def _avis_roi_lock_direction(lane_change_phase: Any) -> str | None:
     """Return which destination ROI may adapt during the active lane change."""
     phase = str(lane_change_phase or "").strip().upper()
