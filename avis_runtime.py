@@ -3962,7 +3962,8 @@ def run_avis(args: argparse.Namespace) -> int:
                             current_settings.get("obstacle_lane_change_enabled", True)
                         ),
                         "city_pedestrian_stop_enabled": bool(
-                            current_settings.get("city_pedestrian_stop_enabled", False)
+                            args.avis_mode == "city"
+                            and current_settings.get("city_pedestrian_stop_enabled", False)
                         ),
                         "city_pedestrian_stop_active": bool(
                             city_pedestrian_stop_state.get("active", False)
