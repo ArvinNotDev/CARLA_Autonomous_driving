@@ -3573,7 +3573,10 @@ def run_avis(args: argparse.Namespace) -> int:
 
                     city_pedestrian_stop_state = city_pedestrian_stop_controller.update(
                         vision_data.get("obstacle_classifier") if result_fresh else None,
-                        enabled=bool(current_settings.get("city_pedestrian_stop_enabled", False)),
+                        enabled=(
+                            args.avis_mode == "city"
+                            and bool(current_settings.get("city_pedestrian_stop_enabled", False))
+                        ),
                         hold_seconds=float(current_settings.get("city_pedestrian_stop_seconds", 5.0)),
                         confidence_threshold=float(
                             current_settings.get("obstacle_model_confidence_threshold", 0.90)
