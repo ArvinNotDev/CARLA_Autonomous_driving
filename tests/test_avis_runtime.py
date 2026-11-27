@@ -23,6 +23,7 @@ from avis_runtime import (
     select_avis_target_speed,
     select_avis_lane_change_speed,
     _avis_roi_lock_direction,
+    _apply_avis_roi_settings,
     _create_avis_vision_processor,
     _connect_avis_engine,
     _avis_engine_recvall,
@@ -105,6 +106,50 @@ def test_load_avis_profile_rejects_incomplete_profile(tmp_path):
 
     with pytest.raises(RuntimeError, match="incomplete"):
         load_avis_profile(path)
+
+
+def test_apply_avis_roi_settings_restores_all_roi_and_shared_geometry_values():
+    config = SimpleNamespace(
+        LL_TOP_ROI=0.0,
+        LL_BOTTOM_ROI=1.0,
+        LL_LEFT_ROI=0.0,
+        LL_RIGHT_ROI=1.0,
+        RL_TOP_ROI=0.0,
+        RL_BOTTOM_ROI=1.0,
+        RL_LEFT_ROI=0.0,
+        RL_RIGHT_ROI=1.0,
+        MIN_SIDE_PIXELS=80,
+        FALLBACK_LANE_OFFSET_RATIO=0.18,
+        LANE_CENTER_SMOOTH_ALPHA=0.35,
+    )
+    _apply_avis_roi_settings(
+        config,
+        {
+            "ll_top_roi": 0.61,
+            "ll_bottom_roi": 0.74,
+            "ll_left_roi": 0.10,
+            "ll_right_roi": 0.34,
+            "rl_top_roi": 0.60,
+            "rl_bottom_roi": 0.73,
+            "rl_left_roi": 0.65,
+            "rl_right_roi": 0.89,
+            "min_side_pixels": 16,
+            "lane_offset_ratio": 0.15,
+            "center_smoothing": 0.28,
+        },
+    )
+
+    assert config.LL_TOP_ROI == pytest.approx(0.61)
+    assert config.LL_BOTTOM_ROI == pytest.approx(0.74)
+    assert config.LL_LEFT_ROI == pytest.approx(0.10)
+    assert config.LL_RIGHT_ROI == pytest.approx(0.34)
+    assert config.RL_TOP_ROI == pytest.approx(0.60)
+    assert config.RL_BOTTOM_ROI == pytest.approx(0.73)
+    assert config.RL_LEFT_ROI == pytest.approx(0.65)
+    assert config.RL_RIGHT_ROI == pytest.approx(0.89)
+    assert config.MIN_SIDE_PIXELS == pytest.approx(16.0)
+    assert config.FALLBACK_LANE_OFFSET_RATIO == pytest.approx(0.15)
+    assert config.LANE_CENTER_SMOOTH_ALPHA == pytest.approx(0.28)
 
 
 def test_apply_avis_profile_only_applies_supported_keys():
