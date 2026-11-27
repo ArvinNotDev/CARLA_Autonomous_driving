@@ -487,3 +487,20 @@ Current thread 0x00003278 (most recent call first):
   File "C:\Users\Dj-pc\Desktop\CARLA_Autonomous_driving\main.py", line 1783 in run
   File "C:\Users\Dj-pc\Desktop\CARLA_Autonomous_driving\main.py", line 1814 in main
   File "C:\Users\Dj-pc\Desktop\CARLA_Autonomous_driving\main.py", line 1818 in <module>
+Windows fatal exception: code 0xc0000139
+
+Current thread 0x00001ac4 (most recent call first):
+  File "C:\Python312\Lib\site-packages\torch\__init__.py", line 263 in _load_dll_libraries
+  File "C:\Python312\Lib\site-packages\torch\__init__.py", line 287 in <module>
+  File "<frozen importlib._bootstrap>", line 488 in _call_with_frames_removed
+  File "<frozen importlib._bootstrap_external>", line 995 in exec_module
+  File "<frozen importlib._bootstrap>", line 935 in _load_unlocked
+  File "<frozen importlib._bootstrap>", line 1331 in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 1360 in _find_and_load
+  File "C:\Users\Dj-pc\Desktop\CARLA_Autonomous_driving\vision\city_vision_processing.py", line 196 in _configure_ultralytics_model
+  File "C:\Users\Dj-pc\Desktop\CARLA_Autonomous_driving\vision\city_vision_processing.py", line 90 in __init__
+  File "C:\Users\Dj-pc\Desktop\CARLA_Autonomous_driving\avis_runtime.py", line 1889 in __init__
+  File "C:\Users\Dj-pc\Desktop\CARLA_Autonomous_driving\avis_runtime.py", line 2012 in _create_avis_vision_processor
+  File "C:\Users\Dj-pc\Desktop\CARLA_Autonomous_driving\avis_runtime.py", line 2096 in run_avis
+  File "C:\Users\Dj-pc\Desktop\CARLA_Autonomous_driving\avis_runtime.py", line 2770 in main
+  File "C:\Users\Dj-pc\Desktop\CARLA_Autonomous_driving\main.py", line 59 in <module>
