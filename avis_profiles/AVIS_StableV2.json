@@ -80,12 +80,12 @@
     "obstacle_lane_line_search_max_distance_m": 40.0,
     "obstacle_clearance_after_pass_m": 5.0,
     "adaptive_roi_enabled": true,
-    "drivable_recovery_enabled": true,
+    "drivable_recovery_enabled": false,
     "adaptive_roi_max_expansion_ratio": 0.1,
     "adaptive_roi_edge_trigger_ratio": 0.18,
     "adaptive_roi_expand_step_ratio": 0.015,
     "adaptive_roi_recovery_frames": 4,
     "adaptive_roi_restore_step_ratio": 0.01
   },
-  "saved_at": 1795768053.1440308
+  "saved_at": 1795768221.1873505
 }
