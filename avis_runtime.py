@@ -561,8 +561,17 @@ class AvisReverseBrakeController:
         self.last_command = 0
         self.stop_confirmed = False
         self.last_speed_kmh = 0.0
+        self.braking_direction = 1
 
-    def update(self, *, active: bool, speed_kmh: float) -> dict[str, Any]:
+    def update(
+        self,
+        *,
+        active: bool,
+        speed_kmh: float,
+        travel_direction: int = 1,
+    ) -> dict[str, Any]:
+        direction = -1 if int(travel_direction) < 0 else 1
+        self.braking_direction = direction
         if not active:
             self.reset()
             return self.snapshot()
@@ -587,7 +596,7 @@ class AvisReverseBrakeController:
             else:
                 magnitude = int(round(speed * self.reverse_gain))
                 magnitude = max(self.min_reverse_command, min(self.max_reverse_command, magnitude))
-                self.last_command = -magnitude
+                self.last_command = -direction * magnitude
         else:
             self.last_command = 0
             self.stop_confirmed = True
@@ -598,6 +607,7 @@ class AvisReverseBrakeController:
             "phase": self.phase,
             "command": int(self.last_command),
             "reverse_active": self.last_command < 0,
+            "braking_direction": int(self.braking_direction),
             "stop_confirmed": bool(self.stop_confirmed),
             "speed_kmh": float(self.last_speed_kmh),
             "stop_speed_kmh": float(self.stop_speed_kmh),
@@ -2878,16 +2888,29 @@ class AvisEngineClient:
         *,
         brake: bool = False,
         reverse_brake_command: int | float | None = None,
+        directional_brake_command: int | float | None = None,
+        speed_direction: int = 1,
         current_speed_kmh: float | None = None,
     ) -> None:
+        direction = -1 if int(speed_direction) < 0 else 1
         if brake:
-            reverse_value = 0.0 if reverse_brake_command is None else float(reverse_brake_command)
-            if not math.isfinite(reverse_value):
-                raise ValueError("Reverse brake command must be finite.")
-            speed_command = int(round(min(0.0, max(-100.0, reverse_value))))
+            brake_value = (
+                directional_brake_command
+                if directional_brake_command is not None
+                else reverse_brake_command
+            )
+            raw_brake = 0.0 if brake_value is None else float(brake_value)
+            if not math.isfinite(raw_brake):
+                raise ValueError("Brake command must be a finite number.")
+            if directional_brake_command is not None:
+                speed_command = int(round(min(100.0, max(-100.0, raw_brake))))
+            else:
+                # Preserve the legacy crosswalk reverse-brake contract.
+                speed_command = int(round(min(0.0, max(-100.0, raw_brake))))
             steering_command = 0
         else:
             speed_command, steering_command = normalize_avis_controls(throttle, steering)
+            speed_command *= direction
         if not self.connected:
             return
         try:
@@ -3815,6 +3838,7 @@ def run_avis(args: argparse.Namespace) -> int:
         city_junction_controller = AvisCityJunctionController()
         city_reverse_brake_controller = AvisReverseBrakeController()
         drivable_recovery_controller = AvisDrivableAreaRecoveryController()
+        last_city_maneuver_direction: int | None = None
 
         if not bool(settings["auto_mode_default"]):
             dashboard_state.set_mode("stopped")
@@ -4545,7 +4569,16 @@ def run_avis(args: argparse.Namespace) -> int:
                         else:
                             status = "AUTO / COAST" if coasting else "AUTO"
 
+                    maneuver_speed_direction = int(
+                        city_junction_state.get("segment_direction", 1)
+                    )
                     if city_junction_state.get("maneuver_active"):
+                        if (
+                            last_city_maneuver_direction is not None
+                            and maneuver_speed_direction != last_city_maneuver_direction
+                        ):
+                            speed_controller.reset()
+                        last_city_maneuver_direction = maneuver_speed_direction
                         maneuver_steering = city_junction_state.get("steering_override")
                         if maneuver_steering is not None:
                             steering = steering_controller.update_override(
@@ -4560,10 +4593,14 @@ def run_avis(args: argparse.Namespace) -> int:
                         coasting = requested_brake > 0.0
                         if coasting:
                             throttle = 0.0
+                        direction_label = (
+                            "REVERSE" if maneuver_speed_direction < 0 else "FORWARD"
+                        )
                         status = (
                             "CITY / "
                             f"{city_junction_state.get('route_type', 'MANEUVER')} "
-                            f"MANEUVER {city_junction_state.get('segment_index', 0)}/"
+                            f"{direction_label} MANEUVER "
+                            f"{city_junction_state.get('segment_index', 0)}/"
                             f"{city_junction_state.get('segment_count', 0)}"
                         )
                         drivable_recovery_state = drivable_recovery_controller.update(
@@ -4578,6 +4615,7 @@ def run_avis(args: argparse.Namespace) -> int:
                     reverse_brake_state = city_reverse_brake_controller.update(
                         active=bool(city_junction_state.get("braking")),
                         speed_kmh=current_speed,
+                        travel_direction=maneuver_speed_direction,
                     )
                     reverse_brake_command = int(reverse_brake_state["command"])
                     if city_junction_state.get("braking"):
@@ -4607,8 +4645,8 @@ def run_avis(args: argparse.Namespace) -> int:
                         else:
                             status = f"CITY / CROSSWALK STOP · {remaining:.1f}s"
                         status += (
-                            f" · REVERSE BRAKE {abs(reverse_brake_command)}%"
-                            if reverse_brake_command < 0 else " · NEUTRAL HOLD"
+                            f" · {'REVERSE' if reverse_brake_command < 0 else 'FORWARD'} BRAKE {abs(reverse_brake_command)}%"
+                            if reverse_brake_command != 0 else " · NEUTRAL HOLD"
                         )
                     else:
                         city_reverse_brake_controller.reset()
@@ -4620,6 +4658,8 @@ def run_avis(args: argparse.Namespace) -> int:
                         steering,
                         brake=bool(city_junction_state.get("braking")),
                         reverse_brake_command=reverse_brake_command,
+                        directional_brake_command=reverse_brake_command,
+                        speed_direction=maneuver_speed_direction,
                         current_speed_kmh=current_speed,
                     )
 
