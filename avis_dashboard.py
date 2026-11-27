@@ -569,6 +569,25 @@ class AvisDashboardState:
                 return mode, self._manual_throttle, self._manual_steering, True
             return mode, 0.0, 0.0, False
 
+    def set_connection_status(self, connected: bool, status: str) -> None:
+        """Update connection state without discarding the latest dashboard telemetry."""
+        with self._lock:
+            self._telemetry["connected"] = bool(connected)
+            self._telemetry["status"] = str(status)
+            if not connected:
+                self._telemetry.update(
+                    {
+                        "speed_kmh": 0.0,
+                        "target_speed_kmh": 0.0,
+                        "throttle": 0.0,
+                        "steering": 0.0,
+                        "lane_valid": False,
+                        "sensors_cm": None,
+                        "front_sensor_cm": None,
+                        "sensor_distances_cm": None,
+                    }
+                )
+
     def publish_telemetry(self, telemetry: dict[str, Any]) -> None:
         with self._lock:
             self._telemetry = dict(telemetry)
@@ -693,7 +712,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
 .roi-editor-wrap{position:relative;width:100%;background:#05080e;overflow:hidden}.roi-editor-wrap img{width:100%;height:auto;display:block}.roi-editor-wrap canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair}.roi-toolbar{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:10px 0 2px}.roi-toolbar .btn{padding:8px 11px}.roi-toolbar .btn.active{background:#123b54;border-color:#42bde9;color:#b9f0ff}.roi-help{font-size:10px;color:#839ab2;line-height:1.5;margin-top:5px}
 .mode-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.btn{border:1px solid #304761;border-radius:10px;background:#1a2b42;color:var(--text);font:600 12px inherit;padding:11px 12px;cursor:pointer;transition:background .15s,border-color .15s,transform .15s}.btn:hover{background:#23415c;border-color:#4a8ab6}.btn:active{transform:scale(.985)}.btn.active{background:#123b54;border-color:#42bde9;color:#b9f0ff}.btn.stop{background:#3b1c2b;border-color:#713348;color:#ffc1cb}.btn.stop:hover{background:#542034}
 .manual-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:15px}.control label,.field label{display:flex;justify-content:space-between;gap:10px;color:#a9bdd2;font-size:11px;margin-bottom:8px}.control output{color:var(--cyan);font-variant-numeric:tabular-nums}input[type=range]{width:100%;accent-color:var(--accent)}.keyhelp{font-size:10px;color:#7289a2;line-height:1.6;margin-top:10px}
-.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.field input,.field select{width:100%;background:#0a1422;border:1px solid #2a3d55;border-radius:9px;padding:9px 10px;color:var(--text);font:13px inherit;outline:none}.field input:focus,.field select:focus{border-color:var(--accent)}.field.full{grid-column:1/-1}.section-label{color:var(--cyan);font-size:10px;text-transform:uppercase;letter-spacing:.13em;margin:18px 0 10px}.section-label:first-child{margin-top:2px}.hint{font-size:10px;color:#748ba5;line-height:1.5;margin-top:5px}.actions{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:15px}.save{background:linear-gradient(120deg,#1688bb,#2166a8);border:0;color:white}.message{font-size:11px;color:var(--ok);min-height:16px}.classical-box{border-top:1px solid #26374b;margin-top:16px;padding-top:4px}.hidden{display:none!important}
+.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.field input,.field select{width:100%;background:#0a1422;border:1px solid #2a3d55;border-radius:9px;padding:9px 10px;color:var(--text);font:13px inherit;outline:none}.field input:focus,.field select:focus{border-color:var(--accent)}.field.full{grid-column:1/-1}.field.checkbox-field label{justify-content:flex-start;align-items:center;gap:10px;margin:0;cursor:pointer}.field.checkbox-field input[type=checkbox]{width:18px;height:18px;flex:0 0 18px;margin:0;padding:0;accent-color:var(--accent)}.field.checkbox-field span{color:var(--text);font-size:12px}.section-label{color:var(--cyan);font-size:10px;text-transform:uppercase;letter-spacing:.13em;margin:18px 0 10px}.section-label:first-child{margin-top:2px}.hint{font-size:10px;color:#748ba5;line-height:1.5;margin-top:5px}.actions{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:15px}.save{background:linear-gradient(120deg,#1688bb,#2166a8);border:0;color:white}.message{font-size:11px;color:var(--ok);min-height:16px}.classical-box{border-top:1px solid #26374b;margin-top:16px;padding-top:4px}.hidden{display:none!important}
 .app-header{padding:16px clamp(16px,3vw,38px);border-bottom:1px solid #22364d;background:#071321ef}
 .header-main{min-width:0}.header-eyebrow{color:var(--cyan);font-size:10px;font-weight:800;letter-spacing:.15em;text-transform:uppercase}
 .header-title{font-size:clamp(18px,2.1vw,24px);font-weight:850;letter-spacing:-.035em;margin:4px 0}
@@ -850,7 +869,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
         </div>
         <div class="section-label">Obstacle avoidance / automatic lane change</div>
         <div class="fields">
-          <div class="field full"><label for="obstacle_lane_change_enabled">Automatic obstacle lane change</label><select id="obstacle_lane_change_enabled" data-setting="obstacle_lane_change_enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
+          <div class="field full checkbox-field"><label for="obstacle_lane_change_enabled"><input id="obstacle_lane_change_enabled" type="checkbox" data-setting="obstacle_lane_change_enabled"><span>Enable automatic obstacle avoidance / lane changes</span></label><div class="hint">When disabled, AVIS will not steer around detected obstacles. The model predictions remain visible so you can collect and inspect false-positive examples.</div></div>
           <div class="field"><label for="obstacle_model_confidence_threshold">Obstacle "yes" confidence</label><input id="obstacle_model_confidence_threshold" data-setting="obstacle_model_confidence_threshold" type="number" min=".5" max=".99" step=".01"></div>
           <div class="field"><label for="obstacle_lane_confidence_threshold">Lane prediction confidence</label><input id="obstacle_lane_confidence_threshold" data-setting="obstacle_lane_confidence_threshold" type="number" min=".5" max=".99" step=".01"></div>
           <div class="field"><label for="obstacle_model_confirm_frames">Model trigger confirmation frames</label><input id="obstacle_model_confirm_frames" data-setting="obstacle_model_confirm_frames" type="number" min="1" max="30" step="1"></div>
@@ -1208,7 +1227,9 @@ function fillSettings(settings) {
   settingInputs.forEach(input => {
     const key = input.dataset.setting;
     if (!(key in settings)) return;
-    if (input.tagName === "SELECT" && (key === "yellow_enabled" || key === "obstacle_lane_change_enabled" || key === "adaptive_roi_enabled" || key === "drivable_recovery_enabled")) {
+    if (input.type === "checkbox") {
+      input.checked = Boolean(settings[key]);
+    } else if (input.tagName === "SELECT" && (key === "yellow_enabled" || key === "adaptive_roi_enabled" || key === "drivable_recovery_enabled")) {
       input.value = settings[key] ? "true" : "false";
     } else {
       input.value = settings[key];
@@ -1221,8 +1242,9 @@ function collectSettings() {
   const result = {};
   settingInputs.forEach(input => {
     const key = input.dataset.setting;
-    if (input.tagName === "SELECT" && key === "vision_backend") result[key] = input.value;
-    else if (input.tagName === "SELECT" && (key === "yellow_enabled" || key === "obstacle_lane_change_enabled" || key === "adaptive_roi_enabled" || key === "drivable_recovery_enabled")) result[key] = input.value === "true";
+    if (input.type === "checkbox") result[key] = input.checked;
+    else if (input.tagName === "SELECT" && key === "vision_backend") result[key] = input.value;
+    else if (input.tagName === "SELECT" && (key === "yellow_enabled" || key === "adaptive_roi_enabled" || key === "drivable_recovery_enabled")) result[key] = input.value === "true";
     else {
       const raw = input.value.trim();
       if (raw === "") return;

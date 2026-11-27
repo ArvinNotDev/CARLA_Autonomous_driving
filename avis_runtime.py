@@ -7,11 +7,30 @@ import json
 import math
 import numpy as np
 import os
+import socket
 import sys
 import time
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Optional
+
+
+def _avis_engine_recvall(connection: Any) -> str:
+    """Receive one AVIS response and fail immediately when the peer closes.
+
+    The vendor API's original recvall() loops forever when recv() returns b""
+    after an Engine restart. A closed TCP stream must become a reconnect signal.
+    """
+    buffer = bytearray()
+    while True:
+        chunk = connection.recv(131072)
+        if not chunk:
+            raise ConnectionError(
+                "AVIS Engine closed the TCP connection before sending <EOF>."
+            )
+        buffer.extend(chunk)
+        if b"<EOF>" in buffer:
+            return buffer.decode("utf-8")
 
 
 class AvisFpsMonitor:
@@ -665,6 +684,10 @@ class AvisObstacleLaneChangeController:
         self.line_candidate_x: float | None = None
         self.steering_pulse_index = 0
         self.line_search_distance_m = 0.0
+
+    def reset(self) -> None:
+        """Reset every obstacle-avoidance state, including subclass-specific state."""
+        self.__init__()
 
     @staticmethod
     def front_sensor_distance_cm(sensors: Any) -> float | None:
@@ -1592,6 +1615,60 @@ class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
         now: float | None = None,
     ) -> dict[str, Any]:
         detection_enabled = bool(settings.get("obstacle_lane_change_enabled", True))
+        if not detection_enabled:
+            # Turning avoidance off must also cancel an already-started lane change.
+            # Keep the current classifier output for dashboard inspection, but never
+            # let a stale latch or steering override leak into vehicle control.
+            self.reset()
+            obstacle = (classifier_output or {}).get("obstacle_ahead", {})
+            lane = (classifier_output or {}).get("lane", {})
+            obstacle_probs = obstacle.get("probabilities", {}) if isinstance(obstacle, dict) else {}
+            lane_probs = lane.get("probabilities", {}) if isinstance(lane, dict) else {}
+            try:
+                obstacle_probability = float(obstacle_probs.get("yes", 0.0))
+                lane_probability = float(lane_probs.get("left", 0.0))
+                lane_confidence = float(
+                    lane.get("confidence", max(lane_probability, 1.0 - lane_probability))
+                )
+            except (TypeError, ValueError):
+                obstacle_probability = lane_probability = lane_confidence = float("nan")
+            if not math.isfinite(obstacle_probability) or not 0.0 <= obstacle_probability <= 1.0:
+                obstacle_probability = None
+            if not math.isfinite(lane_probability) or not 0.0 <= lane_probability <= 1.0:
+                lane_probability = None
+            if not math.isfinite(lane_confidence) or not 0.0 <= lane_confidence <= 1.0:
+                lane_confidence = None
+            lane_label = (
+                str(lane.get("label", "")).strip().lower()
+                if isinstance(lane, dict) else ""
+            )
+            if lane_label not in {"left", "right"}:
+                lane_label = (
+                    "left" if lane_probability is not None and lane_probability > 0.5
+                    else "right" if lane_probability is not None else None
+                )
+            disabled_state = super().snapshot(sensors)
+            disabled_state.update({
+                "obstacle_latched": False,
+                "obstacle_model_confirm_frames": 0,
+                "obstacle_model_rearm_frames": 0,
+                "obstacle_model_probability": obstacle_probability,
+                "obstacle_lane_probability": lane_probability,
+                "obstacle_lane_prediction": lane_label,
+                "obstacle_lane_confidence": lane_confidence,
+                "model_lane_confirm_frames": 0,
+                "lane_change_attempt_number": 0,
+                "lane_change_retry_steer": None,
+                "lane_change_retry_pulse_distance_m": None,
+                "return_distance_stage": "DISABLED",
+                "return_after_distance_m": self.RETURN_AFTER_DISTANCE_M,
+                "return_distance_travelled_m": 0.0,
+                "return_distance_remaining_m": 0.0,
+                "sensor_angle_override": int(settings.get("sensor_angle", 40)),
+                "search_limit_reached": False,
+            })
+            return disabled_state
+
         observation_is_new = (
             observation_id is not None
             and observation_id != self.last_model_observation_id
@@ -2036,6 +2113,18 @@ class AvisEngineClient:
         self._connected = False
         self._closed = False
 
+        # AVIS-Engine-Python-API currently declares Car.sock at class scope.
+        # Every Car() therefore inherits the same socket, including one closed
+        # by a previous runtime session. Give each client its own TCP socket.
+        inherited_socket = getattr(type(self.car), "sock", None)
+        if isinstance(inherited_socket, socket.socket):
+            self.car.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+        # The vendor recvall() spins forever on b"" after the Engine closes its
+        # side of TCP. Replace it with EOF-aware receive logic so disconnects
+        # reach the runtime's reconnect loop.
+        self.car.recvall = lambda connection: _avis_engine_recvall(connection)
+
         # The vendor destructor calls stop() even after explicit shutdown.
         # This adapter owns shutdown and makes that destructor path harmless.
         self.car.stop = lambda: None
@@ -2054,18 +2143,33 @@ class AvisEngineClient:
                 "Check that the simulator server is running and its IP/port match."
             )
 
+    @property
+    def connected(self) -> bool:
+        return bool(self._connected and not self._closed)
+
+    def _mark_disconnected(self) -> None:
+        self._connected = False
+        self._close_socket()
+
     def set_sensor_angle(self, angle: int) -> None:
-        if self._closed:
-            raise RuntimeError("The AVIS connection is already closed.")
-        self.car.setSensorAngle(int(angle))
+        if not self.connected:
+            return
+        try:
+            self.car.setSensorAngle(int(angle))
+        except Exception:
+            self._mark_disconnected()
 
     def read_data(self) -> tuple[Any, float, Any]:
-        if self._closed or not self._connected:
+        if not self.connected:
             raise RuntimeError("The AVIS connection is not active.")
-        self.car.getData()
-        image = self.car.getImage()
-        speed = self.car.getSpeed()
-        sensors = self.car.getSensors()
+        try:
+            self.car.getData()
+            image = self.car.getImage()
+            speed = self.car.getSpeed()
+            sensors = self.car.getSensors()
+        except Exception:
+            self._mark_disconnected()
+            raise
         try:
             speed_kmh = float(speed)
         except (TypeError, ValueError):
@@ -2075,35 +2179,43 @@ class AvisEngineClient:
         return image, max(0.0, speed_kmh), sensors
 
     def send_control(self, throttle: float, steering: float) -> None:
-        if self._closed or not self._connected:
-            raise RuntimeError("The AVIS connection is not active.")
         speed_command, steering_command = normalize_avis_controls(throttle, steering)
-        self.car.setSpeed(speed_command)
-        self.car.setSteering(steering_command)
+        if not self.connected:
+            return
+        try:
+            self.car.setSpeed(speed_command)
+            self.car.setSteering(steering_command)
+        except Exception:
+            self._mark_disconnected()
 
     def send_manual_control(self, throttle: float, steering: float) -> None:
-        if self._closed or not self._connected:
-            raise RuntimeError("The AVIS connection is not active.")
         speed_command, steering_command = normalize_avis_manual_controls(
             throttle, steering
         )
-        self.car.setSpeed(speed_command)
-        self.car.setSteering(steering_command)
+        if not self.connected:
+            return
+        try:
+            self.car.setSpeed(speed_command)
+            self.car.setSteering(steering_command)
+        except Exception:
+            self._mark_disconnected()
 
     def _close_socket(self) -> None:
         sock = getattr(self.car, "sock", None)
         if sock is not None:
             try:
                 sock.close()
-            except OSError:
+            except Exception:
                 pass
 
     def close(self) -> None:
         if self._closed:
             return
+        was_connected = self._connected
         self._closed = True
+        self._connected = False
 
-        if self._connected:
+        if was_connected:
             try:
                 self.car.setSpeed(0)
             except Exception:
@@ -2116,7 +2228,7 @@ class AvisEngineClient:
             if sock is not None:
                 try:
                     sock.sendall(b"stop")
-                except OSError:
+                except Exception:
                     pass
         self._close_socket()
 
@@ -2131,6 +2243,27 @@ class AvisEngineClient:
             self.close()
         except Exception:
             pass
+
+
+def _connect_avis_engine(
+    api_module: ModuleType,
+    host: str,
+    port: int,
+    sensor_angle: int,
+) -> AvisEngineClient:
+    """Create and configure a fresh AVIS connection, cleaning up partial failures."""
+    client = AvisEngineClient(api_module, host, port)
+    try:
+        client.send_control(0.0, 0.0)
+        client.set_sensor_angle(int(sensor_angle))
+        if not client.connected:
+            raise ConnectionError(
+                f"AVIS Engine at {host}:{int(port)} disconnected during initialization."
+            )
+        return client
+    except Exception:
+        client.close()
+        raise
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2733,10 +2866,6 @@ def run_avis(args: argparse.Namespace) -> int:
         inference_worker = InferenceWorker(vision_processor=vision_processor)
         inference_worker.start()
 
-        client = AvisEngineClient(avis_api, args.avis_host, args.avis_port)
-        client.send_control(0.0, 0.0)
-        client.set_sensor_angle(int(settings["sensor_angle"]))
-
         steering_controller = AvisSteeringController(
             kp=float(settings["kp"]),
             ki=float(settings["ki"]),
@@ -2776,6 +2905,31 @@ def run_avis(args: argparse.Namespace) -> int:
                     "Do not expose it to untrusted networks."
                 )
 
+        last_connect_error = None
+        while client is None:
+            try:
+                client = _connect_avis_engine(
+                    avis_api,
+                    args.avis_host,
+                    args.avis_port,
+                    int(settings["sensor_angle"]),
+                )
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:
+                signature = f"{type(exc).__name__}: {exc}"
+                if signature != last_connect_error:
+                    print(
+                        f"[AVIS] Engine is unavailable ({signature}); "
+                        "retrying in 1 second."
+                    )
+                    last_connect_error = signature
+                dashboard_state.set_connection_status(
+                    False, "Waiting for AVIS Engine / reconnecting"
+                )
+                time.sleep(1.0)
+
+        dashboard_state.set_connection_status(True, "Connected; waiting for camera")
         print(f"[AVIS] Connected to {args.avis_host}:{args.avis_port}.")
         print(
             f"[AVIS] Waiting {max(0.0, args.avis_startup_delay):.1f}s "
@@ -2792,6 +2946,7 @@ def run_avis(args: argparse.Namespace) -> int:
         last_model_prediction_request_id = 0
         last_dashboard_publish = 0.0
         frame_id = 0
+        minimum_vision_frame_id = 0
         last_error_message = None
         consecutive_connection_errors = 0
         last_control_time = time.perf_counter()
@@ -2815,15 +2970,72 @@ def run_avis(args: argparse.Namespace) -> int:
                 consecutive_connection_errors = 0
             except Exception as exc:
                 consecutive_connection_errors += 1
-                client.send_control(0.0, 0.0)
                 signature = f"{type(exc).__name__}: {exc}"
                 if signature != last_error_message:
                     print(f"[AVIS] Data receive failed: {signature}")
                     last_error_message = signature
                 if consecutive_connection_errors >= 3:
-                    raise ConnectionError(
-                        "AVIS data reception failed three consecutive times."
-                    ) from exc
+                    print(
+                        "[AVIS] Engine connection lost. "
+                        "Stopping drive commands and waiting for the server to return."
+                    )
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+                    client = None
+                    dashboard_state.set_mode("stopped")
+                    dashboard_state.set_connection_status(
+                        False, "AVIS Engine disconnected / reconnecting"
+                    )
+
+                    reconnect_error = None
+                    while client is None:
+                        time.sleep(1.0)
+                        try:
+                            client = _connect_avis_engine(
+                                avis_api,
+                                args.avis_host,
+                                args.avis_port,
+                                int(active_sensor_angle),
+                            )
+                        except KeyboardInterrupt:
+                            raise
+                        except Exception as reconnect_exc:
+                            reconnect_signature = (
+                                f"{type(reconnect_exc).__name__}: {reconnect_exc}"
+                            )
+                            if reconnect_signature != reconnect_error:
+                                print(
+                                    f"[AVIS] Reconnect attempt failed: "
+                                    f"{reconnect_signature}"
+                                )
+                                reconnect_error = reconnect_signature
+
+                    steering_controller.reset()
+                    speed_controller.reset()
+                    obstacle_lane_change = AvisModelObstacleLaneChangeController()
+                    drivable_recovery_controller = AvisDrivableAreaRecoveryController()
+                    last_vision_result = None
+                    minimum_vision_frame_id = frame_id
+                    last_inference_submit = 0.0
+                    last_dashboard_publish = 0.0
+                    recovery_steering = 0.0
+                    last_control_time = time.perf_counter()
+                    next_tick = last_control_time
+                    consecutive_connection_errors = 0
+                    last_error_message = None
+                    dashboard_state.set_mode("stopped")
+                    dashboard_state.set_connection_status(
+                        True, "Reconnected; waiting for camera"
+                    )
+                    time.sleep(max(0.0, float(args.avis_startup_delay)))
+                    print(
+                        f"[AVIS] Reconnected to {args.avis_host}:{args.avis_port}. "
+                        "Driving remains stopped for safety."
+                    )
+                else:
+                    time.sleep(min(control_period, 0.05))
                 continue
 
             current_settings, current_revision = dashboard_state.settings_snapshot()
@@ -2936,7 +3148,11 @@ def run_avis(args: argparse.Namespace) -> int:
                 vision_snapshot, vision_busy, vision_error, _ = (
                     inference_worker.vision_snapshot()
                 )
-                if vision_snapshot is not None and vision_snapshot.valid:
+                if (
+                    vision_snapshot is not None
+                    and vision_snapshot.valid
+                    and int(vision_snapshot.source_frame_id) > minimum_vision_frame_id
+                ):
                     last_vision_result = vision_snapshot
                     completed_at = float(vision_snapshot.completed_at)
                     if completed_at != last_inference_fps_timestamp:

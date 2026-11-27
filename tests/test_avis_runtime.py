@@ -24,6 +24,8 @@ from avis_runtime import (
     select_avis_lane_change_speed,
     _avis_roi_lock_direction,
     _create_avis_vision_processor,
+    _connect_avis_engine,
+    _avis_engine_recvall,
 )
 
 from avis_classical_vision import AvisClassicalVisionProcessor
@@ -245,6 +247,86 @@ def test_avis_client_rejects_failed_connection():
 
 
 
+def test_avis_client_uses_a_fresh_socket_when_vendor_socket_is_class_shared():
+    import socket
+
+    shared_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+    class SharedSocketCar(FakeCar):
+        def __init__(self):
+            super().__init__()
+            # Simulate the official AVIS API's class-level Car.sock.
+            del self.sock
+
+    SharedSocketCar.sock = shared_socket
+    client = AvisEngineClient(
+        SimpleNamespace(Car=SharedSocketCar), "127.0.0.1", 25001
+    )
+    try:
+        assert client.car.sock is not shared_socket
+        assert client.connected is True
+        client.close()
+        # Closing this client must not poison the class-level socket used as
+        # the template for a future Car() instance.
+        assert shared_socket.fileno() >= 0
+    finally:
+        client.close()
+        shared_socket.close()
+
+
+def test_avis_engine_recvall_raises_when_server_closes_tcp_stream():
+    import socket
+
+    receiver, peer = socket.socketpair()
+    try:
+        peer.close()
+        with pytest.raises(ConnectionError, match="closed the TCP connection"):
+            _avis_engine_recvall(receiver)
+    finally:
+        receiver.close()
+        peer.close()
+
+
+def test_avis_client_marks_connection_lost_when_control_write_fails():
+    class BrokenControlCar(FakeCar):
+        def setSpeed(self, value):
+            raise OSError("AVIS Engine server stopped")
+
+    client = AvisEngineClient(SimpleNamespace(Car=BrokenControlCar), "127.0.0.1", 25001)
+
+    # A failed write is recorded as a disconnected state instead of escaping
+    # into run_avis and terminating the application.
+    client.send_control(0.0, 0.0)
+    assert client.connected is False
+    with pytest.raises(RuntimeError, match="not active"):
+        client.read_data()
+    client.close()
+
+
+def test_avis_client_marks_connection_lost_when_data_read_fails():
+    class BrokenReadCar(FakeCar):
+        def getData(self):
+            raise OSError("AVIS Engine server stopped")
+
+    client = AvisEngineClient(SimpleNamespace(Car=BrokenReadCar), "127.0.0.1", 25001)
+
+    with pytest.raises(OSError, match="server stopped"):
+        client.read_data()
+    assert client.connected is False
+    client.close()
+
+
+def test_connect_avis_engine_initializes_controls_and_sensor_angle():
+    api = SimpleNamespace(Car=FakeCar)
+    client = _connect_avis_engine(api, "127.0.0.1", 25001, 35)
+
+    assert client.connected is True
+    assert client.car.sensor_angle == 35
+    assert client.car.speed_commands == [0]
+    assert client.car.steering_commands == [0]
+    client.close()
+
+
 def test_normalize_avis_manual_controls_supports_forward_and_reverse():
     assert normalize_avis_manual_controls(0.5, -0.25) == (50, -25)
     assert normalize_avis_manual_controls(-0.4, 0.6) == (-40, 60)
@@ -270,6 +352,32 @@ def test_avis_dashboard_persists_only_avis_settings_and_validates_updates(tmp_pa
             {"min_speed_kmh": 30, "max_speed_kmh": 20},
             persist=False,
         )
+
+
+def test_avis_dashboard_connection_status_preserves_telemetry_and_stops_values(tmp_path):
+    state = AvisDashboardState(settings_path=tmp_path / "avis_settings.json")
+    state.publish_telemetry(
+        {
+            "connected": True,
+            "status": "AUTO",
+            "speed_kmh": 12.0,
+            "target_speed_kmh": 18.0,
+            "throttle": 0.4,
+            "steering": -0.2,
+            "lane_valid": True,
+        }
+    )
+
+    state.set_connection_status(False, "AVIS Engine disconnected / reconnecting")
+    telemetry = state.snapshot()["telemetry"]
+
+    assert telemetry["connected"] is False
+    assert telemetry["status"] == "AVIS Engine disconnected / reconnecting"
+    assert telemetry["speed_kmh"] == 0.0
+    assert telemetry["target_speed_kmh"] == 0.0
+    assert telemetry["throttle"] == 0.0
+    assert telemetry["steering"] == 0.0
+    assert telemetry["lane_valid"] is False
 
 
 def test_avis_dashboard_manual_api_accepts_reverse_and_emergency_stop(tmp_path):
@@ -1398,6 +1506,7 @@ def test_avis_dashboard_lane_change_settings_are_persistent_and_validated(tmp_pa
     restored = AvisDashboardState(settings_path=tmp_path / "avis_settings.json")
     restored_settings, _ = restored.settings_snapshot()
     assert restored_settings["obstacle_clearance_after_pass_m"] == pytest.approx(6.5)
+    assert restored_settings["obstacle_lane_change_enabled"] is True
 
     # The front threshold may exceed the configured clear threshold; runtime
     # applies hysteresis automatically instead of rejecting the form.
@@ -1473,7 +1582,8 @@ def test_avis_import_profile_migrates_removed_obstacle_slowdown_setting(tmp_path
 def test_avis_dashboard_exposes_obstacle_lane_change_settings(tmp_path):
     state = AvisDashboardState(settings_path=tmp_path / "avis_settings.json")
     html = create_avis_dashboard_app(state).test_client().get("/").get_data(as_text=True)
-    assert 'id="obstacle_lane_change_enabled"' in html
+    assert 'id="obstacle_lane_change_enabled" type="checkbox" data-setting="obstacle_lane_change_enabled"' in html
+    assert "model predictions remain visible" in html
     assert 'id="drivable_recovery_enabled" data-setting="drivable_recovery_enabled"' in html
     assert "five-inference median" in html
     assert "1.5-second persistence gate" in html
@@ -2544,6 +2654,50 @@ def test_obstacle_yes_starts_left_change_without_requiring_lane_head_to_say_left
     assert state["phase"] == controller.STEER_LEFT
     assert state["obstacle_trigger_sensor"] == "MODEL"
     assert state["steering_override"] == pytest.approx(-settings["obstacle_lane_change_left_steer"])
+
+
+def test_disabling_obstacle_avoidance_aborts_and_blocks_model_lane_changes():
+    controller = AvisModelObstacleLaneChangeController()
+    enabled = dict(DEFAULT_AVIS_SETTINGS)
+    enabled["obstacle_model_confirm_frames"] = 1
+    prediction = _model_obstacle_prediction(obstacle_yes=0.96, lane_left=0.10)
+
+    active = controller.update(
+        sensors=[1500, 1500, 1500],
+        speed_kmh=8.0, dt=0.1,
+        left_x=100, right_x=220, settings=enabled,
+        classifier_output=prediction,
+        observation_id=1, frame_width=320, now=10.0,
+    )
+    assert active["phase"] == controller.STEER_LEFT
+    assert active["steering_override"] is not None
+
+    disabled = dict(enabled)
+    disabled["obstacle_lane_change_enabled"] = False
+    cancelled = controller.update(
+        sensors=[1500, 1500, 1500],
+        speed_kmh=8.0, dt=0.1,
+        left_x=100, right_x=220, settings=disabled,
+        classifier_output=prediction,
+        observation_id=2, frame_width=320, now=10.1,
+    )
+    assert cancelled["phase"] == controller.RIGHT_LANE
+    assert cancelled["steering_override"] is None
+    assert cancelled["active"] is False
+    assert cancelled["safe_stop"] is False
+    assert cancelled["obstacle_latched"] is False
+    assert cancelled["obstacle_model_probability"] == pytest.approx(0.96)
+    assert cancelled["obstacle_lane_prediction"] == "right"
+
+    still_disabled = controller.update(
+        sensors=[1500, 1500, 1500],
+        speed_kmh=8.0, dt=0.1,
+        left_x=100, right_x=220, settings=disabled,
+        classifier_output=prediction,
+        observation_id=3, frame_width=320, now=10.2,
+    )
+    assert still_disabled["phase"] == controller.RIGHT_LANE
+    assert still_disabled["steering_override"] is None
 
 
 def test_model_lane_output_drives_gentle_retries_in_both_directions():
