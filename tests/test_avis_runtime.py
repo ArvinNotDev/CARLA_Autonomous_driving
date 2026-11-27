@@ -1,4 +1,6 @@
+import ctypes
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +19,7 @@ from avis_runtime import (
     AvisModelObstacleLaneChangeController,
     AvisObstacleLaneClassifier,
     AvisCityCrosswalkStopController,
+    AvisSimulatorHandbrake,
     AvisCombinedVisionProcessor,
     apply_avis_profile,
     build_parser,
@@ -464,6 +467,115 @@ class FakeCar:
 
     def stop(self):
         self.stopped = True
+
+
+def test_avis_simulator_handbrake_holds_space_and_restores_previous_window():
+    class FakeKernel32:
+        def GetCurrentThreadId(self):
+            return 111
+
+        def OpenProcess(self, _access, _inherit, process_id):
+            return process_id
+
+        def QueryFullProcessImageNameW(self, _process, _flags, buffer, size):
+            buffer.value = r"C:\\Program Files\\AVIS Engine\\AVIS Engine.exe"
+            return 1
+
+        def CloseHandle(self, _handle):
+            return 1
+
+    class FakeUser32:
+        def __init__(self):
+            self.foreground = 10
+            self.events = []
+            self.windows = {10: "Browser", 20: "AVIS Engine"}
+            self.visible = {10: True, 20: True}
+
+        def EnumWindows(self, callback, parameter):
+            for hwnd in self.windows:
+                if not callback(hwnd, parameter):
+                    break
+            return 1
+
+        def IsWindowVisible(self, hwnd):
+            return self.visible.get(hwnd, False)
+
+        def GetWindowTextLengthW(self, hwnd):
+            return len(self.windows.get(hwnd, ""))
+
+        def GetWindowTextW(self, hwnd, buffer, _length):
+            buffer.value = self.windows.get(hwnd, "")
+            return len(buffer.value)
+
+        def GetWindowThreadProcessId(self, hwnd, process_id):
+            if process_id is not None:
+                process_id._obj.value = hwnd + 1000
+            return hwnd + 100
+
+        def GetForegroundWindow(self):
+            return self.foreground
+
+        def ShowWindow(self, _hwnd, _command):
+            return 1
+
+        def AttachThreadInput(self, _current, _target, _attach):
+            return 1
+
+        def BringWindowToTop(self, _hwnd):
+            return 1
+
+        def SetForegroundWindow(self, hwnd):
+            self.foreground = hwnd
+            return 1
+
+        def SetActiveWindow(self, hwnd):
+            return hwnd
+
+        def SetFocus(self, hwnd):
+            return hwnd
+
+        def IsWindow(self, hwnd):
+            return hwnd in self.windows
+
+        def SendInput(self, count, pointer, _size):
+            event = ctypes.cast(
+                pointer, ctypes.POINTER(AvisSimulatorHandbrake._keyboard_input_type()[0])
+            ).contents
+            self.events.append((event.ki.wVk, event.ki.dwFlags))
+            return count
+
+    fake_user32 = FakeUser32()
+    controller = AvisSimulatorHandbrake(
+        user32=fake_user32,
+        kernel32=FakeKernel32(),
+    )
+
+    assert controller.available is True
+    assert controller.set_active(True) is True
+    assert controller.held is True
+    assert fake_user32.foreground == 20
+    assert fake_user32.events == [(AvisSimulatorHandbrake.VK_SPACE, 0)]
+
+    # Repeated control ticks do not generate repeated key presses.
+    assert controller.set_active(True) is True
+    assert fake_user32.events == [(AvisSimulatorHandbrake.VK_SPACE, 0)]
+
+    controller.release()
+    assert controller.held is False
+    assert fake_user32.events[-1] == (
+        AvisSimulatorHandbrake.VK_SPACE,
+        AvisSimulatorHandbrake.KEYEVENTF_KEYUP,
+    )
+    assert fake_user32.foreground == 10
+
+
+def test_avis_simulator_handbrake_reports_unavailable_off_windows():
+    if os.name == "nt":
+        pytest.skip("This test covers the non-Windows fallback only.")
+    controller = AvisSimulatorHandbrake()
+    assert controller.available is False
+    assert controller.set_active(True) is False
+    assert controller.held is False
 
 
 def test_avis_client_uses_native_braking_only_above_safe_speed():
