@@ -637,6 +637,60 @@ def test_avis_dashboard_apply_settings_autosaves_complete_active_profile_to_gith
     assert local_document["profiles"][0]["settings"] == saved_settings
 
 
+def test_avis_roi_local_save_does_not_publish_to_github_until_main_settings_save(tmp_path):
+    class RecordingGitHubSync:
+        def __init__(self):
+            self.published = []
+
+        def publish_profile(self, profile):
+            self.published.append(json.loads(json.dumps(profile)))
+            return {"html_url": "https://github.com/ArvinNotDev/CARLA_Autonomous_driving"}
+
+    sync = RecordingGitHubSync()
+    profile_path = tmp_path / "avis_profiles.json"
+    state = AvisDashboardState(
+        settings_path=tmp_path / "avis_settings.json",
+        profile_path=profile_path,
+        github_sync=sync,
+    )
+    client = create_avis_dashboard_app(state).test_client()
+
+    roi_response = client.post(
+        "/api/settings/local",
+        json={"cw_top_roi": 0.61, "cw_bottom_roi": 0.90},
+    )
+    assert roi_response.status_code == 200
+    roi_data = roi_response.get_json()
+    assert roi_data["github_synced"] is False
+    assert roi_data["github_deferred"] is True
+    assert sync.published == []
+    assert roi_data["settings"]["cw_top_roi"] == pytest.approx(0.61)
+    assert roi_data["settings"]["cw_bottom_roi"] == pytest.approx(0.90)
+
+    local_document = json.loads(profile_path.read_text(encoding="utf-8"))
+    assert local_document["profiles"][0]["settings"]["cw_top_roi"] == pytest.approx(0.61)
+    assert local_document["profiles"][0]["settings"]["cw_bottom_roi"] == pytest.approx(0.90)
+
+    # Only the explicit main Settings save publishes the complete profile,
+    # including the locally edited ROI coordinates.
+    settings_response = client.post(
+        "/api/settings",
+        json={"control_loop_hz": 35},
+    )
+    assert settings_response.status_code == 200
+    assert settings_response.get_json()["github_synced"] is True
+    assert len(sync.published) == 1
+    published = sync.published[0]["settings"]
+    assert published["cw_top_roi"] == pytest.approx(0.61)
+    assert published["cw_bottom_roi"] == pytest.approx(0.90)
+    assert published["control_loop_hz"] == pytest.approx(35.0)
+
+
+def test_avis_dashboard_roi_editor_uses_local_save_and_defers_github_sync():
+    assert 'postJson("/api/settings/local",payload)' in DASHBOARD_HTML
+    assert "GitHub sync deferred until settings save" in DASHBOARD_HTML
+
+
 def test_avis_dashboard_profile_validator_keeps_model_paths_and_thresholds():
     settings = validate_avis_settings(
         dict(DEFAULT_AVIS_SETTINGS),
