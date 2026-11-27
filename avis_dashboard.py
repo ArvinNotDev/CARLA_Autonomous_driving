@@ -1445,7 +1445,10 @@ function collectSettings() {
     if (input.type === "checkbox") result[key] = input.checked;
     else if (input.tagName === "SELECT" && key === "vision_backend") result[key] = input.value;
     else if (input.tagName === "SELECT" && (key === "yellow_enabled" || key === "adaptive_roi_enabled" || key === "drivable_recovery_enabled")) result[key] = input.value === "true";
-    else if (input.type === "text" || input.tagName === "TEXTAREA") {
+    else if (input.type === "text") {
+      const raw = input.value.trim();
+      if (raw !== "") result[key] = raw;
+    } else if (input.tagName === "TEXTAREA") {
       result[key] = input.value.trim();
     } else {
       const raw = input.value.trim();
