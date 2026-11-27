@@ -67,7 +67,7 @@
     "city_maneuver_segment_timeout_seconds": 20.0,
     "city_maneuver_distance_scale": 1.0,
     "city_maneuver_distance_max_sample_gap_seconds": 0.5,
-    "city_maneuver_sequences_json": "{\n  \"STRAIGHT\": [\n    {\n      \"distance_m\": 15.0,\n      \"steering_value\": 0.0\n    }\n  ],\n  \"LEFT\": [\n    {\n      \"distance_m\": 2.5,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 8.5,\n      \"steering_value\": -0.25\n    },\n    {\n      \"distance_m\": 6.8,\n      \"steering_value\": -1.0\n    }\n  ],\n  \"RIGHT\": [\n    {\n      \"distance_m\": 2.0,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 4.0,\n      \"steering_value\": 0.33\n    },\n    {\n      \"distance_m\": 7.5,\n      \"steering_value\": 1.0\n    }\n  ],\n  \"LEFT_90\": [\n    {\n      \"distance_m\": 9.2,\n      \"steering_value\": -1.0\n    }\n  ],\n  \"RIGHT_90\": [\n    {\n      \"distance_m\": 8.5,\n      \"steering_value\": 1.0\n    }\n  ]\n}",
+    "city_maneuver_sequences_json": "{\n  \"STRAIGHT\": [\n    {\n      \"distance_m\": 15.0,\n      \"steering_value\": 0.0\n    }\n  ],\n  \"LEFT\": [\n    {\n      \"distance_m\": 2.5,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 8.5,\n      \"steering_value\": -0.25\n    },\n    {\n      \"distance_m\": 6.8,\n      \"steering_value\": -1.0\n    }\n  ],\n  \"RIGHT\": [\n    {\n      \"distance_m\": 2.0,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 4.2,\n      \"steering_value\": 0.33\n    },\n    {\n      \"distance_m\": 7.5,\n      \"steering_value\": 1.0\n    }\n  ],\n  \"LEFT_90\": [\n    {\n      \"distance_m\": 9.2,\n      \"steering_value\": -1.0\n    }\n  ],\n  \"RIGHT_90\": [\n    {\n      \"distance_m\": 8.5,\n      \"steering_value\": 1.0\n    }\n  ]\n}",
     "city_crosswalk_stop_seconds": 3.0,
     "city_crosswalk_rearm_clear_seconds": 1.0,
     "city_crosswalk_min_line_length_ratio": 0.35,
@@ -137,7 +137,7 @@
         "steering_value": 0.0
       },
       {
-        "distance_m": 4.0,
+        "distance_m": 4.2,
         "steering_value": 0.33
       },
       {
@@ -158,5 +158,5 @@
       }
     ]
   },
-  "saved_at": 1795807904.6921942
+  "saved_at": 1795807966.1812124
 }
