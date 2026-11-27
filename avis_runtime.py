@@ -1565,7 +1565,7 @@ class AvisObstacleLaneClassifier:
 class AvisCombinedVisionProcessor:
     """Keep lane-line geometry and AVIS classification in one worker request."""
 
-    def __init__(self, lane_processor, obstacle_classifier: AvisObstacleLaneClassifier):
+    def __init__(self, lane_processor, obstacle_classifier: AvisObstacleLaneClassifier | None = None):
         object.__setattr__(self, "lane_processor", lane_processor)
         object.__setattr__(self, "obstacle_classifier", obstacle_classifier)
 
@@ -1585,34 +1585,47 @@ class AvisCombinedVisionProcessor:
             raise TypeError("AVIS lane-line processor returned a non-dict result.")
         combined = dict(result)
         camera_frame = rgb_frame if rgb_frame is not None else semantic_frame
-        combined["obstacle_classifier"] = self.obstacle_classifier.predict(camera_frame)
-        debug = combined.get("debug")
-        if isinstance(debug, dict):
-            debug["obstacle_classifier"] = combined["obstacle_classifier"]
+        if self.obstacle_classifier is not None:
+            combined["obstacle_classifier"] = self.obstacle_classifier.predict(camera_frame)
+            debug = combined.get("debug")
+            if isinstance(debug, dict):
+                debug["obstacle_classifier"] = combined["obstacle_classifier"]
         return combined
 
 
-class AvisCityPedestrianStopController:
-    """Stop for a confirmed obstacle, hold for a minimum dwell, then require clear frames."""
+class AvisCityCrosswalkStopController:
+    """CARLA-style crosswalk event latch and nonblocking stop dwell for AVIS city mode."""
 
     def __init__(self) -> None:
-        self.reset()
+        from navigation.junction_trigger import JunctionTriggerLatch
 
-    def reset(self) -> None:
+        self._trigger = JunctionTriggerLatch(clear_duration=1.0)
+        self.reset(preserve_trigger=False)
+
+    def reset(self, *, preserve_trigger: bool = False) -> None:
+        if not preserve_trigger:
+            from navigation.junction_trigger import JunctionTriggerLatch
+
+            self._trigger = JunctionTriggerLatch(clear_duration=1.0)
         self._enabled = False
         self._active = False
         self._started_at: float | None = None
         self._last_observation_id: Any = None
-        self._confirm_frames = 0
-        self._clear_frames = 0
-        self._last_probability: float | None = None
-        self._last_label: str | None = None
+        self._line_present = False
+        self._detected = False
+        self._line = None
+        self._length_ratio = 0.0
         self._reason = "disabled"
         self._just_activated = False
 
-    def snapshot(self, *, now: float | None = None, hold_seconds: float = 5.0) -> dict[str, Any]:
+    def snapshot(
+        self,
+        *,
+        now: float | None = None,
+        stop_seconds: float = 5.0,
+    ) -> dict[str, Any]:
         current = time.perf_counter() if now is None else float(now)
-        required = max(0.0, float(hold_seconds))
+        required = max(0.0, float(stop_seconds))
         elapsed = (
             max(0.0, current - self._started_at)
             if self._active and self._started_at is not None else 0.0
@@ -1624,108 +1637,88 @@ class AvisCityPedestrianStopController:
             "elapsed_seconds": float(elapsed),
             "required_seconds": float(required),
             "remaining_seconds": float(max(0.0, required - elapsed)) if self._active else 0.0,
-            "confirm_frames": int(self._confirm_frames),
-            "clear_frames": int(self._clear_frames),
-            "obstacle_probability": self._last_probability,
-            "obstacle_label": self._last_label,
+            "line_present": bool(self._line_present),
+            "detected": bool(self._detected),
+            "line": self._line,
+            "length_ratio": float(self._length_ratio),
+            "trigger_pending": bool(self._trigger.pending),
             "just_activated": bool(self._just_activated),
         }
 
     def update(
         self,
-        classifier_output: dict[str, Any] | None,
+        junction_roi: dict[str, Any] | None,
         *,
         enabled: bool,
-        hold_seconds: float = 5.0,
-        confidence_threshold: float = 0.90,
-        confirm_frames: int = 3,
-        clear_frames: int = 3,
+        stop_seconds: float = 5.0,
+        rearm_clear_seconds: float = 1.0,
         observation_id: Any = None,
+        observation_timestamp: float | None = None,
         now: float | None = None,
     ) -> dict[str, Any]:
         current = time.perf_counter() if now is None else float(now)
         if not math.isfinite(current):
             current = time.perf_counter()
+        required = max(0.0, float(stop_seconds))
         self._just_activated = False
-        required_seconds = max(0.0, float(hold_seconds))
 
         if not enabled:
             self.reset()
-            return self.snapshot(now=current, hold_seconds=required_seconds)
+            return self.snapshot(now=current, stop_seconds=required)
 
         self._enabled = True
-        threshold = min(1.0, max(0.0, float(confidence_threshold)))
-        required_confirm = max(1, int(confirm_frames))
-        required_clear = max(1, int(clear_frames))
-
+        self._trigger.clear_duration = max(0.2, float(rearm_clear_seconds))
         if observation_id is not None and observation_id != self._last_observation_id:
             self._last_observation_id = observation_id
-            obstacle = (
-                classifier_output.get("obstacle_ahead", {})
-                if isinstance(classifier_output, dict) else {}
-            )
-            probabilities = (
-                obstacle.get("probabilities", {})
-                if isinstance(obstacle, dict) else {}
-            )
+            info = junction_roi if isinstance(junction_roi, dict) else {}
+            self._line_present = bool(info.get("line_present", False))
+            self._detected = bool(info.get("detected", False))
+            self._line = info.get("line")
             try:
-                yes_probability = float(probabilities.get("yes", 0.0))
-                no_probability = float(probabilities.get("no", 0.0))
+                self._length_ratio = max(0.0, min(1.0, float(info.get("length_ratio", 0.0))))
             except (TypeError, ValueError):
-                yes_probability = no_probability = float("nan")
-            label = str(obstacle.get("label", "")).strip().lower() if isinstance(obstacle, dict) else ""
-            valid = (
-                bool(classifier_output.get("valid"))
-                and math.isfinite(yes_probability)
-                and math.isfinite(no_probability)
-                and 0.0 <= yes_probability <= 1.0
-                and 0.0 <= no_probability <= 1.0
-                and label in {"yes", "no"}
-            )
+                self._length_ratio = 0.0
+            try:
+                timestamp = float(
+                    observation_timestamp if observation_timestamp is not None else current
+                )
+            except (TypeError, ValueError):
+                timestamp = current
+            if not math.isfinite(timestamp):
+                timestamp = current
 
-            if valid:
-                self._last_probability = yes_probability
-                self._last_label = label
-                if label == "yes" and yes_probability >= threshold:
-                    self._confirm_frames += 1
-                    self._clear_frames = 0
-                    if not self._active and self._confirm_frames >= required_confirm:
-                        self._active = True
-                        self._started_at = current
-                        self._just_activated = True
-                        self._reason = "obstacle_confirmed_minimum_wait_started"
-                elif label == "no" and no_probability >= threshold:
-                    self._confirm_frames = 0
-                    if self._active:
-                        self._clear_frames += 1
-                    else:
-                        self._clear_frames = 0
-                else:
-                    # Ambiguous/low-confidence output is neither a positive nor
-                    # a confirmed clear observation; do not release the vehicle.
-                    self._confirm_frames = 0
+            pending = self._trigger.observe(
+                detected=self._detected and self._line_present,
+                evidence_present=self._line_present,
+                timestamp=timestamp,
+                manager_idle=not self._active,
+            )
+            if pending and not self._active:
+                self._trigger.acknowledge()
+                self._active = True
+                self._started_at = current
+                self._just_activated = True
+                self._reason = "crosswalk_confirmed_stop_started"
 
         if self._active:
             elapsed = (
                 max(0.0, current - self._started_at)
                 if self._started_at is not None else 0.0
             )
-            if elapsed >= required_seconds and self._clear_frames >= required_clear:
+            if elapsed >= required:
                 self._active = False
                 self._started_at = None
-                self._confirm_frames = 0
-                self._clear_frames = 0
-                self._reason = "obstacle_cleared_after_minimum_wait"
-            elif elapsed < required_seconds:
-                self._reason = "minimum_wait_in_progress"
+                self._reason = "crosswalk_stop_complete"
             else:
-                self._reason = "waiting_for_confirmed_clear"
-        elif self._confirm_frames:
-            self._reason = "obstacle_confirmation_pending"
-        else:
-            self._reason = "clear"
+                self._reason = "crosswalk_stop_in_progress"
+        elif self._reason not in {"crosswalk_stop_complete"}:
+            self._reason = (
+                "crosswalk_evidence_pending" if self._trigger.pending
+                else "crosswalk_detected" if self._detected
+                else "searching_for_crosswalk"
+            )
 
-        return self.snapshot(now=current, hold_seconds=required_seconds)
+        return self.snapshot(now=current, stop_seconds=required)
 
 
 class AvisModelObstacleLaneChangeController(AvisObstacleLaneChangeController):
