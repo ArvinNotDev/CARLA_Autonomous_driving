@@ -2893,8 +2893,13 @@ def run_avis(args: argparse.Namespace) -> int:
         )
         settings, settings_revision = dashboard_state.settings_snapshot()
         _apply_avis_roi_settings(conf, settings)
+        _apply_avis_model_settings(conf, settings)
         if settings["vision_backend"] == "ultralytics":
-            print(f"[AVIS] Lane-line checkpoint: {conf.MODEL_PATH}")
+            print(
+                f"[AVIS] Lane-line checkpoint: {conf.MODEL_PATH} "
+                f"(imgsz={conf.MODEL_IMAGE_SIZE})"
+            )
+        print(f"[AVIS] Obstacle classifier checkpoint: {settings['obstacle_model_path']}")
 
         from avis_adaptive_roi import AvisAdaptiveROIController
 
@@ -2930,7 +2935,12 @@ def run_avis(args: argparse.Namespace) -> int:
 
         # ONNX Runtime is intentionally initialized after the lane model so
         # its preload_dlls() routine can reuse PyTorch's CUDA/cuDNN DLLs.
-        obstacle_classifier = AvisObstacleLaneClassifier()
+        obstacle_model_path = _resolve_avis_model_path(
+            settings["obstacle_model_path"],
+            suffix=".onnx",
+            setting_name="Obstacle classifier model",
+        )
+        obstacle_classifier = AvisObstacleLaneClassifier(obstacle_model_path)
         vision_processor = AvisCombinedVisionProcessor(
             lane_vision_processor, obstacle_classifier
         )
@@ -2953,7 +2963,7 @@ def run_avis(args: argparse.Namespace) -> int:
         obstacle_lane_change = AvisModelObstacleLaneChangeController()
         drivable_recovery_controller = AvisDrivableAreaRecoveryController()
 
-        if not bool(conf.AUTO_MODE_DEFAULT):
+        if not bool(settings["auto_mode_default"]):
             dashboard_state.set_mode("stopped")
 
         if not args.avis_no_web:
