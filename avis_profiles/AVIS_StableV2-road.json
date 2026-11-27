@@ -96,7 +96,80 @@
     "cw_top_roi": 0.55,
     "cw_bottom_roi": 0.88,
     "cw_left_roi": 0.08,
-    "cw_right_roi": 0.92
+    "cw_right_roi": 0.92,
+    "city_maneuver_sequences_json": "{\n  \"STRAIGHT\": [\n    {\n      \"distance_m\": 6,\n      \"steering_value\": 0\n    }\n  ],\n  \"LEFT\": [\n    {\n      \"distance_m\": 22,\n      \"steering_value\": 0\n    },\n    {\n      \"distance_m\": 5,\n      \"steering_value\": -0.4\n    },\n    {\n      \"distance_m\": 3.5,\n      \"steering_value\": -0.5\n    },\n    {\n      \"distance_m\": 2.5,\n      \"steering_value\": 0\n    }\n  ],\n  \"RIGHT\": [\n    {\n      \"distance_m\": 9.5,\n      \"steering_value\": 0\n    },\n    {\n      \"distance_m\": 8,\n      \"steering_value\": 0.25\n    },\n    {\n      \"distance_m\": 3,\n      \"steering_value\": 0.7\n    }\n  ],\n  \"LEFT_90\": [\n    {\n      \"distance_m\": 22,\n      \"steering_value\": 0\n    },\n    {\n      \"distance_m\": 5,\n      \"steering_value\": -0.4\n    },\n    {\n      \"distance_m\": 3.5,\n      \"steering_value\": -0.5\n    },\n    {\n      \"distance_m\": 2.5,\n      \"steering_value\": 0\n    }\n  ],\n  \"RIGHT_90\": [\n    {\n      \"distance_m\": 9.5,\n      \"steering_value\": 0\n    },\n    {\n      \"distance_m\": 8,\n      \"steering_value\": 0.25\n    },\n    {\n      \"distance_m\": 3,\n      \"steering_value\": 0.7\n    }\n  ]\n}"
   },
-  "saved_at": 1795773044.7274275
+  "saved_at": 1795773044.7274275,
+  "maneuvers": {
+    "STRAIGHT": [
+      {
+        "distance_m": 6,
+        "steering_value": 0
+      }
+    ],
+    "LEFT": [
+      {
+        "distance_m": 22,
+        "steering_value": 0
+      },
+      {
+        "distance_m": 5,
+        "steering_value": -0.4
+      },
+      {
+        "distance_m": 3.5,
+        "steering_value": -0.5
+      },
+      {
+        "distance_m": 2.5,
+        "steering_value": 0
+      }
+    ],
+    "RIGHT": [
+      {
+        "distance_m": 9.5,
+        "steering_value": 0
+      },
+      {
+        "distance_m": 8,
+        "steering_value": 0.25
+      },
+      {
+        "distance_m": 3,
+        "steering_value": 0.7
+      }
+    ],
+    "LEFT_90": [
+      {
+        "distance_m": 22,
+        "steering_value": 0
+      },
+      {
+        "distance_m": 5,
+        "steering_value": -0.4
+      },
+      {
+        "distance_m": 3.5,
+        "steering_value": -0.5
+      },
+      {
+        "distance_m": 2.5,
+        "steering_value": 0
+      }
+    ],
+    "RIGHT_90": [
+      {
+        "distance_m": 9.5,
+        "steering_value": 0
+      },
+      {
+        "distance_m": 8,
+        "steering_value": 0.25
+      },
+      {
+        "distance_m": 3,
+        "steering_value": 0.7
+      }
+    ]
+  }
 }
