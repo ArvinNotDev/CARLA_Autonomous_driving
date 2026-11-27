@@ -168,16 +168,30 @@ def test_avis_default_normal_turn_sequences_match_active_carla_stable_v2_profile
 
 
 
-def test_maneuver_distance_calibration_settings_are_validated_and_profile_ready():
-    validated = validate_avis_settings(
-        dict(DEFAULT_AVIS_SETTINGS),
-        {
-            "city_maneuver_distance_scale": 1.15,
-            "city_maneuver_distance_max_sample_gap_seconds": 0.4,
-        },
-    )
+def test_maneuver_distance_calibration_settings_are_validated_and_profile_ready(tmp_path):
+    updates = {
+        "city_maneuver_distance_scale": 1.15,
+        "city_maneuver_distance_max_sample_gap_seconds": 0.4,
+    }
+    validated = validate_avis_settings(dict(DEFAULT_AVIS_SETTINGS), updates)
     assert validated["city_maneuver_distance_scale"] == pytest.approx(1.15)
     assert validated["city_maneuver_distance_max_sample_gap_seconds"] == pytest.approx(0.4)
+
+    state = AvisDashboardState(
+        settings_path=tmp_path / "avis_settings.json",
+        profile_path=tmp_path / "avis_profiles.json",
+        default_profile_name="AVIS_StableV2",
+    )
+    state.update_settings(updates)
+    profile = state.save_profile("AVIS_StableV2-distance-calibrated")
+    assert profile["settings"]["city_maneuver_distance_scale"] == pytest.approx(1.15)
+    state.update_settings({
+        "city_maneuver_distance_scale": 1.0,
+        "city_maneuver_distance_max_sample_gap_seconds": 0.5,
+    })
+    loaded = state.load_profile("AVIS_StableV2-distance-calibrated")
+    assert loaded["city_maneuver_distance_scale"] == pytest.approx(1.15)
+    assert loaded["city_maneuver_distance_max_sample_gap_seconds"] == pytest.approx(0.4)
 
     with pytest.raises(ValueError, match="between 0.5 and 1.5"):
         validate_avis_settings(
@@ -568,6 +582,51 @@ def test_duplicate_speed_sample_timestamp_does_not_add_distance_twice():
     assert next_sample["segment_distance_m"] == pytest.approx(
         (8.0 / 3.6 * 0.1) * 1.5
     )
+
+
+def test_maneuver_segment_timeout_stops_instead_of_skipping_unreached_distance():
+    settings = _settings(
+        city_maneuver_segment_timeout_seconds=1.0,
+        city_maneuver_sequences_json=json.dumps(
+            {
+                "LEFT": [
+                    {"distance_m": 5.0, "steering_value": -0.3},
+                    {"distance_m": 2.0, "steering_value": 0.2},
+                ]
+            }
+        ),
+    )
+    controller = _start_left_maneuver_for_distance_test(settings)
+    timed_out = controller.update(
+        None, None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=1.0,
+        dt=0.1,
+        now=8.2,
+    )
+    assert timed_out["phase"] == "MANEUVER_TIMEOUT"
+    assert timed_out["active"] is True
+    assert timed_out["braking"] is True
+    assert timed_out["maneuver_active"] is False
+    assert timed_out["segment_index"] == 1
+    assert timed_out["segment_distance_m"] < 5.0
+    assert timed_out["segment_target_distance_m"] == pytest.approx(5.0)
+    assert timed_out["reason"] == (
+        "junction_maneuver_segment_timeout_distance_not_reached"
+    )
+
+    held = controller.update(
+        None, None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=0.0,
+        dt=0.1,
+        now=8.3,
+    )
+    assert held["phase"] == "MANEUVER_TIMEOUT"
+    assert held["braking"] is True
+    assert held["segment_index"] == 1
 
 def test_combined_vision_processor_publishes_timestamped_junction_sign_output():
     class LaneProcessor:
