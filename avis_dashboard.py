@@ -1207,14 +1207,13 @@ async function saveROISelection() {
   const payload = {};
   keys.forEach(key => payload[key] = Number($(key).value));
   try {
-    const data = await postJson("/api/settings",payload);
+    const data = await postJson("/api/settings/local",payload);
     keys.forEach(key => $(key).value = data.settings[key]);
     drawROIOverlays();
     $("settingsForm").dataset.dirty = "true";
-    const syncSuffix = data.github_synced ? " · GitHub synced" : " · GitHub: " + (data.github_message || "not synced");
-    showMessage(selectedROI + " ROI saved" + syncSuffix + ".", !data.github_synced);
-    $("roiCanvasMessage").textContent = selectedROI + " ROI saved" + syncSuffix + ".";
-    $("roiCanvasMessage").style.color = data.github_synced ? "#68dfa7" : "#ffb36b";
+    showMessage(selectedROI + " ROI saved locally. Use Apply and save settings to sync GitHub.", false);
+    $("roiCanvasMessage").textContent = selectedROI + " ROI saved locally · GitHub sync deferred until settings save.";
+    $("roiCanvasMessage").style.color = "#68dfa7";
     return true;
   } catch (error) {
     showMessage(error.message,true);
@@ -1323,11 +1322,13 @@ if ($("resetRoiButton")) $("resetRoiButton").addEventListener("click",async()=>{
   const payload = {};
   keys.forEach(key=>payload[key]=ROI_PROFILE_DEFAULTS[key]);
   try {
-    const data=await postJson("/api/settings",payload);
+    const data=await postJson("/api/settings/local",payload);
     keys.forEach(key => $(key).value = data.settings[key]);
     drawROIOverlays();
     $("settingsForm").dataset.dirty = "true";
-    showMessage(selectedROI+" ROI reset to AVIS_StableV2.",false);
+    showMessage(selectedROI+" ROI reset and saved locally. GitHub sync will happen when settings are saved.",false);
+    $("roiCanvasMessage").textContent = selectedROI + " ROI reset locally · GitHub sync deferred until settings save.";
+    $("roiCanvasMessage").style.color = "#68dfa7";
   } catch(error) {
     showMessage(error.message,true);
   }
@@ -1951,13 +1952,30 @@ def create_avis_dashboard_app(state: AvisDashboardState) -> Flask:
             return jsonify({"error": str(exc)}), 400
         return jsonify({"profile": profile, "settings": settings})
 
+    @app.post("/api/settings/local")
+    def save_settings_locally():
+        """Apply and persist live settings without publishing anything to GitHub."""
+        payload = request.get_json(silent=True)
+        try:
+            updated = state.update_settings(payload)
+            profile = state.save_profile(state.active_profile_name())
+        except (TypeError, ValueError, OSError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({
+            "settings": updated,
+            "profile_name": profile["name"],
+            "github_synced": False,
+            "github_deferred": True,
+            "github_message": "Saved locally. GitHub will be updated when you apply and save the full settings.",
+        })
+
     @app.post("/api/settings")
     def settings():
         payload = request.get_json(silent=True)
         try:
             updated = state.update_settings(payload)
-            # Applying settings or saving an ROI also updates the active local
-            # profile and publishes the complete settings snapshot to GitHub.
+            # This endpoint is reserved for the explicit main Settings save.
+            # It publishes the complete active profile, including all ROI values.
             profile = state.save_profile(state.active_profile_name())
         except (TypeError, ValueError, OSError) as exc:
             return jsonify({"error": str(exc)}), 400
