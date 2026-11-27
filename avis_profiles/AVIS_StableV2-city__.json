@@ -65,7 +65,7 @@
     "city_junction_sign_class_order_json": "[\"right\", \"left\", \"straight\", \"stop\", \"90r\", \"90l\"]",
     "city_maneuver_speed_kmh": 6.0,
     "city_maneuver_segment_timeout_seconds": 20.0,
-    "city_maneuver_sequences_json": "{\n  \"STRAIGHT\": [\n    {\n      \"distance_m\": 6.0,\n      \"steering_value\": 0.0\n    }\n  ],\n  \"LEFT\": [\n    {\n      \"distance_m\": 20.0,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 4.0,\n      \"steering_value\": -0.5\n    }\n  ],\n  \"RIGHT\": [\n    {\n      \"distance_m\": 2.0,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 5.0,\n      \"steering_value\": 0.5\n    }\n  ],\n  \"LEFT_90\": [\n    {\n      \"distance_m\": 20.0,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 4.0,\n      \"steering_value\": -0.5\n    }\n  ],\n  \"RIGHT_90\": [\n    {\n      \"distance_m\": 6.0,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 5.0,\n      \"steering_value\": 0.65\n    }\n  ]\n}",
+    "city_maneuver_sequences_json": "{\n  \"STRAIGHT\": [\n    {\n      \"distance_m\": 6.0,\n      \"steering_value\": 0.0\n    }\n  ],\n  \"LEFT\": [\n    {\n      \"distance_m\": 20.0,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 4.0,\n      \"steering_value\": -0.5\n    }\n  ],\n  \"RIGHT\": [\n    {\n      \"distance_m\": 1.0,\n      \"steering_value\": 0.5\n    },\n    {\n      \"distance_m\": 2.0,\n      \"steering_value\": 1.0\n    }\n  ],\n  \"LEFT_90\": [\n    {\n      \"distance_m\": 20.0,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 4.0,\n      \"steering_value\": -0.5\n    }\n  ],\n  \"RIGHT_90\": [\n    {\n      \"distance_m\": 6.0,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 5.0,\n      \"steering_value\": 0.65\n    }\n  ]\n}",
     "city_crosswalk_stop_seconds": 5.0,
     "city_crosswalk_rearm_clear_seconds": 1.0,
     "city_crosswalk_min_line_length_ratio": 0.35,
@@ -108,5 +108,5 @@
     "adaptive_roi_recovery_frames": 4,
     "adaptive_roi_restore_step_ratio": 0.01
   },
-  "saved_at": 1795797482.6562836
+  "saved_at": 1795797555.7672825
 }
