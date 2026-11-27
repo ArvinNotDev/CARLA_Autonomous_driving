@@ -1787,6 +1787,8 @@ def create_avis_dashboard_app(state: AvisDashboardState) -> Flask:
     def save_profile():
         payload = request.get_json(silent=True) or {}
         try:
+            if isinstance(payload.get("settings"), dict):
+                state.update_settings(payload["settings"])
             profile = state.save_profile(payload.get("name"))
         except (TypeError, ValueError, OSError) as exc:
             return jsonify({"error": str(exc)}), 400
@@ -1801,8 +1803,11 @@ def create_avis_dashboard_app(state: AvisDashboardState) -> Flask:
                 github_message = str(exc)
         else:
             github_message = "GitHub publishing is restricted to a local dashboard connection."
+        current_settings, _ = state.settings_snapshot()
         return jsonify({
             "profile": profile,
+            "settings": current_settings,
+            "profile_name": profile["name"],
             "github_synced": github_synced,
             "github_message": github_message,
         })
@@ -1883,9 +1888,29 @@ def create_avis_dashboard_app(state: AvisDashboardState) -> Flask:
         payload = request.get_json(silent=True)
         try:
             updated = state.update_settings(payload)
+            # Applying settings or saving an ROI also updates the active local
+            # profile and publishes the complete settings snapshot to GitHub.
+            profile = state.save_profile(state.active_profile_name())
         except (TypeError, ValueError, OSError) as exc:
             return jsonify({"error": str(exc)}), 400
-        return jsonify({"settings": updated})
+
+        github_synced = False
+        github_message = "Run 'gh auth login' on this PC, then apply settings again to sync GitHub."
+        if request.remote_addr in {"127.0.0.1", "::1", "localhost"}:
+            try:
+                result = state.github_sync.publish_profile(profile)
+                github_synced = True
+                github_message = str(result.get("html_url") or "Published to GitHub.")
+            except Exception as exc:
+                github_message = str(exc)
+        else:
+            github_message = "Settings were saved locally; GitHub publishing requires a local dashboard connection."
+        return jsonify({
+            "settings": updated,
+            "profile_name": profile["name"],
+            "github_synced": github_synced,
+            "github_message": github_message,
+        })
 
     @app.post("/api/mode")
     def mode():
