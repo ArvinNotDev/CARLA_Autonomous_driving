@@ -850,7 +850,7 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
       <div class="panel">
         <div class="panel-head"><h3>Perception monitor</h3><span class="tag">Live camera / masks</span></div>
         <div class="views">
-          <div class="view"><div class="view-title"><span>AVIS camera / ROI editor</span><small>Drag to move · handles to resize</small></div><div class="roi-editor-wrap"><img id="roiSource" class="roi-source" src="/stream/camera" alt="AVIS camera"><canvas id="roiCanvas"></canvas></div><div class="roi-toolbar"><button class="btn active" id="roiLeftButton" type="button">Left ROI</button><button class="btn" id="roiRightButton" type="button">Right ROI</button><button class="btn" id="resetRoiButton" type="button">Reset selected ROI</button><label class="hint"><input type="checkbox" id="showRois" checked> Show both ROIs</label><span class="message" id="roiCanvasMessage"></span></div><div class="roi-help">These LL / RL rectangles are applied directly to the model's lane_lines mask. If a model ROI has too few lane pixels, AVIS runs the same HLS / Canny / Hough fallback used by Classical CV, only inside that ROI.</div></div>
+          <div class="view"><div class="view-title"><span>AVIS camera / ROI editor</span><small>Drag to move · handles to resize</small></div><div class="roi-editor-wrap"><img id="roiSource" class="roi-source" src="/stream/camera" alt="AVIS camera"><canvas id="roiCanvas"></canvas></div><div class="roi-toolbar"><button class="btn active" id="roiLeftButton" type="button">Left ROI</button><button class="btn" id="roiRightButton" type="button">Right ROI</button><button class="btn" id="roiCrosswalkButton" type="button">Crosswalk ROI</button><button class="btn" id="resetRoiButton" type="button">Reset selected ROI</button><label class="hint"><input type="checkbox" id="showRois" checked> Show all ROIs</label><span class="message" id="roiCanvasMessage"></span></div><div class="roi-help">LL / RL rectangles control the lane_lines mask. CW is the independent Crosswalk detector crop (city mode only). Drag it to move, or resize it with its corner handles. ROI edits are saved to the active mode profile.</div></div>
           <div class="view"><div class="view-title"><span>Lane overlay</span><small>Detected boundaries</small></div><img src="/stream/combined" alt="Lane overlay"></div>
           <div class="view"><div class="view-title"><span>Lane-line mask</span><small>Red pixels = lane-line pixels used for tracking</small></div><img src="/stream/line-mask" alt="Lane-line mask"></div>
           <div class="view" id="drivableAreaView"><div class="view-title"><span>Drivable Area mask</span><small>Green pixels = model road mask</small></div><img src="/stream/drivable-area" alt="Model drivable area mask"></div>
@@ -1075,6 +1075,10 @@ main{max-width:1500px;margin:0 auto;padding:24px clamp(14px,3vw,38px) 48px}.topl
           <div class="field"><label for="rl_bottom_roi">Right ROI · bottom</label><input id="rl_bottom_roi" data-setting="rl_bottom_roi" type="number" min=".02" max="1" step=".01"></div>
           <div class="field"><label for="rl_left_roi">Right ROI · left</label><input id="rl_left_roi" data-setting="rl_left_roi" type="number" min="0" max=".98" step=".01"></div>
           <div class="field"><label for="rl_right_roi">Right ROI · right</label><input id="rl_right_roi" data-setting="rl_right_roi" type="number" min=".02" max="1" step=".01"></div>
+          <div class="field"><label for="cw_top_roi">Crosswalk ROI · top</label><input id="cw_top_roi" data-setting="cw_top_roi" type="number" min="0" max=".98" step=".01"></div>
+          <div class="field"><label for="cw_bottom_roi">Crosswalk ROI · bottom</label><input id="cw_bottom_roi" data-setting="cw_bottom_roi" type="number" min=".02" max="1" step=".01"></div>
+          <div class="field"><label for="cw_left_roi">Crosswalk ROI · left</label><input id="cw_left_roi" data-setting="cw_left_roi" type="number" min="0" max=".98" step=".01"></div>
+          <div class="field"><label for="cw_right_roi">Crosswalk ROI · right</label><input id="cw_right_roi" data-setting="cw_right_roi" type="number" min=".02" max="1" step=".01"></div>
         </div>
         <div class="hint">Values are normalized from 0 to 1. Use the live camera overlay to move and resize the rectangles, or enter exact coordinates here.</div>
 
@@ -1096,11 +1100,13 @@ const roiSource = $("roiSource");
 const roiContext = roiCanvas ? roiCanvas.getContext("2d") : null;
 const ROI_GROUPS = {
   LL: {keys:["ll_top_roi","ll_bottom_roi","ll_left_roi","ll_right_roi"], color:"#52e0a0", label:"LEFT LANE ROI"},
-  RL: {keys:["rl_top_roi","rl_bottom_roi","rl_left_roi","rl_right_roi"], color:"#58c9ff", label:"RIGHT LANE ROI"}
+  RL: {keys:["rl_top_roi","rl_bottom_roi","rl_left_roi","rl_right_roi"], color:"#58c9ff", label:"RIGHT LANE ROI"},
+  CW: {keys:["cw_top_roi","cw_bottom_roi","cw_left_roi","cw_right_roi"], color:"#ffd27b", label:"CROSSWALK ROI"}
 };
 const ROI_PROFILE_DEFAULTS = {
   ll_top_roi:0.57, ll_bottom_roi:0.69, ll_left_roi:0.24, ll_right_roi:0.45,
-  rl_top_roi:0.57, rl_bottom_roi:0.69, rl_left_roi:0.56, rl_right_roi:0.78
+  rl_top_roi:0.57, rl_bottom_roi:0.69, rl_left_roi:0.56, rl_right_roi:0.78,
+  cw_top_roi:0.55, cw_bottom_roi:0.88, cw_left_roi:0.08, cw_right_roi:0.92
 };
 let selectedROI = "LL";
 let roiDrag = null;
@@ -1136,7 +1142,7 @@ function drawROIOverlays() {
   ctx.clearRect(0,0,rect.width,rect.height);
   if (!$("showRois").checked) return;
 
-  for (const group of ["LL","RL"]) {
+  for (const group of ["LL","RL","CW"]) {
     const values = roiRect(group);
     const x = values.left*rect.width;
     const y = values.top*rect.height;
@@ -1181,6 +1187,7 @@ function selectROI(group) {
   selectedROI = group;
   $("roiLeftButton").classList.toggle("active",group==="LL");
   $("roiRightButton").classList.toggle("active",group==="RL");
+  $("roiCrosswalkButton").classList.toggle("active",group==="CW");
   drawROIOverlays();
 }
 function setActivePanel(panelName) {
@@ -1304,6 +1311,7 @@ if (roiCanvas) {
 }
 if ($("roiLeftButton")) $("roiLeftButton").addEventListener("click",()=>selectROI("LL"));
 if ($("roiRightButton")) $("roiRightButton").addEventListener("click",()=>selectROI("RL"));
+if ($("roiCrosswalkButton")) $("roiCrosswalkButton").addEventListener("click",()=>selectROI("CW"));
 if ($("showRois")) $("showRois").addEventListener("change",drawROIOverlays);
 if ($("saveRoiButton")) $("saveRoiButton").addEventListener("click",async()=>{
   const saved = await saveROISelection();
@@ -1324,7 +1332,7 @@ if ($("resetRoiButton")) $("resetRoiButton").addEventListener("click",async()=>{
     showMessage(error.message,true);
   }
 });
-ROI_GROUPS.LL.keys.concat(ROI_GROUPS.RL.keys).forEach(key=>{
+Object.values(ROI_GROUPS).flatMap(group=>group.keys).forEach(key=>{
   const input=$(key);
   if(input) input.addEventListener("input",drawROIOverlays);
 });
