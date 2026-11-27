@@ -24,7 +24,7 @@
     "kp": 0.013,
     "ki": 0.0,
     "kd": 0.003,
-    "steer_limit": 0.75,
+    "steer_limit": 0.7,
     "max_steer_step": 0.1,
     "blur_kernel": 5,
     "canny_low": 55,
@@ -98,5 +98,5 @@
     "adaptive_roi_recovery_frames": 4,
     "adaptive_roi_restore_step_ratio": 0.01
   },
-  "saved_at": 1795787691.1311893
+  "saved_at": 1795787737.8640652
 }
