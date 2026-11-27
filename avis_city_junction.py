@@ -16,7 +16,7 @@ DEFAULT_CITY_SIGN_CLASS_MAP = {
     "RIGHT": ["right"],
     "LEFT": ["left"],
     "STRAIGHT": ["straight"],
-    "STOP": ["stop", "stop_sign", "stop_signs", "stop_signs"],
+    "STOP": ["stop", "stop_sign", "stop_signs"],
     "RIGHT_90": ["90r", "right_90", "right90", "right_turn_90", "turn_right_90", "90_right", "junction_right"],
     "LEFT_90": ["90l", "left_90", "left90", "left_turn_90", "turn_left_90", "90_left", "junction_left"],
 }
@@ -587,6 +587,7 @@ class AvisCityJunctionController:
         self._last_crosswalk_observation_id: Any = None
         self._line_present = False
         self._crosswalk_detected = False
+        self._crosswalk_length_ratio = 0.0
         self._active_route_type: str | None = None
         self._last_route_type: str | None = None
         self._dwell_started_at: float | None = None
@@ -793,6 +794,12 @@ class AvisCityJunctionController:
             info = junction_roi if isinstance(junction_roi, dict) else {}
             self._line_present = bool(info.get("line_present", False))
             self._crosswalk_detected = bool(info.get("detected", False))
+            try:
+                self._crosswalk_length_ratio = max(
+                    0.0, min(1.0, float(info.get("length_ratio", 0.0)))
+                )
+            except (TypeError, ValueError):
+                self._crosswalk_length_ratio = 0.0
             timestamp = current
             try:
                 if observation_timestamp is not None:
@@ -917,6 +924,9 @@ class AvisCityJunctionController:
             "waiting_for_stop": self._phase == "BRAKING",
             "dwell_active": self._phase == "DWELL",
             "dwell_remaining_seconds": float(dwell_remaining),
+            "dwell_elapsed_seconds": float(dwell_elapsed if self._phase == "DWELL" else 0.0),
+            "remaining_seconds": float(dwell_remaining),
+            "elapsed_seconds": float(dwell_elapsed if self._phase == "DWELL" else 0.0),
             "maneuver_active": bool(maneuver_active),
             "route_type": self._active_route_type or self._last_route_type,
             "last_route_type": self._last_route_type,
@@ -928,6 +938,8 @@ class AvisCityJunctionController:
             "segment_distance_remaining_m": float(remaining),
             "line_present": bool(self._line_present),
             "crosswalk_detected": bool(self._crosswalk_detected),
+            "detected": bool(self._crosswalk_detected),
+            "length_ratio": float(self._crosswalk_length_ratio),
             "pending_sign_type": self._pending_sign_type or "STRAIGHT",
             "pending_sign_confidence": float(self._pending_sign_confidence),
             "sign_class": prediction.get("class_name"),
