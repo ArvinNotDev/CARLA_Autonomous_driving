@@ -545,6 +545,64 @@ def normalize_avis_manual_controls(
     )
 
 
+class AvisReverseBrakeController:
+    """Apply reverse motor torque only until the vehicle reports a full stop."""
+
+    def __init__(self, *, stop_speed_kmh=0.3, reverse_gain=8.0,
+                 min_reverse_command=12, max_reverse_command=100):
+        self.stop_speed_kmh = max(0.0, float(stop_speed_kmh))
+        self.reverse_gain = max(0.1, float(reverse_gain))
+        self.min_reverse_command = max(1, min(100, int(min_reverse_command)))
+        self.max_reverse_command = max(self.min_reverse_command, min(100, int(max_reverse_command)))
+        self.reset()
+
+    def reset(self):
+        self.phase = "IDLE"
+        self.last_command = 0
+        self.stop_confirmed = False
+        self.last_speed_kmh = 0.0
+
+    def update(self, *, active: bool, speed_kmh: float) -> dict[str, Any]:
+        if not active:
+            self.reset()
+            return self.snapshot()
+        try:
+            speed = max(0.0, float(speed_kmh))
+        except (TypeError, ValueError):
+            speed = float("nan")
+        if not math.isfinite(speed):
+            self.phase = "SPEED_UNAVAILABLE"
+            self.last_command = 0
+            self.stop_confirmed = False
+            return self.snapshot()
+        self.last_speed_kmh = speed
+        if self.phase in {"IDLE", "SPEED_UNAVAILABLE"}:
+            self.phase = "NEUTRAL_HOLD" if speed <= self.stop_speed_kmh else "REVERSE_BRAKING"
+        if self.phase == "REVERSE_BRAKING":
+            if speed <= self.stop_speed_kmh:
+                self.phase = "NEUTRAL_HOLD"
+                self.last_command = 0
+                self.stop_confirmed = True
+            else:
+                magnitude = int(round(speed * self.reverse_gain))
+                magnitude = max(self.min_reverse_command, min(self.max_reverse_command, magnitude))
+                self.last_command = -magnitude
+        else:
+            self.last_command = 0
+            self.stop_confirmed = True
+        return self.snapshot()
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "phase": self.phase,
+            "command": int(self.last_command),
+            "reverse_active": self.last_command < 0,
+            "stop_confirmed": bool(self.stop_confirmed),
+            "speed_kmh": float(self.last_speed_kmh),
+            "stop_speed_kmh": float(self.stop_speed_kmh),
+        }
+
+
 def select_avis_target_speed(
     steering: float,
     minimum_kmh: float,
@@ -2818,15 +2876,14 @@ class AvisEngineClient:
         steering: float,
         *,
         brake: bool = False,
+        reverse_brake_command: int | float | None = None,
         current_speed_kmh: float | None = None,
     ) -> None:
         if brake:
-            # Never send a negative Speed command for crosswalk braking.
-            # AVIS maps negative Speed to reverse motor torque at low speed,
-            # which can make the vehicle drive backwards instead of stopping.
-            # The City crosswalk controller holds the simulator's native
-            # Space-key handbrake; Speed=0 removes all drive/reverse torque.
-            speed_command = 0
+            reverse_value = 0.0 if reverse_brake_command is None else float(reverse_brake_command)
+            if not math.isfinite(reverse_value):
+                raise ValueError("Reverse brake command must be finite.")
+            speed_command = int(round(min(0.0, max(-100.0, reverse_value))))
             steering_command = 0
         else:
             speed_command, steering_command = normalize_avis_controls(throttle, steering)
@@ -3737,13 +3794,8 @@ def run_avis(args: argparse.Namespace) -> int:
         )
         obstacle_lane_change = AvisModelObstacleLaneChangeController()
         city_junction_controller = AvisCityJunctionController()
-        city_crosswalk_handbrake = AvisSimulatorHandbrake()
+        city_reverse_brake_controller = AvisReverseBrakeController()
         drivable_recovery_controller = AvisDrivableAreaRecoveryController()
-        if args.avis_mode == "city" and not city_crosswalk_handbrake.available:
-            print(
-                "[AVIS] WARNING: Native City crosswalk handbrake is unavailable: "
-                f"{city_crosswalk_handbrake.last_error}"
-            )
 
         if not bool(settings["auto_mode_default"]):
             dashboard_state.set_mode("stopped")
@@ -3818,7 +3870,6 @@ def run_avis(args: argparse.Namespace) -> int:
         next_tick = last_control_time
         frame_read_fps = AvisFpsMonitor(window_seconds=2.0)
         inference_fps = AvisFpsMonitor(window_seconds=2.0)
-        crosswalk_handbrake_warning_sent = False
         control_loop_fps = AvisFpsMonitor(window_seconds=2.0)
         last_inference_fps_timestamp: float | None = None
 
@@ -3844,7 +3895,7 @@ def run_avis(args: argparse.Namespace) -> int:
                         "[AVIS] Engine connection lost. "
                         "Stopping drive commands and waiting for the server to return."
                     )
-                    city_crosswalk_handbrake.release()
+                    city_reverse_brake_controller.reset()
                     city_junction_controller.reset()
                     try:
                         client.close()
@@ -4209,9 +4260,11 @@ def run_avis(args: argparse.Namespace) -> int:
                 city_junction_state = city_junction_controller.snapshot(
                     now=time.perf_counter(), settings=current_settings
                 )
+                reverse_brake_state = city_reverse_brake_controller.snapshot()
+                reverse_brake_command = 0
 
                 if drive_mode == "manual":
-                    city_crosswalk_handbrake.release()
+                    city_reverse_brake_controller.reset()
                     city_junction_controller.reset()
                     city_junction_state = city_junction_controller.snapshot(
                         now=time.perf_counter(), settings=current_settings
@@ -4233,7 +4286,7 @@ def run_avis(args: argparse.Namespace) -> int:
                         else "MANUAL / INPUT TIMED OUT - ZERO THROTTLE"
                     )
                 elif drive_mode == "stopped":
-                    city_crosswalk_handbrake.release()
+                    city_reverse_brake_controller.reset()
                     city_junction_controller.reset()
                     city_junction_state = city_junction_controller.snapshot(
                         now=time.perf_counter(), settings=current_settings
@@ -4497,14 +4550,12 @@ def run_avis(args: argparse.Namespace) -> int:
                             now=time.perf_counter(),
                         )
 
+                    reverse_brake_state = city_reverse_brake_controller.update(
+                        active=bool(city_junction_state.get("braking")),
+                        speed_kmh=current_speed,
+                    )
+                    reverse_brake_command = int(reverse_brake_state["command"])
                     if city_junction_state.get("braking"):
-                        handbrake_engaged = city_crosswalk_handbrake.set_active(True)
-                        if not handbrake_engaged and not crosswalk_handbrake_warning_sent:
-                            print(
-                                "[AVIS] WARNING: Crosswalk handbrake could not engage. "
-                                f"{city_crosswalk_handbrake.last_error or 'Unknown Windows input error'}"
-                            )
-                            crosswalk_handbrake_warning_sent = True
                         if city_junction_state.get("just_activated"):
                             steering_controller.reset()
                         drivable_recovery_state = drivable_recovery_controller.update(
@@ -4529,18 +4580,19 @@ def run_avis(args: argparse.Namespace) -> int:
                         else:
                             status = f"CITY / CROSSWALK STOP · {remaining:.1f}s"
                         status += (
-                            " · HANDBRAKE" if handbrake_engaged
-                            else " · HANDBRAKE UNAVAILABLE"
+                            f" · REVERSE BRAKE {abs(reverse_brake_command)}%"
+                            if reverse_brake_command < 0 else " · NEUTRAL HOLD"
                         )
                     else:
-                        handbrake_engaged = False
-                        city_crosswalk_handbrake.release()
-                        crosswalk_handbrake_warning_sent = False
-
+                        city_reverse_brake_controller.reset()
+                        reverse_brake_state = city_reverse_brake_controller.snapshot()
+                        reverse_brake_command = 0
+                
                     client.send_control(
                         throttle,
                         steering,
                         brake=bool(city_junction_state.get("braking")),
+                        reverse_brake_command=reverse_brake_command,
                         current_speed_kmh=current_speed,
                     )
 
@@ -4778,9 +4830,10 @@ def run_avis(args: argparse.Namespace) -> int:
                         "city_crosswalk_detected": bool(
                             city_junction_state.get("detected", False)
                         ),
-                        "city_crosswalk_handbrake_active": bool(
-                            city_crosswalk_handbrake.held
-                        ),
+                        "city_reverse_brake_phase": reverse_brake_state.get("phase", "IDLE"),
+                        "city_reverse_brake_command": reverse_brake_command,
+                        "city_reverse_brake_active": bool(reverse_brake_state.get("reverse_active")),
+                        "city_reverse_brake_stop_confirmed": bool(reverse_brake_state.get("stop_confirmed")),
                         "city_crosswalk_length_ratio": float(
                             city_junction_state.get("length_ratio", 0.0)
                         ),
@@ -4868,8 +4921,8 @@ def run_avis(args: argparse.Namespace) -> int:
         print(f"[AVIS] Runtime failed: {type(exc).__name__}: {exc}")
         return 1
     finally:
-        if "city_crosswalk_handbrake" in locals():
-            city_crosswalk_handbrake.release()
+        if "city_reverse_brake_controller" in locals():
+            city_reverse_brake_controller.reset()
         if dashboard_state is not None:
             dashboard_state.set_mode("stopped")
         if client is not None:
