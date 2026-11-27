@@ -303,6 +303,7 @@ def validate_avis_settings(
             "debug_show_lane_mask", "debug_show_drivable_area", "debug_show_text",
             "yellow_enabled", "obstacle_detection_enabled",
             "obstacle_lane_change_enabled", "city_crosswalk_enabled",
+            "city_junction_sign_enabled",
             "adaptive_roi_enabled", "drivable_recovery_enabled",
         }:
             if not isinstance(value, bool):
