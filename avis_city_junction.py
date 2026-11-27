@@ -25,25 +25,34 @@ DEFAULT_CITY_SIGN_CLASS_MAP_JSON = json.dumps(
     DEFAULT_CITY_SIGN_CLASS_MAP, indent=2
 )
 
+
 DEFAULT_CITY_MANEUVER_SEQUENCES = {
     "STRAIGHT": [
         {"distance_m": 6.0, "steering_value": 0.0},
     ],
     "LEFT": [
-        {"distance_m": 20.0, "steering_value": 0.0},
-        {"distance_m": 4.0, "steering_value": -0.5},
+        {"distance_m": 22.0, "steering_value": 0.0},
+        {"distance_m": 5.0, "steering_value": -0.4},
+        {"distance_m": 3.5, "steering_value": -0.5},
+        {"distance_m": 2.5, "steering_value": 0.0},
     ],
     "RIGHT": [
-        {"distance_m": 6.0, "steering_value": 0.0},
-        {"distance_m": 5.0, "steering_value": 0.65},
+        {"distance_m": 9.5, "steering_value": 0.0},
+        {"distance_m": 8.0, "steering_value": 0.25},
+        {"distance_m": 3.0, "steering_value": 0.7},
     ],
+    # AVIS exposes independent 90-degree sign classes. These start from the
+    # corresponding CARLA left/right route and can be tuned separately.
     "LEFT_90": [
-        {"distance_m": 20.0, "steering_value": 0.0},
-        {"distance_m": 4.0, "steering_value": -0.5},
+        {"distance_m": 22.0, "steering_value": 0.0},
+        {"distance_m": 5.0, "steering_value": -0.4},
+        {"distance_m": 3.5, "steering_value": -0.5},
+        {"distance_m": 2.5, "steering_value": 0.0},
     ],
     "RIGHT_90": [
-        {"distance_m": 6.0, "steering_value": 0.0},
-        {"distance_m": 5.0, "steering_value": 0.65},
+        {"distance_m": 9.5, "steering_value": 0.0},
+        {"distance_m": 8.0, "steering_value": 0.25},
+        {"distance_m": 3.0, "steering_value": 0.7},
     ],
 }
 
