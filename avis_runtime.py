@@ -1638,6 +1638,7 @@ class AvisCityCrosswalkStopController:
             max(0.0, current - self._started_at)
             if self._active and self._started_at is not None else 0.0
         )
+        waiting_for_stop = bool(self._active and self._started_at is None)
         cooldown_remaining = (
             max(0.0, self._cooldown_until - current)
             if self._cooldown_until is not None else 0.0
@@ -1647,6 +1648,8 @@ class AvisCityCrosswalkStopController:
             "enabled": bool(self._enabled),
             "active": bool(self._active),
             "reason": self._reason,
+            "waiting_for_stop": waiting_for_stop,
+            "stop_confirmed": bool(self._active and self._started_at is not None),
             "elapsed_seconds": float(elapsed),
             "required_seconds": float(required),
             "remaining_seconds": float(max(0.0, required - elapsed)) if self._active else 0.0,
@@ -1669,6 +1672,7 @@ class AvisCityCrosswalkStopController:
         rearm_clear_seconds: float = 1.0,
         observation_id: Any = None,
         observation_timestamp: float | None = None,
+        current_speed_kmh: float | None = None,
         now: float | None = None,
     ) -> dict[str, Any]:
         current = time.perf_counter() if now is None else float(now)
@@ -1718,22 +1722,37 @@ class AvisCityCrosswalkStopController:
             if pending and not self._active and not cooldown_active:
                 self._trigger.acknowledge()
                 self._active = True
-                self._started_at = current
+                # Braking starts immediately, but the five-second dwell timer
+                # starts only after the simulator reports a complete stop.
+                self._started_at = None
                 self._just_activated = True
                 self._reason = "crosswalk_confirmed_stop_started"
 
         if self._active:
-            elapsed = (
-                max(0.0, current - self._started_at)
-                if self._started_at is not None else 0.0
-            )
-            if elapsed >= required:
-                self._active = False
-                self._started_at = None
-                self._cooldown_until = current + self.RESTART_COOLDOWN_SECONDS
-                self._reason = "crosswalk_stop_complete"
+            if self._started_at is None:
+                try:
+                    speed_kmh = (
+                        0.0 if current_speed_kmh is None
+                        else float(current_speed_kmh)
+                    )
+                except (TypeError, ValueError):
+                    speed_kmh = float("inf")
+                if not math.isfinite(speed_kmh):
+                    speed_kmh = float("inf")
+                if speed_kmh <= 0.5:
+                    self._started_at = current
+                    self._reason = "crosswalk_vehicle_stopped"
+                else:
+                    self._reason = "crosswalk_braking_to_stop"
             else:
-                self._reason = "crosswalk_stop_in_progress"
+                elapsed = max(0.0, current - self._started_at)
+                if elapsed >= required:
+                    self._active = False
+                    self._started_at = None
+                    self._cooldown_until = current + self.RESTART_COOLDOWN_SECONDS
+                    self._reason = "crosswalk_stop_complete"
+                else:
+                    self._reason = "crosswalk_stop_in_progress"
         elif cooldown_active:
             self._reason = "crosswalk_restart_cooldown"
         elif self._cooldown_until is not None:
@@ -4030,6 +4049,7 @@ def run_avis(args: argparse.Namespace) -> int:
                         observation_timestamp=(
                             last_vision_result.completed_at if result_fresh else None
                         ),
+                        current_speed_kmh=current_speed,
                         now=time.perf_counter(),
                     )
 
@@ -4243,9 +4263,15 @@ def run_avis(args: argparse.Namespace) -> int:
                         target_speed = 0.0
                         coasting = False
                         remaining = float(city_crosswalk_stop_state.get("remaining_seconds", 0.0))
-                        status = (
-                            f"CITY / CROSSWALK STOP · {remaining:.1f}s"
-                            + (" · HANDBRAKE" if handbrake_engaged else " · HANDBRAKE UNAVAILABLE")
+                        if city_crosswalk_stop_state.get("waiting_for_stop"):
+                            status = (
+                                f"CITY / BRAKING TO STOP · {current_speed:.1f} km/h"
+                            )
+                        else:
+                            status = f"CITY / CROSSWALK STOP · {remaining:.1f}s"
+                        status += (
+                            " · HANDBRAKE" if handbrake_engaged
+                            else " · HANDBRAKE UNAVAILABLE"
                         )
                     else:
                         handbrake_engaged = False
