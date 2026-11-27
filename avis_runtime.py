@@ -567,14 +567,15 @@ class AvisReverseBrakeController:
             self.reset()
             return self.snapshot()
         try:
-            speed = max(0.0, float(speed_kmh))
+            raw_speed = float(speed_kmh)
         except (TypeError, ValueError):
-            speed = float("nan")
-        if not math.isfinite(speed):
+            raw_speed = float("nan")
+        if not math.isfinite(raw_speed):
             self.phase = "SPEED_UNAVAILABLE"
             self.last_command = 0
             self.stop_confirmed = False
             return self.snapshot()
+        speed = max(0.0, raw_speed)
         self.last_speed_kmh = speed
         if self.phase in {"IDLE", "SPEED_UNAVAILABLE"}:
             self.phase = "NEUTRAL_HOLD" if speed <= self.stop_speed_kmh else "REVERSE_BRAKING"
@@ -4265,6 +4266,8 @@ def run_avis(args: argparse.Namespace) -> int:
 
                 if drive_mode == "manual":
                     city_reverse_brake_controller.reset()
+                    reverse_brake_state = city_reverse_brake_controller.snapshot()
+                    reverse_brake_command = 0
                     city_junction_controller.reset()
                     city_junction_state = city_junction_controller.snapshot(
                         now=time.perf_counter(), settings=current_settings
@@ -4287,6 +4290,8 @@ def run_avis(args: argparse.Namespace) -> int:
                     )
                 elif drive_mode == "stopped":
                     city_reverse_brake_controller.reset()
+                    reverse_brake_state = city_reverse_brake_controller.snapshot()
+                    reverse_brake_command = 0
                     city_junction_controller.reset()
                     city_junction_state = city_junction_controller.snapshot(
                         now=time.perf_counter(), settings=current_settings
