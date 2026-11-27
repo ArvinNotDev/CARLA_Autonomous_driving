@@ -1020,7 +1020,7 @@ class AvisCityJunctionController:
                     1.0,
                     float(settings.get("city_maneuver_segment_timeout_seconds", 20.0)),
                 )
-                if self._segment_distance_m >= target_distance or segment_elapsed >= timeout:
+                if self._segment_distance_m >= target_distance:
                     self._segment_index += 1
                     self._segment_distance_m = 0.0
                     self._segment_started_at = current
@@ -1028,6 +1028,13 @@ class AvisCityJunctionController:
                         self._finish(current)
                     else:
                         self._last_reason = "junction_maneuver_next_segment"
+                elif segment_elapsed >= timeout:
+                    # A timeout is a safety stop, not permission to skip an
+                    # unfinished distance segment and silently change steering.
+                    self._phase = "MANEUVER_TIMEOUT"
+                    self._last_reason = (
+                        "junction_maneuver_segment_timeout_distance_not_reached"
+                    )
 
         if self._phase == "IDLE" and not cooldown_active and self._cooldown_until is not None:
             self._cooldown_until = None
@@ -1056,7 +1063,8 @@ class AvisCityJunctionController:
         maneuver_active = self._phase == "MANEUVER"
         action = (
             self._sequence[self._segment_index]
-            if maneuver_active and self._segment_index < len(self._sequence)
+            if self._phase in {"MANEUVER", "MANEUVER_TIMEOUT"}
+            and self._segment_index < len(self._sequence)
             else None
         )
         remaining = (
@@ -1066,8 +1074,12 @@ class AvisCityJunctionController:
         prediction = self._last_sign_prediction or {}
         return {
             "phase": self._phase,
-            "active": self._phase in {"BRAKING", "DWELL", "MANEUVER", "STOPPED"},
-            "braking": self._phase in {"BRAKING", "DWELL", "STOPPED"},
+            "active": self._phase in {
+                "BRAKING", "DWELL", "MANEUVER", "MANEUVER_TIMEOUT", "STOPPED"
+            },
+            "braking": self._phase in {
+                "BRAKING", "DWELL", "MANEUVER_TIMEOUT", "STOPPED"
+            },
             "waiting_for_stop": self._phase == "BRAKING",
             "dwell_active": self._phase == "DWELL",
             "dwell_remaining_seconds": float(dwell_remaining),
