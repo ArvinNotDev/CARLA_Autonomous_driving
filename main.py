@@ -53,7 +53,9 @@ sys.excepthook = _runtime_sys_exception_hook
 threading.excepthook = _runtime_thread_exception_hook
 
 # AVIS is an independent runtime backend. Dispatch before CARLA API setup/import.
-if __name__ == "__main__" and "--avis" in sys.argv[1:]:
+if __name__ == "__main__" and any(
+    flag in sys.argv[1:] for flag in ("--avis", "--road", "--city")
+):
     from avis_runtime import main as avis_main
 
     raise SystemExit(avis_main(sys.argv[1:]))
