@@ -128,7 +128,7 @@ def test_six_sign_classes_are_mapped_without_conflating_normal_and_90_degree_tur
     assert "left" not in mapping["LEFT_90"]
 
 
-def test_sign_votes_accumulate_until_crosswalk_and_reject_late_outlier_frames():
+def test_final_five_sign_frames_reject_a_late_minority_outlier():
     settings = _settings()
     controller = AvisCityJunctionController()
     for timestamp in (1.0, 1.1, 1.2):
@@ -149,6 +149,31 @@ def test_sign_votes_accumulate_until_crosswalk_and_reject_late_outlier_frames():
     )
     assert crosswalk["route_type"] == "LEFT"
     assert crosswalk["selected_sign_type"] == "LEFT"
+
+
+def test_normal_left_right_selection_uses_only_the_last_five_sign_frames():
+    settings = _settings()
+    controller = AvisCityJunctionController()
+    for timestamp in (1.0, 1.1, 1.2):
+        _observe_sign(controller, settings, "left", timestamp)
+    for timestamp in (1.3, 1.4, 1.5, 1.6, 1.7):
+        selected = _observe_sign(controller, settings, "right", timestamp)
+
+    assert selected["selected_sign_type"] == "RIGHT"
+    assert "LEFT" not in controller._sign_votes
+    assert "RIGHT" not in controller._sign_votes
+
+    crosswalk = controller.update(
+        _crosswalk(), None,
+        enabled=True,
+        settings=settings,
+        current_speed_kmh=8.0,
+        dt=0.05,
+        observation_id=41,
+        observation_timestamp=1.8,
+        now=1.8,
+    )
+    assert crosswalk["route_type"] == "RIGHT"
 
 
 def test_sign_vote_window_resets_when_a_maneuver_finishes():
@@ -351,7 +376,7 @@ def test_right_left_and_straight_wait_five_seconds_after_the_vehicle_stops():
         ("90l", "LEFT_90", -0.5),
     ],
 )
-def test_90_degree_sign_skips_five_second_dwell_and_starts_turn_when_stopped(
+def test_90_degree_sign_starts_turn_immediately_without_braking_or_dwell(
     label, expected_route, expected_steer
 ):
     settings = _settings(
@@ -364,23 +389,17 @@ def test_90_degree_sign_skips_five_second_dwell_and_starts_turn_when_stopped(
     )
     controller = AvisCityJunctionController()
     _confirm_sign(controller, label, settings)
+    for timestamp in (1.2, 1.3, 1.4, 1.5, 1.6):
+        _observe_sign(controller, settings, "right", timestamp)
 
-    braking = _trigger_crosswalk(controller, settings, speed=8.0)
-    assert braking["phase"] == "BRAKING"
-    assert braking["waiting_for_stop"] is True
-
-    stopped = controller.update(
-        None, None,
-        enabled=True,
-        settings=settings,
-        current_speed_kmh=0.2,
-        dt=0.05,
-        now=2.1,
-    )
-    assert stopped["phase"] == "MANEUVER"
-    assert stopped["dwell_active"] is False
-    assert stopped["route_type"] == expected_route
-    assert stopped["steering_override"] == pytest.approx(expected_steer)
+    started = _trigger_crosswalk(controller, settings, speed=8.0)
+    assert started["phase"] == "MANEUVER"
+    assert started["braking"] is False
+    assert started["waiting_for_stop"] is False
+    assert started["maneuver_active"] is True
+    assert started["dwell_active"] is False
+    assert started["route_type"] == expected_route
+    assert started["steering_override"] == pytest.approx(expected_steer)
 
 
 def test_stop_sign_holds_vehicle_after_dwell_and_never_starts_a_maneuver():

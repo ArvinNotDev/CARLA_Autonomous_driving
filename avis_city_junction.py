@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 import json
 import math
 import time
@@ -592,12 +593,14 @@ class AvisCityJunctionController:
         self._trigger = JunctionTriggerLatch(clear_duration=1.0)
         self._phase = "IDLE"
         self._pending_sign_type: str | None = None
+        self._pending_long_sign_type: str | None = None
         self._pending_sign_confidence = 0.0
         self._pending_sign_at: float | None = None
         # Keep all confident sign votes from maneuver completion to the next
-        # crosswalk. A short burst of late misclassifications must not erase
-        # the class supported by the rest of that approach.
+        # crosswalk for the less common route classes. Normal LEFT/RIGHT signs
+        # are selected from a short window at the end of the approach.
         self._sign_votes: dict[str, tuple[int, float]] = {}
+        self._recent_sign_votes: deque[tuple[str | None, float]] = deque(maxlen=5)
         self._last_sign_vote_at: float | None = None
         self._last_sign_observed_at: float | None = None
         self._sign_locked_until_clear = False
@@ -685,6 +688,7 @@ class AvisCityJunctionController:
         max_age = max(0.5, float(settings.get("city_junction_sign_max_age_seconds", 20.0)))
         if self._last_sign_vote_at is not None and now - self._last_sign_vote_at > max_age:
             self._pending_sign_type = None
+            self._pending_long_sign_type = None
             self._pending_sign_confidence = 0.0
             self._pending_sign_at = None
             self._sign_votes.clear()
@@ -714,14 +718,31 @@ class AvisCityJunctionController:
                     self._sign_clear_frames = 0
                     self._sign_votes.clear()
                     self._pending_sign_type = None
+                    self._pending_long_sign_type = None
                     self._pending_sign_confidence = 0.0
                     self._pending_sign_at = None
                     self._last_sign_vote_at = None
+                    self._recent_sign_votes.clear()
             else:
                 self._sign_clear_frames = 0
             return
 
+        self._recent_sign_votes.append((canonical, float(confidence)))
+
+        recent_turn = self._recent_ordinary_turn(settings)
+        if recent_turn is not None:
+            self._pending_sign_type = recent_turn
+            self._pending_sign_confidence = self._recent_turn_confidence(recent_turn)
+            self._pending_sign_at = observed_at
+        elif self._pending_sign_type in {"LEFT", "RIGHT"}:
+            self._pending_sign_type = None
+            self._pending_sign_confidence = 0.0
+            self._pending_sign_at = None
+
         if canonical is None:
+            return
+
+        if canonical in {"LEFT", "RIGHT"}:
             return
 
         confirm_frames = max(
@@ -745,11 +766,13 @@ class AvisCityJunctionController:
             or leader == self._pending_sign_type
             or has_clear_margin
         ):
-            self._pending_sign_type = leader
-            self._pending_sign_confidence = (
-                leader_confidence_total / leader_count
-            )
-            self._pending_sign_at = observed_at
+            self._pending_long_sign_type = leader
+            if self._pending_sign_type not in {"LEFT", "RIGHT"}:
+                self._pending_sign_type = leader
+                self._pending_sign_confidence = (
+                    leader_confidence_total / leader_count
+                )
+                self._pending_sign_at = observed_at
 
     @staticmethod
     def _valid_distance_sample(speed_kmh: Any, timestamp: Any) -> tuple[float, float] | None:
@@ -897,9 +920,11 @@ class AvisCityJunctionController:
         # Begin a fresh sign-voting window for the approach to the next
         # crosswalk; no sign seen during the completed maneuver carries over.
         self._pending_sign_type = None
+        self._pending_long_sign_type = None
         self._pending_sign_confidence = 0.0
         self._pending_sign_at = None
         self._sign_votes.clear()
+        self._recent_sign_votes.clear()
         self._last_sign_vote_at = None
         self._sign_locked_until_clear = False
         self._sign_clear_frames = 0
@@ -975,8 +1000,23 @@ class AvisCityJunctionController:
             )
             if pending and self._phase == "IDLE" and not cooldown_active:
                 self._trigger.acknowledge()
-                self._active_route_type = self._pending_sign_type or "STRAIGHT"
+                recent_turn = self._recent_ordinary_turn(settings)
+                if self._pending_long_sign_type == "STOP":
+                    self._active_route_type = "STOP"
+                elif self._pending_long_sign_type in {"LEFT_90", "RIGHT_90"}:
+                    self._active_route_type = self._pending_long_sign_type
+                else:
+                    self._active_route_type = (
+                        recent_turn
+                        or (
+                            self._pending_long_sign_type
+                            if self._pending_long_sign_type not in {None, "LEFT", "RIGHT"}
+                            else None
+                        )
+                        or "STRAIGHT"
+                    )
                 self._pending_sign_type = None
+                self._pending_long_sign_type = None
                 self._pending_sign_confidence = 0.0
                 self._pending_sign_at = None
                 self._sign_locked_until_clear = True
@@ -985,6 +1025,13 @@ class AvisCityJunctionController:
                 self._dwell_started_at = None
                 self._just_activated = True
                 self._last_reason = "crosswalk_confirmed_braking_started"
+                if self._active_route_type in {"LEFT_90", "RIGHT_90"}:
+                    self._start_maneuver(
+                        settings=settings,
+                        now=current,
+                        speed_kmh=max(0.0, float(current_speed_kmh)),
+                        speed_sample_timestamp=speed_sample_at,
+                    )
 
         try:
             speed = max(0.0, float(current_speed_kmh))
@@ -1075,6 +1122,34 @@ class AvisCityJunctionController:
             self._last_reason = "junction_cooldown_complete"
 
         return self.snapshot(now=current, settings=settings)
+
+    def _recent_ordinary_turn(self, settings: dict[str, Any]) -> str | None:
+        """Select LEFT/RIGHT from only the final five sign model frames."""
+        confirm_frames = max(
+            1, min(5, int(settings.get("city_junction_sign_confirm_frames", 2)))
+        )
+        counts: dict[str, tuple[int, float, int]] = {}
+        for index, (kind, confidence) in enumerate(self._recent_sign_votes):
+            if kind not in {"LEFT", "RIGHT"}:
+                continue
+            count, confidence_total, _ = counts.get(kind, (0, 0.0, -1))
+            counts[kind] = (count + 1, confidence_total + confidence, index)
+        winner = max(
+            counts,
+            key=lambda kind: (counts[kind][0], counts[kind][2], counts[kind][1]),
+            default=None,
+        )
+        if winner is None or counts[winner][0] < confirm_frames:
+            return None
+        return winner
+
+    def _recent_turn_confidence(self, route_type: str) -> float:
+        confidences = [
+            confidence
+            for kind, confidence in self._recent_sign_votes
+            if kind == route_type
+        ]
+        return sum(confidences) / len(confidences) if confidences else 0.0
 
     def snapshot(
         self,
