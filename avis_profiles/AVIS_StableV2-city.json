@@ -67,7 +67,7 @@
     "city_maneuver_segment_timeout_seconds": 20.0,
     "city_maneuver_distance_scale": 1.0,
     "city_maneuver_distance_max_sample_gap_seconds": 0.5,
-    "city_maneuver_sequences_json": "{\n  \"STRAIGHT\": [\n    {\n      \"distance_m\": 14.0,\n      \"steering_value\": 0.0\n    }\n  ],\n  \"LEFT\": [\n    {\n      \"distance_m\": 2.5,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 8.5,\n      \"steering_value\": -0.25\n    },\n    {\n      \"distance_m\": 6.0,\n      \"steering_value\": -1.0\n    }\n  ],\n  \"RIGHT\": [\n    {\n      \"distance_m\": 5.6,\n      \"steering_value\": 0.33\n    },\n    {\n      \"distance_m\": 6.0,\n      \"steering_value\": 1.0\n    }\n  ],\n  \"LEFT_90\": [\n    {\n      \"distance_m\": 8.5,\n      \"steering_value\": -1.0\n    }\n  ],\n  \"RIGHT_90\": [\n    {\n      \"distance_m\": 9.5,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 8.0,\n      \"steering_value\": 0.25\n    },\n    {\n      \"distance_m\": 3.0,\n      \"steering_value\": 0.7\n    }\n  ]\n}",
+    "city_maneuver_sequences_json": "{\n  \"STRAIGHT\": [\n    {\n      \"distance_m\": 14.0,\n      \"steering_value\": 0.0\n    }\n  ],\n  \"LEFT\": [\n    {\n      \"distance_m\": 2.5,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 8.5,\n      \"steering_value\": -0.25\n    },\n    {\n      \"distance_m\": 6.0,\n      \"steering_value\": -1.0\n    }\n  ],\n  \"RIGHT\": [\n    {\n      \"distance_m\": 2.0,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 5.6,\n      \"steering_value\": 0.33\n    },\n    {\n      \"distance_m\": 6.5,\n      \"steering_value\": 1.0\n    }\n  ],\n  \"LEFT_90\": [\n    {\n      \"distance_m\": 8.5,\n      \"steering_value\": -1.0\n    }\n  ],\n  \"RIGHT_90\": [\n    {\n      \"distance_m\": 9.5,\n      \"steering_value\": 0.0\n    },\n    {\n      \"distance_m\": 8.0,\n      \"steering_value\": 0.25\n    },\n    {\n      \"distance_m\": 3.0,\n      \"steering_value\": 0.7\n    }\n  ]\n}",
     "city_crosswalk_stop_seconds": 3.0,
     "city_crosswalk_rearm_clear_seconds": 1.0,
     "city_crosswalk_min_line_length_ratio": 0.35,
@@ -133,11 +133,15 @@
     ],
     "RIGHT": [
       {
+        "distance_m": 2.0,
+        "steering_value": 0.0
+      },
+      {
         "distance_m": 5.6,
         "steering_value": 0.33
       },
       {
-        "distance_m": 6.0,
+        "distance_m": 6.5,
         "steering_value": 1.0
       }
     ],
@@ -162,5 +166,5 @@
       }
     ]
   },
-  "saved_at": 1795806837.8824408
+  "saved_at": 1795806911.25338
 }
