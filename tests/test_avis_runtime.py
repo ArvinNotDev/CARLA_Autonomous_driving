@@ -16,7 +16,8 @@ from avis_runtime import (
     AvisObstacleLaneChangeController,
     AvisModelObstacleLaneChangeController,
     AvisObstacleLaneClassifier,
-    AvisCityPedestrianStopController,
+    AvisCityCrosswalkStopController,
+    AvisCombinedVisionProcessor,
     apply_avis_profile,
     build_parser,
     load_avis_profile,
@@ -27,6 +28,7 @@ from avis_runtime import (
     select_avis_lane_change_speed,
     _avis_roi_lock_direction,
     _apply_avis_roi_settings,
+    _apply_avis_city_crosswalk_settings,
     _create_avis_vision_processor,
     _connect_avis_engine,
     _avis_engine_recvall,
@@ -118,12 +120,15 @@ def test_avis_mode_profiles_are_loaded_independently_from_committed_files():
     assert city["name"] == "AVIS_StableV2-city"
     assert road["name"] == "AVIS_StableV2-road"
     assert city["settings"]["vision_backend"] == "ultralytics"
+    assert city["settings"]["obstacle_detection_enabled"] is False
     assert city["settings"]["obstacle_lane_change_enabled"] is False
-    assert city["settings"]["city_pedestrian_stop_enabled"] is True
-    assert city["settings"]["city_pedestrian_stop_seconds"] == pytest.approx(5.0)
+    assert city["settings"]["city_crosswalk_enabled"] is True
+    assert city["settings"]["city_crosswalk_stop_seconds"] == pytest.approx(5.0)
+    assert city["settings"]["cw_top_roi"] == pytest.approx(0.55)
     assert road["settings"]["vision_backend"] == "classical"
+    assert road["settings"]["obstacle_detection_enabled"] is True
     assert road["settings"]["obstacle_lane_change_enabled"] is True
-    assert road["settings"]["city_pedestrian_stop_enabled"] is False
+    assert road["settings"]["city_crosswalk_enabled"] is False
 
 
 def test_avis_cli_defaults_to_road_and_accepts_city_or_road_flags(monkeypatch):
@@ -145,70 +150,112 @@ def test_avis_cli_defaults_to_road_and_accepts_city_or_road_flags(monkeypatch):
     assert selected == [(True, "road"), (True, "road"), (True, "city")]
 
 
-def test_city_pedestrian_stop_requires_confirmed_obstacle_minimum_wait_and_clear_frames():
-    controller = AvisCityPedestrianStopController()
-    obstacle = {
-        "valid": True,
-        "obstacle_ahead": {
-            "label": "yes",
-            "confidence": 0.96,
-            "probabilities": {"no": 0.04, "yes": 0.96},
-        },
-    }
-    clear = {
-        "valid": True,
-        "obstacle_ahead": {
-            "label": "no",
-            "confidence": 0.97,
-            "probabilities": {"no": 0.97, "yes": 0.03},
-        },
-    }
-    options = {
-        "enabled": True,
-        "hold_seconds": 5.0,
-        "confidence_threshold": 0.90,
-        "confirm_frames": 2,
-        "clear_frames": 3,
+def test_city_crosswalk_stop_uses_confirmed_roi_event_and_five_second_dwell():
+    controller = AvisCityCrosswalkStopController()
+    crosswalk = {
+        "line_present": True,
+        "detected": True,
+        "line": (20, 80, 300, 85),
+        "length_ratio": 0.72,
     }
 
-    pending = controller.update(obstacle, observation_id=1, now=10.0, **options)
-    assert pending["active"] is False
-    stopped = controller.update(obstacle, observation_id=2, now=10.1, **options)
-    assert stopped["active"] is True
-    assert stopped["just_activated"] is True
-    assert stopped["remaining_seconds"] == pytest.approx(5.0)
-
-    # The vehicle must not resume merely because five seconds elapsed.
-    still_waiting = controller.update(clear, observation_id=3, now=16.0, **options)
-    assert still_waiting["active"] is True
-    controller.update(clear, observation_id=4, now=16.1, **options)
-    released = controller.update(clear, observation_id=5, now=16.2, **options)
-    assert released["active"] is False
-    assert released["reason"] == "obstacle_cleared_after_minimum_wait"
-
-
-def test_city_pedestrian_stop_ignores_low_confidence_positive_predictions():
-    controller = AvisCityPedestrianStopController()
-    uncertain = {
-        "valid": True,
-        "obstacle_ahead": {
-            "label": "yes",
-            "confidence": 0.70,
-            "probabilities": {"no": 0.30, "yes": 0.70},
-        },
-    }
-    result = controller.update(
-        uncertain,
-        enabled=True,
-        hold_seconds=5.0,
-        confidence_threshold=0.90,
-        confirm_frames=1,
-        clear_frames=2,
-        observation_id=1,
-        now=1.0,
+    pending = controller.update(
+        crosswalk, enabled=True, stop_seconds=5.0,
+        rearm_clear_seconds=1.0, observation_id=1,
+        observation_timestamp=10.0, now=10.0,
     )
-    assert result["active"] is False
-    assert result["confirm_frames"] == 0
+    assert pending["active"] is True
+    assert pending["just_activated"] is True
+    assert pending["remaining_seconds"] == pytest.approx(5.0)
+    assert pending["line_present"] is True
+    assert pending["detected"] is True
+
+    waiting = controller.update(
+        crosswalk, enabled=True, stop_seconds=5.0,
+        rearm_clear_seconds=1.0, observation_id=2,
+        observation_timestamp=12.5, now=12.5,
+    )
+    assert waiting["active"] is True
+    assert waiting["remaining_seconds"] == pytest.approx(2.5)
+
+    complete = controller.update(
+        crosswalk, enabled=True, stop_seconds=5.0,
+        rearm_clear_seconds=1.0, observation_id=3,
+        observation_timestamp=15.0, now=15.0,
+    )
+    assert complete["active"] is False
+    assert complete["reason"] == "crosswalk_stop_complete"
+
+
+def test_city_crosswalk_does_not_retrigger_until_roi_evidence_clears():
+    controller = AvisCityCrosswalkStopController()
+    marked = {"line_present": True, "detected": True, "line": (0, 40, 250, 40), "length_ratio": 0.8}
+    clear = {"line_present": False, "detected": False, "line": None, "length_ratio": 0.0}
+    options = {"enabled": True, "stop_seconds": 1.0, "rearm_clear_seconds": 1.0}
+
+    started = controller.update(marked, observation_id=1, observation_timestamp=1.0, now=1.0, **options)
+    assert started["active"] is True
+    finished = controller.update(marked, observation_id=2, observation_timestamp=2.0, now=2.0, **options)
+    assert finished["active"] is False
+
+    # The same visible marking stays latched and cannot start another stop.
+    repeated = controller.update(marked, observation_id=3, observation_timestamp=2.2, now=2.2, **options)
+    assert repeated["active"] is False
+    assert repeated["trigger_pending"] is False
+
+    controller.update(clear, observation_id=4, observation_timestamp=3.0, now=3.0, **options)
+    controller.update(clear, observation_id=5, observation_timestamp=4.1, now=4.1, **options)
+    rearmed = controller.update(marked, observation_id=6, observation_timestamp=4.2, now=4.2, **options)
+    assert rearmed["active"] is True
+    assert rearmed["just_activated"] is True
+
+
+def test_city_crosswalk_stop_can_be_disabled_and_resets_active_stop():
+    controller = AvisCityCrosswalkStopController()
+    marked = {"line_present": True, "detected": True, "line": (0, 40, 250, 40), "length_ratio": 0.8}
+    active = controller.update(marked, enabled=True, observation_id=1, observation_timestamp=1.0, now=1.0)
+    assert active["active"] is True
+    disabled = controller.update(marked, enabled=False, observation_id=2, now=1.1)
+    assert disabled["active"] is False
+    assert disabled["enabled"] is False
+
+
+def test_avis_combined_vision_processor_skips_classifier_when_disabled():
+    class LaneProcessor:
+        def detect(self, semantic_frame, rgb_frame=None):
+            return {"error": 0.0, "junction_roi": {"line_present": True, "detected": True}}
+
+    processor = AvisCombinedVisionProcessor(LaneProcessor(), obstacle_classifier=None)
+    result = processor.detect(np.zeros((32, 32, 3), dtype=np.uint8))
+    assert result["junction_roi"]["detected"] is True
+    assert "obstacle_classifier" not in result
+
+
+def test_avis_city_crosswalk_settings_apply_carla_detector_config_only_when_city_enabled():
+    config = SimpleNamespace()
+    settings = {
+        "city_crosswalk_enabled": True,
+        "cw_top_roi": 0.51,
+        "cw_bottom_roi": 0.91,
+        "cw_left_roi": 0.12,
+        "cw_right_roi": 0.88,
+        "city_crosswalk_min_line_length_ratio": 0.42,
+        "city_crosswalk_max_line_angle_deg": 10.0,
+        "city_crosswalk_confirm_frames": 3,
+        "city_crosswalk_rearm_clear_seconds": 1.5,
+    }
+    assert _apply_avis_city_crosswalk_settings(config, settings, city_mode=True) is True
+    assert config.JUNCTION_DETECTION_MODE == "crosswalk_roi"
+    assert config.CW_TOP_ROI == pytest.approx(0.51)
+    assert config.CW_BOTTOM_ROI == pytest.approx(0.91)
+    assert config.CW_LEFT_ROI == pytest.approx(0.12)
+    assert config.CW_RIGHT_ROI == pytest.approx(0.88)
+    assert config.JUNCTION_ROI_MIN_LINE_LENGTH_RATIO == pytest.approx(0.42)
+    assert config.JUNCTION_ROI_MAX_LINE_ANGLE_DEG == pytest.approx(10.0)
+    assert config.JUNCTION_ROI_CONFIRM_FRAMES == 3
+    assert config.JUNCTION_ROI_REARM_CLEAR_SECONDS == pytest.approx(1.5)
+    assert _apply_avis_city_crosswalk_settings(config, settings, city_mode=False) is False
+    assert config.JUNCTION_DETECTION_MODE == "model"
 
 
 def test_apply_avis_roi_settings_restores_all_roi_and_shared_geometry_values():
