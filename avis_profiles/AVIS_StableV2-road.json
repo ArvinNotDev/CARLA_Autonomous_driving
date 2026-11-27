@@ -86,8 +86,17 @@
     "adaptive_roi_expand_step_ratio": 0.015,
     "adaptive_roi_recovery_frames": 4,
     "adaptive_roi_restore_step_ratio": 0.01,
-    "city_pedestrian_stop_enabled": false,
-    "city_pedestrian_stop_seconds": 5
+    "obstacle_detection_enabled": true,
+    "city_crosswalk_enabled": false,
+    "city_crosswalk_stop_seconds": 5,
+    "city_crosswalk_rearm_clear_seconds": 1,
+    "city_crosswalk_min_line_length_ratio": 0.35,
+    "city_crosswalk_max_line_angle_deg": 12,
+    "city_crosswalk_confirm_frames": 2,
+    "cw_top_roi": 0.55,
+    "cw_bottom_roi": 0.88,
+    "cw_left_roi": 0.08,
+    "cw_right_roi": 0.92
   },
   "saved_at": 1795773044.7274275
 }
