@@ -3,6 +3,23 @@ from __future__ import annotations
 import faulthandler
 import os
 import sys
+
+# Dispatch every AVIS-specific invocation before loading the CARLA GUI or API.
+# Mode flags work on their own; the explicit --avis flag remains supported.
+_AVIS_ENTRY_FLAGS = {"--avis", "--road", "--city", "--avis-api-path"}
+if __name__ == "__main__" and any(
+    argument.split("=", 1)[0] in _AVIS_ENTRY_FLAGS
+    for argument in sys.argv[1:]
+):
+    selected_mode = next(
+        (argument for argument in sys.argv[1:] if argument in {"--city", "--road"}),
+        "--avis",
+    )
+    print(f"[AVIS] Dispatching {selected_mode} launch before CARLA initialization.")
+    from avis_runtime import main as avis_main
+
+    raise SystemExit(avis_main(sys.argv[1:]))
+
 import threading
 import time
 import traceback
@@ -51,14 +68,6 @@ def _runtime_thread_exception_hook(args) -> None:
 
 sys.excepthook = _runtime_sys_exception_hook
 threading.excepthook = _runtime_thread_exception_hook
-
-# AVIS is an independent runtime backend. Dispatch before CARLA API setup/import.
-if __name__ == "__main__" and any(
-    flag in sys.argv[1:] for flag in ("--avis", "--road", "--city")
-):
-    from avis_runtime import main as avis_main
-
-    raise SystemExit(avis_main(sys.argv[1:]))
 
 # The CARLA API must be configured before importing carla or any module that
 # imports it. On a normal GUI launch, show the first-run folder picker and
