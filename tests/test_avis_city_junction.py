@@ -18,6 +18,7 @@ from avis_city_junction import (
     parse_city_sign_class_map,
 )
 from avis_dashboard import (
+    AvisDashboardState,
     DASHBOARD_HTML,
     DEFAULT_AVIS_SETTINGS,
     validate_avis_settings,
@@ -489,3 +490,86 @@ def test_dashboard_exposes_sign_model_and_editable_maneuver_sequences():
     assert "city_junction_sign_class_order_json" in DASHBOARD_HTML
     assert "city_maneuver_sequences_json" in DASHBOARD_HTML
     assert "RIGHT_90" in DEFAULT_AVIS_SETTINGS["city_maneuver_sequences_json"]
+
+def test_maneuver_sequences_are_persisted_and_restored_per_profile(tmp_path):
+    settings_path = tmp_path / "avis_settings.json"
+    profile_path = tmp_path / "avis_profiles.json"
+    state = AvisDashboardState(
+        settings_path=settings_path,
+        profile_path=profile_path,
+        default_profile_name="AVIS_StableV2",
+    )
+
+    city_sequences = {
+        "LEFT": [{"distance_m": 13.0, "steering_value": -0.7}],
+        "RIGHT": [{"distance_m": 7.0, "steering_value": 0.6}],
+    }
+    state.update_settings(
+        {"city_maneuver_sequences_json": json.dumps(city_sequences)}
+    )
+    city_profile = state.save_profile("AVIS_StableV2-city")
+    assert city_profile["maneuvers"]["LEFT"] == city_sequences["LEFT"]
+    assert json.loads(
+        city_profile["settings"]["city_maneuver_sequences_json"]
+    ) == city_profile["maneuvers"]
+
+    road_sequences = {
+        "LEFT": [{"distance_m": 4.0, "steering_value": -0.25}],
+        "RIGHT": [{"distance_m": 16.0, "steering_value": 0.9}],
+    }
+    state.update_settings(
+        {"city_maneuver_sequences_json": json.dumps(road_sequences)}
+    )
+    road_profile = state.save_profile("AVIS_StableV2-road")
+    assert road_profile["maneuvers"]["RIGHT"] == road_sequences["RIGHT"]
+    assert road_profile["maneuvers"]["LEFT"] != city_profile["maneuvers"]["LEFT"]
+
+    loaded_city = state.load_profile("AVIS_StableV2-city")
+    assert json.loads(loaded_city["city_maneuver_sequences_json"]) == city_profile["maneuvers"]
+    assert state.get_profile("AVIS_StableV2-road")["maneuvers"] == road_profile["maneuvers"]
+
+    # The explicit structured field is canonical when importing a profile.
+    imported = state.import_profile(
+        {
+            "schema_version": 1,
+            "name": "AVIS_StableV2-imported",
+            "settings": {
+                "city_maneuver_sequences_json": json.dumps(
+                    {"LEFT": [{"distance_m": 99.0, "steering_value": -1.0}]}
+                )
+            },
+            "maneuvers": {
+                "LEFT": [{"distance_m": 8.0, "steering_value": -0.4}]
+            },
+        }
+    )
+    assert imported["maneuvers"]["LEFT"] == [
+        {"distance_m": 8.0, "steering_value": -0.4}
+    ]
+    assert json.loads(
+        imported["settings"]["city_maneuver_sequences_json"]
+    ) == imported["maneuvers"]
+
+    # Re-open the persisted profile store to verify the sequences survive restart.
+    reloaded = AvisDashboardState(
+        settings_path=settings_path,
+        profile_path=profile_path,
+        default_profile_name="AVIS_StableV2",
+    )
+    assert reloaded.get_profile("AVIS_StableV2-city")["maneuvers"] == city_profile["maneuvers"]
+    assert reloaded.get_profile("AVIS_StableV2-road")["maneuvers"] == road_profile["maneuvers"]
+
+
+def test_every_checked_in_stable_v2_profile_contains_its_own_maneuver_sequences():
+    root = Path(__file__).resolve().parents[1]
+    profile_paths = sorted((root / "avis_profiles").glob("AVIS_StableV2*.json"))
+    assert profile_paths
+    for profile_path in profile_paths:
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        assert isinstance(profile.get("maneuvers"), dict), profile_path.name
+        assert "city_maneuver_sequences_json" in profile["settings"], profile_path.name
+        stored_settings_sequences = json.loads(
+            profile["settings"]["city_maneuver_sequences_json"]
+        )
+        assert profile["maneuvers"] == stored_settings_sequences, profile_path.name
+
